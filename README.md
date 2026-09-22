@@ -8,6 +8,8 @@ Personal, safety-first algorithmic crypto-trading platform with Coinbase live-tr
 
 The project is in planning and Phase 0 validation. Live trading is not enabled by this repository.
 
+Agents and contributors working concurrently should read [AGENTS.md](AGENTS.md) before claiming a card or creating a branch.
+
 The intended execution modes are:
 
 - `backtest` — historical data with explicit cost and slippage assumptions.
