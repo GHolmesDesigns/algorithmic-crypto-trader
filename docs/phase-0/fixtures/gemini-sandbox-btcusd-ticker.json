@@ -1,0 +1,18 @@
+{
+  "provider": "gemini",
+  "environment": "sandbox",
+  "endpoint": "/v1/pubticker/btcusd",
+  "observed_date_utc": "2026-09-22",
+  "evidence_class": "public-observed",
+  "http_status": 200,
+  "response": {
+    "bid": "84707.84000",
+    "ask": "84707.85000",
+    "last": "84707.84000",
+    "volume": {
+      "BTC": "0.36783741",
+      "USD": "31158.7124722944",
+      "timestamp": 1790104740000
+    }
+  }
+}
