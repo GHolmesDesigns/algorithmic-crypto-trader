@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
-from api.routes import health
+from api.routes import router
 from core.guards import StartupSettings, load_startup_settings, startup_banner
 from core.logging import configure_logging
 from fastapi import FastAPI
+from risk.kill_switch import KillSwitch
 
 
 def create_app(settings: StartupSettings | None = None) -> FastAPI:
     startup_settings = settings or load_startup_settings()
     application = FastAPI(title="Algorithmic Crypto Trader", version="0.1.0")
-    application.add_api_route("/health", health, methods=["GET"])
+    application.router.routes.extend(router.routes)
+    switch_path = os.environ.get("KILL_SWITCH_FILE")
+    application.state.kill_switch = KillSwitch(Path(switch_path) if switch_path else None)
     application.state.startup_settings = startup_settings
     return application
 

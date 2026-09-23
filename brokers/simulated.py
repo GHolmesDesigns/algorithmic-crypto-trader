@@ -253,6 +253,7 @@ class SimulatedBroker(BrokerInterface):
         if injected is SimulatedFault.UNAVAILABLE:
             raise BrokerUnavailableError()
         if injected is SimulatedFault.TIMEOUT:
+            assert request.client_order_id is not None
             unknown = Order(
                 order_id=request.client_order_id,
                 request=request,
@@ -335,6 +336,7 @@ class SimulatedBroker(BrokerInterface):
         return self._faults[operation].pop(0)
 
     def _store_rejected(self, request: OrderRequest) -> Order:
+        assert request.client_order_id is not None
         order = Order(
             order_id=request.client_order_id,
             request=request,
@@ -346,6 +348,7 @@ class SimulatedBroker(BrokerInterface):
         return order
 
     def _accept_order(self, request: OrderRequest) -> Order:
+        assert request.client_order_id is not None
         key = str(request.client_order_id)
         order = Order(order_id=request.client_order_id, request=request, status=OrderStatus.OPEN)
         self._orders[key] = order
