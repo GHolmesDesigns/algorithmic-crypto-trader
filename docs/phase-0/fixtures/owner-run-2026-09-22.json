@@ -1,0 +1,99 @@
+{
+  "observed_date_utc": "2026-09-22",
+  "evidence_class": "owner-run-redacted",
+  "redaction": {
+    "credentials": "omitted",
+    "authorization_headers": "omitted",
+    "account_identifiers": "omitted",
+    "balances": "omitted",
+    "order_identifiers": "omitted",
+    "client_order_ids": "omitted"
+  },
+  "coinbase_advanced_trade": {
+    "environment": "production-read-only",
+    "key_format": "Ed25519 accepted",
+    "products": {
+      "BTC-USD": {
+        "http_status": 200,
+        "status": "online",
+        "trading_disabled": false,
+        "base_increment": "0.00000001",
+        "quote_increment": "0.01",
+        "base_min_size": "0.00000001",
+        "quote_min_size": "1"
+      },
+      "ETH-USD": {
+        "http_status": 200,
+        "status": "online",
+        "trading_disabled": false,
+        "base_increment": "0.00000001",
+        "quote_increment": "0.01",
+        "base_min_size": "0.00000001",
+        "quote_min_size": "1"
+      }
+    },
+    "accounts": {
+      "http_status": 200,
+      "account_count": 49,
+      "identifying_fields_redacted": true
+    },
+    "candles": {
+      "BTC-USD": {"http_status": 200, "granularity": "ONE_HOUR", "row_count": 3, "fields": ["close", "high", "low", "open", "start", "volume"]},
+      "ETH-USD": {"http_status": 200, "granularity": "ONE_HOUR", "row_count": 3, "fields": ["close", "high", "low", "open", "start", "volume"]}
+    },
+    "fees": {
+      "http_status": 200,
+      "pricing_tier": "Intro",
+      "maker_fee_rate": "0.005",
+      "taker_fee_rate": "0.009",
+      "rate_limit_header_names": ["x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"]
+    },
+    "public_websocket": {
+      "endpoint": "wss://advanced-trade-ws.coinbase.com",
+      "close_code": 1005,
+      "channels_observed": {"subscriptions": 2, "ticker": 78, "candles": 3},
+      "credentials_used": false
+    },
+    "writes_performed": false
+  },
+  "gemini": {
+    "environment": "sandbox",
+    "rest_host": "https://api.sandbox.gemini.com",
+    "public_ticker_http_status": 200,
+    "balances_http_status": 200,
+    "sandbox_balance_asset_count": 6,
+    "symbol_details": {
+      "symbol": "BTCUSD",
+      "status": "open",
+      "product_type": "spot",
+      "min_order_size": "0.00001",
+      "tick_size": "0.00000001",
+      "quote_increment": "0.01"
+    },
+    "order_lifecycle": {
+      "immediate_order": {
+        "submit_http_status": 200,
+        "status_http_status": 200,
+        "executed": true,
+        "terminal": true,
+        "remaining": false
+      },
+      "explicit_cancel": {
+        "submit_http_status": 200,
+        "accepted_live": true,
+        "cancel_http_status": 200,
+        "cancelled": true
+      },
+      "undersized_order": {
+        "http_status": 400,
+        "rejected": true,
+        "reason": "InvalidQuantity"
+      },
+      "partial_fill_observed": false,
+      "ambiguous_timeout_observed": false,
+      "recovery_procedure_observed": "status query before any retry; explicit cancel used for live order"
+    },
+    "writes_limited_to_sandbox": true
+  },
+  "safety_result": "No Coinbase order, transfer, withdrawal, or other provider write was performed. No production Gemini host was contacted."
+}

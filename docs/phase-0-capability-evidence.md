@@ -1,51 +1,46 @@
 # Phase 0 capability evidence
 
 **Evidence date:** 2026-09-22
-**Status:** `INCOMPLETE — owner-run verification required`
+**Status:** `OWNER-RUN EVIDENCE CAPTURED — legal and jurisdiction review remains`
 **Issue:** [#2](https://github.com/GHolmesDesigns/algorithmic-crypto-trader/issues/2)
 
 This sheet separates provider documentation, public unauthenticated observations, and
-account-specific owner-run verification. It does not turn documentation into a claim
-that an account, jurisdiction, or private API key was tested.
+account-specific owner-run verification. The owner-run record is redacted and does not
+contain credentials, account identifiers, balances, or order identifiers.
 
 ## Safety boundary
 
-- No production credential was read or used.
-- No authenticated request, order, transfer, withdrawal, or other provider write was
-  performed.
-- The Coinbase Advanced Trade requests below were deliberately sent without
-  credentials and returned `401`; this is a connectivity/authentication boundary
-  observation, not a capability result.
-- Gemini observations are public Sandbox market-data reads only. They do not prove
-  test-balance provisioning or any order lifecycle behavior.
-- Owner-run evidence must be captured with a View-only Coinbase key and a Gemini
-  Sandbox key. Secrets, signatures, authorization headers, account identifiers, and
-  raw unsanitized payloads must never enter this repository.
+- Coinbase was used only for authenticated read-only requests. No Coinbase order,
+  transfer, withdrawal, or other provider write was performed.
+- Gemini requests were restricted to `https://api.sandbox.gemini.com`; the observed
+  order writes were Sandbox-only and used a Sandbox credential.
+- Secrets, signatures, authorization headers, account identifiers, balances, order
+  identifiers, client order IDs, and raw unsanitized payloads are omitted.
 
 ## Evidence ledger
 
 | Area | Evidence class | Result on 2026-09-22 | Remaining proof |
 | --- | --- | --- | --- |
-| Coinbase Advanced Trade product and candle REST calls | Local boundary check | `401 Unauthorized` without a CDP JWT | Owner-run authenticated capture for BTC-USD and ETH-USD |
-| Coinbase Advanced Trade accounts | Not run | Requires a signed private request | Owner-run View-only account capture; redact UUIDs and balances as required |
-| Coinbase public ticker/candle WebSocket | Documented, not observed | Official WebSocket guide identifies public market-data channels | Owner-run capture of ticker and candle messages with subscription and reconnect notes |
-| Coinbase fees, limits, increments, and minimums | Documented baseline only | Current values are account-, product-, or endpoint-specific | Owner-run capture plus source URL/date and jurisdiction |
+| Coinbase Advanced Trade product and candle REST calls | Owner-run read-only | Products and bounded BTC-USD/ETH-USD candle responses returned `200` | Recheck when account or product changes |
+| Coinbase Advanced Trade accounts | Owner-run read-only | Accounts returned `200`; identifiers and balances were redacted | Recheck when account scope changes |
+| Coinbase public ticker/candle WebSocket | Owner-run public | Ticker and candle messages observed without credentials | Recheck reconnect behavior during adapter implementation |
+| Coinbase fees, rate limits, increments, and minimums | Owner-run read-only | Fee tier, fee rates, rate-limit header names, product increments, and minimums captured | Recheck when fee tier or API contract changes |
 | Coinbase Advanced Trade Sandbox | Documented baseline only | Sandbox behavior must be checked against the current official guide | Owner-run read-only fixture capture; no order submission |
 | Gemini Sandbox symbols and public tickers | Public read observed | `200` from `api.sandbox.gemini.com` for symbols, BTC/USD ticker, and ETH/USD ticker | None for this public slice; it does not satisfy private lifecycle criteria |
-| Gemini Sandbox balances and authentication | Not run | Requires a Sandbox account/key | Owner-run balance and signed-auth capture |
-| Gemini submit/ack/match/partial-fill/cancel/reject/recovery | Not run | No private order request was attempted | Owner-run non-production lifecycle, with every state and recovery path recorded |
+| Gemini Sandbox balances and authentication | Owner-run Sandbox | Signed balance request returned `200` with six asset records; values were redacted | Recheck when Sandbox account scope changes |
+| Gemini submit/ack/match/cancel/reject/recovery | Owner-run Sandbox | Immediate execution, status query, explicit cancellation, and undersized rejection were observed | Partial-fill and ambiguous-timeout paths were not observed and remain test cases |
 | Agreements, automated-trading restrictions, and geographic eligibility | Not determined | These are owner/jurisdiction-specific legal and account checks | Owner review of current Coinbase and Gemini terms and account eligibility |
 
 ## Coinbase Advanced Trade
 
 | Capability | Current disposition | Required evidence |
 | --- | --- | --- |
-| CDP Ed25519/JWT authentication | `owner-run-pending` | View-only key, successful signed request, key scope, timestamp, and redacted response |
-| Products: BTC-USD and ETH-USD | `owner-run-pending` | Product IDs, status, quote/base currencies, increments, minimums, and response date |
-| Historical candles | `owner-run-pending` | At least one bounded BTC-USD and ETH-USD response; preserve interval, range, and redacted payload |
-| Accounts | `owner-run-pending` | View-only account response with UUIDs and balances redacted or bucketed |
-| Public ticker/candle WebSocket | `documented-not-observed` | Subscription request, at least one message of each type, heartbeat/reconnect result |
-| Fees and rate limits | `owner-run-pending` | Account fee tier, documented/request limits, HTTP headers, and source date |
+| CDP Ed25519/JWT authentication | `owner-run-complete` | Ed25519 key parsed and signed read-only requests returned `200` |
+| Products: BTC-USD and ETH-USD | `owner-run-complete` | Both products returned `200` with online status, increments, and minimums |
+| Historical candles | `owner-run-complete` | Bounded one-hour BTC-USD and ETH-USD responses returned `200` with three rows each |
+| Accounts | `owner-run-complete-redacted` | View-only account response returned `200`; account identifiers and balances omitted |
+| Public ticker/candle WebSocket | `owner-run-complete` | Public ticker and candle messages observed on the Advanced Trade endpoint |
+| Fees and rate limits | `owner-run-complete` | Fee tier/rates and rate-limit header names captured |
 | Sandbox | `documented-not-observed` | Current official behavior and a read-only fixture; do not treat it as a market simulator |
 
 The public Coinbase Exchange candle endpoint was intentionally not used as Advanced
@@ -60,18 +55,15 @@ date, public market-data reads returned successfully for the symbols list and th
 BTC/USD and ETH/USD tickers. The redacted responses are kept in
 [`phase-0/fixtures/`](phase-0/fixtures/).
 
-The following remains unverified and is required before this card can be marked
-complete:
+The following remains unverified and should remain explicit follow-up work:
 
-1. Sandbox account provisioning and starting balances.
-2. Signed authentication and permission boundaries.
-3. Submit and acknowledge.
-4. Working, match, partial fill, and terminal fill.
-5. Cancel, reject, timeout, and recovery after an ambiguous response.
-6. Any observed divergence from production behavior that affects the planned adapter.
+1. Partial-fill behavior under a deliberately sized order-book condition.
+2. An actual network timeout or ambiguous response and its recovery procedure.
+3. Any observed divergence from production behavior that affects the planned adapter.
 
-No order lifecycle claim is made here because no private Sandbox credential was
-available for owner-run verification.
+The captured Sandbox run did prove signed authentication, test-balance visibility,
+immediate execution, status lookup, explicit cancellation, and an undersized-order
+rejection. It did not prove the two nondeterministic paths above.
 
 ## Draft payload model and redaction rules
 
@@ -107,17 +99,18 @@ needed to explain capability behavior.
 
 ## Owner-run capture checklist
 
-The owner should run the bounded capture from a controlled environment and attach the
-redacted results to this sheet:
+The owner-run capture is attached as
+[`owner-run-2026-09-22.json`](phase-0/fixtures/owner-run-2026-09-22.json). Future
+captures should follow the same bounded and redacted process:
 
 - Coinbase: View-only CDP key; no trade, transfer, or withdrawal permission. Capture
   authentication, products, candles, accounts, fee tier, limits, and public WebSocket
   messages. Verify the key scope in the portal and record the account/jurisdiction
   context without naming the account.
-- Gemini: Sandbox-only key. Confirm the host is `api.sandbox.gemini.com` or the
-  documented Sandbox WebSocket host before every private request. Capture balances,
-  auth, and the complete non-production order lifecycle. Use a bounded request budget
-  and clean up in `finally`.
+- Gemini: Sandbox-only key. The captured run confirmed the REST host before every
+  private request, captured balances and signed auth, executed one tiny IOC order,
+  queried its status, created and canceled one live limit order, and confirmed an
+  undersized-order rejection. Partial-fill and ambiguous-timeout cases remain open.
 - For both: record UTC time, endpoint, status, source URL, redaction decision, and
   whether the result was documented, public-observed, or owner-run.
 
@@ -139,7 +132,8 @@ fees, limits, terms, and eligibility can change.
 
 ## Acceptance disposition
 
-This document is a safe, reviewable Phase 0 evidence scaffold with dated public
-observations. Issue #2 is **not complete** until the owner-run Coinbase and Gemini
-private checks above are performed and redacted evidence is added. Merging this
-documentation PR must not be interpreted as authorization to enable live trading.
+This document is a safe, reviewable Phase 0 evidence record with dated public and
+owner-run observations. Issue #2 still requires the owner to review applicable
+agreements and geographic eligibility, and the follow-up partial-fill and ambiguous
+timeout tests remain unverified. Merging this documentation PR must not be
+interpreted as authorization to enable live trading.
