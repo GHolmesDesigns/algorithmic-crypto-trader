@@ -1,0 +1,18 @@
+{
+  "provider": "gemini",
+  "environment": "sandbox",
+  "endpoint": "/v1/pubticker/ethusd",
+  "observed_date_utc": "2026-09-22",
+  "evidence_class": "public-observed",
+  "http_status": 200,
+  "response": {
+    "bid": "2760.06000",
+    "ask": "2760.07000",
+    "last": "2760.07000",
+    "volume": {
+      "ETH": "1195.758218",
+      "USD": "3300376.38475526",
+      "timestamp": 1790104740000
+    }
+  }
+}
