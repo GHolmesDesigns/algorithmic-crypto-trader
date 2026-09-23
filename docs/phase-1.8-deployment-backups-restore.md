@@ -148,5 +148,6 @@ Local tests exercise startup recovery against SQLite and run the backup and
 restore scripts against stubbed `docker`, `age`, `rclone`, `psql`, and
 `pg_restore` binaries. None of that is operational evidence. A Compose run,
 VPS restart drill, and scratch restore are owner-run checks and must be
-recorded separately from CI. No provider write or live-trading activation is
+recorded separately from CI; follow the
+[VPS drill checklist](phase-1.8-vps-drill-checklist.md). No provider write or live-trading activation is
 part of this card.
