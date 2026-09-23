@@ -90,9 +90,7 @@ async def test_dashboard_is_degraded_when_broker_is_unavailable_and_does_not_ren
         assert response.status_code == 200
         assert "broker is unavailable" in response.text
         assert "operator-secret" not in response.text
-        state = await client.get(
-            "/operator/state", headers={"x-operator-token": "operator-secret"}
-        )
+        state = await client.get("/operator/state", headers={"x-operator-token": "operator-secret"})
         assert state.json()["connectivity"]["status"] == "unavailable"
         assert state.json()["portfolio"]["status"] == "unavailable"
         assert state.json()["errors"][0]["condition"] == "broker_unavailable"
@@ -137,9 +135,7 @@ async def test_current_portfolio_and_strategy_heartbeats_are_exposed(monkeypatch
         )
         assert response.json()["status"] == "healthy"
         assert response.json()["strategies"][0]["status"] == "healthy"
-        state = await client.get(
-            "/operator/state", headers={"x-operator-token": "operator-secret"}
-        )
+        state = await client.get("/operator/state", headers={"x-operator-token": "operator-secret"})
         assert state.json()["portfolio"]["status"] == "current"
         assert state.json()["portfolio"]["balances"][0]["asset"] == "USD"
 
@@ -166,16 +162,12 @@ async def test_admin_authorization_and_alert_fanout(monkeypatch):
             )
         ).json() == {"state": "halted"}
         assert (
-            await client.post(
-                "/operator/rearm", headers={"x-operator-token": "operator-secret"}
-            )
+            await client.post("/operator/rearm", headers={"x-operator-token": "operator-secret"})
         ).status_code == 403
         assert (
             await client.post("/operator/rearm", headers={"x-operator-token": "admin-secret"})
         ).json() == {"state": "running"}
-        state = await client.get(
-            "/operator/state", headers={"x-operator-token": "admin-secret"}
-        )
+        state = await client.get("/operator/state", headers={"x-operator-token": "admin-secret"})
         assert state.json()["alert_destinations"] == ["phone_push", "email"]
         assert [item.condition for item in phone.alerts] == ["broker_unavailable"]
         assert [item.condition for item in email.alerts] == ["broker_unavailable"]

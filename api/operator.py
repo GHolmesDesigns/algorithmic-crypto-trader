@@ -76,9 +76,7 @@ class OperatorState:
         found = False
         for item in self.snapshot.strategy_heartbeats:
             if item.name == name:
-                heartbeats.append(
-                    replace(item, status=status, last_seen=utc_now(), detail=detail)
-                )
+                heartbeats.append(replace(item, status=status, last_seen=utc_now(), detail=detail))
                 found = True
             else:
                 heartbeats.append(item)
@@ -164,8 +162,7 @@ class OperatorState:
     async def emit_alert(self, alert: Alert) -> tuple[AlertDelivery, ...]:
         deliveries = await self.alert_router.route(alert)
         delivery_payload = [
-            {"destination": item.destination, "status": item.status}
-            for item in deliveries
+            {"destination": item.destination, "status": item.status} for item in deliveries
         ]
         self.snapshot = replace(
             self.snapshot,
@@ -185,9 +182,7 @@ class OperatorState:
 
     def health(self) -> dict[str, Any]:
         return {
-            "status": "healthy"
-            if self.snapshot.connectivity_status == "healthy"
-            else "degraded",
+            "status": "healthy" if self.snapshot.connectivity_status == "healthy" else "degraded",
             "application": {"status": "healthy", "heartbeat": utc_now().isoformat()},
             "broker": {
                 "status": self.snapshot.connectivity_status,
