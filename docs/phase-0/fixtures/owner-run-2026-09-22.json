@@ -96,11 +96,17 @@
         "rejected": true,
         "reason": "InvalidQuantity"
       },
-      "partial_fill_observed": false,
+      "partial_fill_observed": true,
       "ambiguous_timeout_observed": false,
-      "recovery_procedure_observed": "status query before any retry; explicit cancel used for live order"
+      "recovery_procedure_observed": "status query before any retry; explicit cancel used for live order; no network timeout was induced"
     },
     "writes_limited_to_sandbox": true
   },
-  "safety_result": "No Coinbase order, transfer, withdrawal, or other provider write was performed. No production Gemini host was contacted."
+  "terms_review": {
+    "coinbase_us_agreement_reviewed_date": "2026-09-23",
+    "coinbase_public_eligibility_note": "The current US agreement states individual eligibility is US residence and that feature availability varies by location; the account holder must confirm their own eligibility.",
+    "gemini_user_agreement_reviewed_date": "2026-09-23",
+    "account_specific_eligibility_confirmed": false
+  },
+  "safety_result": "No Coinbase order, transfer, withdrawal, or other Coinbase write was performed. No production Gemini host was contacted."
 }

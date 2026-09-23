@@ -1,7 +1,7 @@
 # Phase 0 capability evidence
 
 **Evidence date:** 2026-09-22
-**Status:** `OWNER-RUN EVIDENCE CAPTURED — legal and jurisdiction review remains`
+**Status:** `OWNER-RUN EVIDENCE CAPTURED — account eligibility acknowledgment remains`
 **Issue:** [#2](https://github.com/GHolmesDesigns/algorithmic-crypto-trader/issues/2)
 
 This sheet separates provider documentation, public unauthenticated observations, and
@@ -28,8 +28,8 @@ contain credentials, account identifiers, balances, or order identifiers.
 | Coinbase Advanced Trade Sandbox | Documented baseline only | Sandbox behavior must be checked against the current official guide | Owner-run read-only fixture capture; no order submission |
 | Gemini Sandbox symbols and public tickers | Public read observed | `200` from `api.sandbox.gemini.com` for symbols, BTC/USD ticker, and ETH/USD ticker | None for this public slice; it does not satisfy private lifecycle criteria |
 | Gemini Sandbox balances and authentication | Owner-run Sandbox | Signed balance request returned `200` with six asset records; values were redacted | Recheck when Sandbox account scope changes |
-| Gemini submit/ack/match/cancel/reject/recovery | Owner-run Sandbox | Immediate execution, status query, explicit cancellation, and undersized rejection were observed | Partial-fill and ambiguous-timeout paths were not observed and remain test cases |
-| Agreements, automated-trading restrictions, and geographic eligibility | Not determined | These are owner/jurisdiction-specific legal and account checks | Owner review of current Coinbase and Gemini terms and account eligibility |
+| Gemini submit/ack/match/partial-fill/cancel/reject/recovery | Owner-run Sandbox | Immediate execution, status query, partial fill, explicit cancellation, and undersized rejection were observed | An actual ambiguous-timeout response was not induced; status-before-retry remains the required recovery rule |
+| Agreements, automated-trading restrictions, and geographic eligibility | Public terms reviewed; account confirmation pending | Current Coinbase US agreement and Gemini user-agreement pages were reviewed on 2026-09-23; Coinbase states eligibility and features vary by location | Owner must confirm the agreement variant and geographic eligibility for this account |
 
 ## Coinbase Advanced Trade
 
@@ -57,13 +57,12 @@ BTC/USD and ETH/USD tickers. The redacted responses are kept in
 
 The following remains unverified and should remain explicit follow-up work:
 
-1. Partial-fill behavior under a deliberately sized order-book condition.
-2. An actual network timeout or ambiguous response and its recovery procedure.
-3. Any observed divergence from production behavior that affects the planned adapter.
+1. An actual network timeout or ambiguous response and its recovery procedure.
+2. Any observed divergence from production behavior that affects the planned adapter.
 
-The captured Sandbox run did prove signed authentication, test-balance visibility,
-immediate execution, status lookup, explicit cancellation, and an undersized-order
-rejection. It did not prove the two nondeterministic paths above.
+The captured Sandbox run proved signed authentication, test-balance visibility,
+immediate execution, status lookup, partial fill, explicit cancellation, and an
+undersized-order rejection. It did not induce a real ambiguous network response.
 
 ## Draft payload model and redaction rules
 
@@ -109,8 +108,8 @@ captures should follow the same bounded and redacted process:
   context without naming the account.
 - Gemini: Sandbox-only key. The captured run confirmed the REST host before every
   private request, captured balances and signed auth, executed one tiny IOC order,
-  queried its status, created and canceled one live limit order, and confirmed an
-  undersized-order rejection. Partial-fill and ambiguous-timeout cases remain open.
+  queried its status, observed a partial fill, created and canceled one live limit
+  order, and confirmed an undersized-order rejection. No network timeout was induced.
 - For both: record UTC time, endpoint, status, source URL, redaction decision, and
   whether the result was documented, public-observed, or owner-run.
 
@@ -133,7 +132,7 @@ fees, limits, terms, and eligibility can change.
 ## Acceptance disposition
 
 This document is a safe, reviewable Phase 0 evidence record with dated public and
-owner-run observations. Issue #2 still requires the owner to review applicable
-agreements and geographic eligibility, and the follow-up partial-fill and ambiguous
-timeout tests remain unverified. Merging this documentation PR must not be
+owner-run observations. Issue #2 still requires the owner to acknowledge the
+applicable agreement and geographic eligibility for this account; a real ambiguous
+timeout was intentionally not induced. Merging this documentation PR must not be
 interpreted as authorization to enable live trading.
