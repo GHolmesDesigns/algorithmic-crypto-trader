@@ -34,6 +34,12 @@ class OrderRecord(Base):
     client_order_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     strategy_version: Mapped[str] = mapped_column(String(128), nullable=False)
     risk_approval_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    side: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    order_type: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    limit_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    correlation_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -85,3 +91,42 @@ class MarketCandleRecord(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PositionSnapshotRecord(Base):
+    __tablename__ = "positions_snapshot"
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    average_price: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class BalanceSnapshotRecord(Base):
+    __tablename__ = "balances_snapshot"
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    asset: Mapped[str] = mapped_column(String(32), nullable=False)
+    available: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    hold: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class EquitySnapshotRecord(Base):
+    __tablename__ = "equity_curve"
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    equity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class DiscrepancyRecord(Base):
+    __tablename__ = "discrepancies"
+    discrepancy_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    local_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    broker_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    safety_action: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

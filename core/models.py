@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -47,6 +47,12 @@ class OrderStatus(StrEnum):
     FILLED = "filled"
     CANCELED = "canceled"
     REJECTED = "rejected"
+
+
+class KillSwitchState(StrEnum):
+    RUNNING = "running"
+    PAUSED = "paused"
+    HALTED = "halted"
 
 
 class Candle(FrozenModel):
@@ -150,6 +156,28 @@ class OrderRequest(FrozenModel):
     client_order_id: UUID = Field(default_factory=uuid4)
     correlation_id: UUID
 
+    @model_validator(mode="before")
+    @classmethod
+    def assign_deterministic_client_order_id(cls, values: object) -> object:
+        if not isinstance(values, dict) or values.get("client_order_id") is not None:
+            return values
+        side = values.get("side")
+        order_type = values.get("order_type")
+        canonical = "|".join(
+            (
+                str(values.get("signal_id")),
+                str(values.get("strategy_version")),
+                str(values.get("symbol")),
+                str(getattr(side, "value", side)),
+                str(getattr(order_type, "value", order_type)),
+                str(values.get("quantity")),
+                str(values.get("limit_price") or ""),
+            )
+        )
+        result = dict(values)
+        result["client_order_id"] = uuid5(UUID("b9c0d1e2-f3a4-4b5c-8d6e-7f8091a2b3c4"), canonical)
+        return result
+
     @model_validator(mode="after")
     def validate_price(self) -> OrderRequest:
         if self.order_type is OrderType.LIMIT and self.limit_price is None:
@@ -193,5 +221,6 @@ class RiskApproval(FrozenModel):
     signal_id: UUID
     approved: bool
     reason: str
+    failed_gate: str | None = None
     approved_at: datetime = Field(default_factory=utc_now)
     correlation_id: UUID
