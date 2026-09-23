@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Trading operator surface</title>
+  </head>
+  <body>
+    <main>
+      <h1>Trading operator surface</h1>
+      <div id="operator-state" hx-get="/operator/fragment" hx-trigger="every 15s" hx-swap="outerHTML">
+        {% include "operator_fragment.html" %}
+      </div>
+    </main>
+  </body>
+</html>

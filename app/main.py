@@ -6,6 +6,8 @@ import logging
 import os
 from pathlib import Path
 
+from api.alerts import AlertRouter
+from api.operator import OperatorState
 from api.routes import router
 from core.guards import StartupSettings, load_startup_settings, startup_banner
 from core.logging import configure_logging
@@ -13,13 +15,25 @@ from fastapi import FastAPI
 from risk.kill_switch import KillSwitch
 
 
-def create_app(settings: StartupSettings | None = None) -> FastAPI:
+def create_app(
+    settings: StartupSettings | None = None,
+    *,
+    broker=None,
+    alert_router: AlertRouter | None = None,
+) -> FastAPI:
     startup_settings = settings or load_startup_settings()
     application = FastAPI(title="Algorithmic Crypto Trader", version="0.1.0")
     application.router.routes.extend(router.routes)
     switch_path = os.environ.get("KILL_SWITCH_FILE")
     application.state.kill_switch = KillSwitch(Path(switch_path) if switch_path else None)
     application.state.startup_settings = startup_settings
+    application.state.operator_state = OperatorState(
+        settings=startup_settings,
+        kill_switch=application.state.kill_switch,
+        broker=broker,
+        alert_router=alert_router,
+        strategy_version=os.environ.get("STRATEGY_VERSION", "unknown"),
+    )
     return application
 
 

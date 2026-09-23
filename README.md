@@ -38,6 +38,8 @@ and exposes `GET /health`. PostgreSQL is the application database; SQLite is res
 portable backtest/replay archives. To run the application and PostgreSQL together, use `docker compose up --build`.
 
 See [docs/foundation.md](docs/foundation.md) for package boundaries and the safety contracts established in Phase 1.1.
+The authenticated operator surface contract is documented in
+[docs/phase-1.7-operator-surface.md](docs/phase-1.7-operator-surface.md).
 
 ## License
 
