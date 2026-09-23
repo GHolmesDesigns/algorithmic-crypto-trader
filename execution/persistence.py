@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID, uuid5
 
 from core.models import Fill, Order, OrderRequest, OrderSide, OrderStatus, OrderType, RiskApproval
 from db.models import FillRecord, OrderRecord
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from execution.engine import OrderStore, PersistenceUnavailable
+
+TERMINAL_STATUSES = frozenset({OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED})
 
 
 class SqlAlchemyOrderStore(OrderStore):
@@ -111,6 +115,63 @@ class SqlAlchemyOrderStore(OrderStore):
             raise PersistenceUnavailable(
                 "database unavailable while reading pending orders"
             ) from exc
+
+    def open_orders(self) -> tuple[Order, ...]:
+        """Non-terminal orders with filled quantity derived from persisted fills."""
+
+        try:
+            with self.session_factory() as session:
+                records = session.scalars(
+                    select(OrderRecord).where(
+                        OrderRecord.status.not_in(tuple(item.value for item in TERMINAL_STATUSES))
+                    )
+                ).all()
+                filled = dict(
+                    session.execute(
+                        select(FillRecord.order_id, func.sum(FillRecord.quantity))
+                        .where(FillRecord.order_id.in_([record.order_id for record in records]))
+                        .group_by(FillRecord.order_id)
+                    ).all()
+                )
+                return tuple(
+                    self._to_order(record).model_copy(
+                        update={"filled_quantity": filled.get(record.order_id) or Decimal("0")}
+                    )
+                    for record in records
+                )
+        except SQLAlchemyError as exc:
+            raise PersistenceUnavailable("database unavailable while reading open orders") from exc
+
+    def fills_for(self, orders: tuple[Order, ...]) -> tuple[Fill, ...]:
+        by_id = {order.order_id: order for order in orders}
+        if not by_id:
+            return ()
+        try:
+            with self.session_factory() as session:
+                records = session.scalars(
+                    select(FillRecord).where(FillRecord.order_id.in_(list(by_id)))
+                ).all()
+        except SQLAlchemyError as exc:
+            raise PersistenceUnavailable("database unavailable while reading fills") from exc
+        fills = []
+        for record in records:
+            request = by_id[record.order_id].request
+            fills.append(
+                Fill(
+                    fill_id=record.broker_fill_id,
+                    order_id=record.order_id,
+                    symbol=request.symbol,
+                    side=request.side,
+                    quantity=record.quantity,
+                    price=record.price,
+                    fee=record.fee,
+                    # FillRecord does not persist the fee asset; reconciliation keys fills by
+                    # broker fill ID, so the quote leg is used for display only.
+                    fee_asset=request.symbol.rsplit("-", 1)[-1],
+                    occurred_at=record.occurred_at,
+                )
+            )
+        return tuple(fills)
 
     @staticmethod
     def _to_order(record: OrderRecord) -> Order:

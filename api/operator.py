@@ -60,6 +60,7 @@ class OperatorState:
         self.kill_switch = kill_switch
         self.broker = broker
         self.alert_router = alert_router or AlertRouter()
+        self.startup_recovery: Any = None
         strategy = StrategyHeartbeat(name="primary", version=strategy_version)
         self.snapshot = OperatorSnapshot(
             strategy_version=strategy_version,
@@ -220,6 +221,11 @@ class OperatorState:
                 "checked_at": _iso(snapshot.connectivity_checked_at),
             },
             "risk": {"kill_switch": self.kill_switch.state.value},
+            "recovery": (
+                self.startup_recovery.to_dict()
+                if self.startup_recovery is not None
+                else {"status": "not_run", "detail": "startup recovery has not run"}
+            ),
             "portfolio": {
                 "status": snapshot.portfolio_status,
                 "detail": snapshot.portfolio_detail,

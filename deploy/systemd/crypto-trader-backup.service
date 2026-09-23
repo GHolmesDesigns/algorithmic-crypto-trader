@@ -7,6 +7,11 @@ Requires=docker.service
 Type=oneshot
 WorkingDirectory=/opt/algorithmic-crypto-trader
 EnvironmentFile=/etc/crypto-trader/backup.env
+# ProtectHome hides /root, so rclone must not rely on its default config or cache paths.
+Environment=RCLONE_CONFIG=/etc/crypto-trader/rclone.conf
+Environment=RCLONE_CACHE_DIR=/var/cache/crypto-trader-backup/rclone
+Environment=DOCKER_CONFIG=/etc/crypto-trader/docker
+CacheDirectory=crypto-trader-backup
 ExecStart=/opt/algorithmic-crypto-trader/deploy/backup-postgres.sh
 NoNewPrivileges=true
 PrivateTmp=true
