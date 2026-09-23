@@ -1,0 +1,15 @@
+[Unit]
+Description=Encrypted algorithmic crypto trader PostgreSQL backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/algorithmic-crypto-trader
+EnvironmentFile=/etc/crypto-trader/backup.env
+ExecStart=/opt/algorithmic-crypto-trader/deploy/backup-postgres.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/trader

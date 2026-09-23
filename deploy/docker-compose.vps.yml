@@ -1,0 +1,20 @@
+services:
+  db:
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+
+  app:
+    restart: unless-stopped
+    environment:
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      CREDENTIAL_SCOPE: ${CREDENTIAL_SCOPE:-none}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?OPERATOR_TOKEN must be set}
+      OPERATOR_ADMIN_TOKEN: ${OPERATOR_ADMIN_TOKEN:?OPERATOR_ADMIN_TOKEN must be set}
+      OPERATOR_COOKIE_SECURE: "1"
+      KILL_SWITCH_FILE: /var/lib/trader/kill-switch.json
+    ports:
+      - "127.0.0.1:8000:8000"

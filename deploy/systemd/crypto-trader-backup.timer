@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly algorithmic crypto trader PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 02:17:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
