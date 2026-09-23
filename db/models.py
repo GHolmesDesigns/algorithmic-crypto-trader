@@ -65,3 +65,23 @@ class AuditNoteRecord(Base):
     category: Mapped[str] = mapped_column(String(64), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MarketCandleRecord(Base):
+    __tablename__ = "market_candles"
+    __table_args__ = (
+        UniqueConstraint("symbol", "interval", "opened_at", name="uq_market_candles_key"),
+    )
+    candle_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    interval: Mapped[str] = mapped_column(String(32), nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    open: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    volume: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
