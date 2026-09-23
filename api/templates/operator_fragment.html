@@ -1,0 +1,54 @@
+<section id="operator-state" aria-live="polite">
+  <p>Application: <strong>{{ snapshot.application.status }}</strong></p>
+  <p>Trading mode: <strong>{{ snapshot.trading.mode }}</strong></p>
+  <p>Strategy version: <strong>{{ snapshot.trading.strategy_version }}</strong></p>
+  <p>Broker connectivity: <strong>{{ snapshot.connectivity.status }}</strong> — {{ snapshot.connectivity.detail }}</p>
+  <p>Risk state: <strong>{{ snapshot.risk.kill_switch }}</strong></p>
+  <p>Portfolio: <strong>{{ snapshot.portfolio.status }}</strong> — {{ snapshot.portfolio.detail }}</p>
+  <p>P/L: <strong>{{ snapshot.portfolio.pnl.status }}</strong> — {{ snapshot.portfolio.pnl.detail }}</p>
+  <h2>Balances</h2>
+  <ul>
+    {% for balance in snapshot.portfolio.balances %}
+      <li>{{ balance.asset }}: available {{ balance.available }}, hold {{ balance.hold }}</li>
+    {% else %}
+      <li>No current balances available.</li>
+    {% endfor %}
+  </ul>
+  <h2>Positions</h2>
+  <ul>
+    {% for position in snapshot.portfolio.positions %}
+      <li>{{ position.symbol }}: quantity {{ position.quantity }}, average {{ position.average_price }}</li>
+    {% else %}
+      <li>No current positions available.</li>
+    {% endfor %}
+  </ul>
+  <h2>Orders, fills, and signals</h2>
+  <p>Orders: {{ snapshot.orders|length }}; fills: {{ snapshot.fills|length }}; signals: {{ snapshot.signals|length }}</p>
+  <ul>
+    {% for order in snapshot.orders %}<li>Order {{ order.order_id }}: {{ order.status }}</li>{% endfor %}
+    {% for fill in snapshot.fills %}<li>Fill {{ fill.fill_id }}: {{ fill.symbol }} {{ fill.quantity }} @ {{ fill.price }}</li>{% endfor %}
+    {% for signal in snapshot.signals %}<li>Signal {{ signal.signal_id }}: {{ signal.side }} {{ signal.symbol }}</li>{% endfor %}
+  </ul>
+  <h2>Strategies</h2>
+  <ul>
+    {% for strategy in snapshot.strategies %}
+      <li>{{ strategy.name }} ({{ strategy.version }}): {{ strategy.status }} — {{ strategy.detail }}</li>
+    {% else %}
+      <li>No strategy heartbeat registered.</li>
+    {% endfor %}
+  </ul>
+  <h2>Controls</h2>
+  <form method="post" action="/operator/pause"><button type="submit">PAUSE</button></form>
+  <form method="post" action="/operator/emergency-stop"><button type="submit">EMERGENCY STOP</button></form>
+  {% if auth_role == "admin" %}
+    <form method="post" action="/operator/rearm"><button type="submit">RE-ARM</button></form>
+  {% endif %}
+  {% if snapshot.errors %}
+    <h2>Errors</h2>
+    <ul>{% for error in snapshot.errors %}<li>{{ error.condition }}: {{ error.message }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if snapshot.alerts %}
+    <h2>Alerts</h2>
+    <ul>{% for alert in snapshot.alerts %}<li>{{ alert.severity }} {{ alert.condition }}: {{ alert.message }}</li>{% endfor %}</ul>
+  {% endif %}
+</section>
