@@ -24,6 +24,7 @@ def test_vps_compose_requires_runtime_secrets_and_persists_state() -> None:
     assert "kill-switch-data" in base_compose
     assert "postgres-data" in base_compose
     assert "restart: unless-stopped" in base_compose
+    assert "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" in base_compose
 
 
 def test_backup_and_restore_are_encrypted_off_box_and_redacted() -> None:
