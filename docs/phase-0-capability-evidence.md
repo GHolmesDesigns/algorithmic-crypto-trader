@@ -22,7 +22,7 @@ contain credentials, account identifiers, balances, or order identifiers.
 | Area | Evidence class | Result on 2026-09-22 | Remaining proof |
 | --- | --- | --- | --- |
 | Coinbase Advanced Trade product and candle REST calls | Owner-run read-only | Products and bounded BTC-USD/ETH-USD candle responses returned `200` | Recheck when account or product changes |
-| Coinbase Advanced Trade accounts | Owner-run read-only | Accounts returned `200`; identifiers and balances were redacted | Recheck when account scope changes |
+| Coinbase Advanced Trade accounts and key permissions | Owner-run read-only | Accounts and key-permission requests returned `200`; `can_view=true`, `can_trade=false`, `can_transfer=false`; identifiers and balances were redacted | Confirm portal scope when the key changes; withdrawal scope was not returned by this endpoint |
 | Coinbase public ticker/candle WebSocket | Owner-run public | Ticker and candle messages observed without credentials | Recheck reconnect behavior during adapter implementation |
 | Coinbase fees, rate limits, increments, and minimums | Owner-run read-only | Fee tier, fee rates, rate-limit header names, product increments, and minimums captured | Recheck when fee tier or API contract changes |
 | Coinbase Advanced Trade Sandbox | Documented baseline only | Sandbox behavior must be checked against the current official guide | Owner-run read-only fixture capture; no order submission |
@@ -38,7 +38,7 @@ contain credentials, account identifiers, balances, or order identifiers.
 | CDP Ed25519/JWT authentication | `owner-run-complete` | Ed25519 key parsed and signed read-only requests returned `200` |
 | Products: BTC-USD and ETH-USD | `owner-run-complete` | Both products returned `200` with online status, increments, and minimums |
 | Historical candles | `owner-run-complete` | Bounded one-hour BTC-USD and ETH-USD responses returned `200` with three rows each |
-| Accounts | `owner-run-complete-redacted` | View-only account response returned `200`; account identifiers and balances omitted |
+| Accounts and key permissions | `owner-run-complete-redacted` | Account and permission responses returned `200`; view enabled, trading and transfers disabled; identifiers and balances omitted |
 | Public ticker/candle WebSocket | `owner-run-complete` | Public ticker and candle messages observed on the Advanced Trade endpoint |
 | Fees and rate limits | `owner-run-complete` | Fee tier/rates and rate-limit header names captured |
 | Sandbox | `documented-not-observed` | Current official behavior and a read-only fixture; do not treat it as a market simulator |

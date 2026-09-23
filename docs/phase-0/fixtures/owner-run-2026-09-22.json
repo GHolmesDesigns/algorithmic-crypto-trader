@@ -12,6 +12,13 @@
   "coinbase_advanced_trade": {
     "environment": "production-read-only",
     "key_format": "Ed25519 accepted",
+    "key_permissions": {
+      "http_status": 200,
+      "can_view": true,
+      "can_trade": false,
+      "can_transfer": false,
+      "can_withdraw_field_not_returned": true
+    },
     "products": {
       "BTC-USD": {
         "http_status": 200,
