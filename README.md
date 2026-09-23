@@ -6,7 +6,7 @@ Personal, safety-first algorithmic crypto-trading platform with Coinbase live-tr
 
 ## Current status
 
-The project is in planning and Phase 0 validation. Live trading is not enabled by this repository.
+The project has completed Phase 0 validation and is implementing the Phase 1 foundation. Live trading is not enabled by this repository.
 
 Agents and contributors working concurrently should read [AGENTS.md](AGENTS.md) before claiming a card or creating a branch.
 
@@ -22,7 +22,22 @@ The intended execution modes are:
 - Never commit API keys, private keys, credentials, production account identifiers, database dumps, or live operational logs.
 - Use local fixtures and simulated brokers for automated tests.
 - Keep expensive integration, replay, soak, and live-provider checks manual or scheduled rather than running them on every change.
-- The default GitHub workflow is intentionally a lightweight repository preflight. It does not place orders or contact a live exchange.
+- The default GitHub workflow runs repository and Python quality gates. It does not place orders or contact a live exchange.
+
+## Foundation quick start
+
+Python 3.12+ is required. Install the project and development checks, then start the service:
+
+```text
+python -m pip install -e ".[dev]"
+python -m app
+```
+
+The service defaults to `TRADING_MODE=backtest`, refuses unsafe credential/mode combinations before initialization,
+and exposes `GET /health`. PostgreSQL is the application database; SQLite is reserved for isolated tests and
+portable backtest/replay archives. To run the application and PostgreSQL together, use `docker compose up --build`.
+
+See [docs/foundation.md](docs/foundation.md) for package boundaries and the safety contracts established in Phase 1.1.
 
 ## License
 

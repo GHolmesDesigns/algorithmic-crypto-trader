@@ -1,0 +1,28 @@
+"""Safe application entry point; guards run before service initialization."""
+
+from __future__ import annotations
+
+import logging
+
+from api.routes import health
+from core.guards import StartupSettings, load_startup_settings, startup_banner
+from core.logging import configure_logging
+from fastapi import FastAPI
+
+
+def create_app(settings: StartupSettings | None = None) -> FastAPI:
+    startup_settings = settings or load_startup_settings()
+    application = FastAPI(title="Algorithmic Crypto Trader", version="0.1.0")
+    application.add_api_route("/health", health, methods=["GET"])
+    application.state.startup_settings = startup_settings
+    return application
+
+
+def main() -> None:
+    settings = load_startup_settings()
+    configure_logging(settings.log_level)
+    logging.getLogger(__name__).info(startup_banner(settings))
+    application = create_app(settings)
+    import uvicorn
+
+    uvicorn.run(application, host="0.0.0.0", port=8000)

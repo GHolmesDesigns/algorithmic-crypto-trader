@@ -33,3 +33,23 @@ jobs:
           test -s .github/CODEOWNERS
           test -s .github/workflows/repo-preflight.yml
           test ! -e .env
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project and development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Ruff format
+        run: ruff format --check .
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Mypy
+        run: mypy core brokers data strategy risk execution portfolio api app db
+
+      - name: Unit tests
+        run: pytest --cov=. --cov-report=term-missing --cov-fail-under=80

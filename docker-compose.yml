@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: trader
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trader"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    environment:
+      TRADING_MODE: backtest
+      CREDENTIAL_SCOPE: none
+      DATABASE_URL: postgresql+psycopg://trader:trader@db:5432/trader
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
