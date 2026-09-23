@@ -1,7 +1,7 @@
 # Phase 0 capability evidence
 
 **Evidence date:** 2026-09-22
-**Status:** `OWNER-RUN EVIDENCE CAPTURED — account eligibility acknowledgment remains`
+**Status:** `COMPLETE — owner account eligibility acknowledged`
 **Issue:** [#2](https://github.com/GHolmesDesigns/algorithmic-crypto-trader/issues/2)
 
 This sheet separates provider documentation, public unauthenticated observations, and
@@ -29,7 +29,7 @@ contain credentials, account identifiers, balances, or order identifiers.
 | Gemini Sandbox symbols and public tickers | Public read observed | `200` from `api.sandbox.gemini.com` for symbols, BTC/USD ticker, and ETH/USD ticker | None for this public slice; it does not satisfy private lifecycle criteria |
 | Gemini Sandbox balances and authentication | Owner-run Sandbox | Signed balance request returned `200` with six asset records; values were redacted | Recheck when Sandbox account scope changes |
 | Gemini submit/ack/match/partial-fill/cancel/reject/recovery | Owner-run Sandbox | Immediate execution, status query, partial fill, explicit cancellation, and undersized rejection were observed | An actual ambiguous-timeout response was not induced; status-before-retry remains the required recovery rule |
-| Agreements, automated-trading restrictions, and geographic eligibility | Public terms reviewed; account confirmation pending | Current Coinbase US agreement and Gemini user-agreement pages were reviewed on 2026-09-23; Coinbase states eligibility and features vary by location | Owner must confirm the agreement variant and geographic eligibility for this account |
+| Agreements, automated-trading restrictions, and geographic eligibility | Public terms reviewed; owner confirmed | Current Coinbase US agreement and Gemini user-agreement pages were reviewed; the owner confirmed KYC verification in the United States | Recheck if the account, jurisdiction, or agreement changes |
 
 ## Coinbase Advanced Trade
 
@@ -132,7 +132,8 @@ fees, limits, terms, and eligibility can change.
 ## Acceptance disposition
 
 This document is a safe, reviewable Phase 0 evidence record with dated public and
-owner-run observations. Issue #2 still requires the owner to acknowledge the
-applicable agreement and geographic eligibility for this account; a real ambiguous
-timeout was intentionally not induced. Merging this documentation PR must not be
-interpreted as authorization to enable live trading.
+owner-run observations. The owner has acknowledged the applicable United States
+account context. A real ambiguous timeout was intentionally not induced; the
+status-before-retry recovery rule remains the required implementation behavior.
+Merging this documentation PR must not be interpreted as authorization to enable
+live trading.

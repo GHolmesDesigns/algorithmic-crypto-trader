@@ -106,7 +106,8 @@
     "coinbase_us_agreement_reviewed_date": "2026-09-23",
     "coinbase_public_eligibility_note": "The current US agreement states individual eligibility is US residence and that feature availability varies by location; the account holder must confirm their own eligibility.",
     "gemini_user_agreement_reviewed_date": "2026-09-23",
-    "account_specific_eligibility_confirmed": false
+    "account_specific_eligibility_confirmed": true,
+    "owner_confirmation": "KYC verified in the United States; exact location omitted from repository evidence"
   },
   "safety_result": "No Coinbase order, transfer, withdrawal, or other Coinbase write was performed. No production Gemini host was contacted."
 }
