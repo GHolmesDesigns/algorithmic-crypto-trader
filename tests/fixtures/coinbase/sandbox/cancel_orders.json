@@ -1,0 +1,21 @@
+{
+  "request": {
+    "body": {
+      "order_ids": [
+        "f898eaf4-6ffc-47be-a159-7ff292e5cdcf"
+      ]
+    },
+    "method": "POST",
+    "path": "/orders/batch_cancel"
+  },
+  "response": {
+    "results": [
+      {
+        "failure_reason": "UNKNOWN_CANCEL_FAILURE_REASON",
+        "order_id": "f898eaf4-6ffc-47be-a159-7ff292e5cdcf",
+        "success": true
+      }
+    ]
+  },
+  "status": 200
+}
