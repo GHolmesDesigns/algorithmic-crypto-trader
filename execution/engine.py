@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Protocol
 
 from brokers.interface import BrokerInterface
@@ -72,9 +74,17 @@ class InMemoryOrderStore:
 
 
 class ExecutionEngine:
-    def __init__(self, broker: BrokerInterface, store: OrderStore | None = None) -> None:
+    def __init__(
+        self,
+        broker: BrokerInterface,
+        store: OrderStore | None = None,
+        *,
+        on_recorded: Callable[[Order, tuple[Fill, ...]], None] | None = None,
+    ) -> None:
         self.broker = broker
         self.store = store or InMemoryOrderStore()
+        # Observers such as the scheduled reconciler see each persisted order and its fills.
+        self.on_recorded = on_recorded
 
     async def submit(self, request: OrderRequest, approval: RiskApproval) -> Order:
         if request.signal_id != approval.signal_id:
@@ -85,10 +95,10 @@ class ExecutionEngine:
         persisted = self.store.reserve(request, approval)
         if persisted.status not in {OrderStatus.UNKNOWN, OrderStatus.PENDING_SUBMIT}:
             return persisted
-        if persisted.status in {OrderStatus.UNKNOWN, OrderStatus.PENDING_SUBMIT}:
-            existing = await self.broker.get_order(str(request.client_order_id))
-            if existing is not None:
-                return await self._record(existing)
+        # Pending or unknown: ask the venue by client_order_id before any (re)submission.
+        existing = await self.broker.get_order(str(request.client_order_id))
+        if existing is not None:
+            return await self._record(existing)
         try:
             result = await self.broker.submit_order(request, approval)
         except Exception as exc:
@@ -113,10 +123,20 @@ class ExecutionEngine:
         return tuple(recovered)
 
     async def _record(self, order: Order) -> Order:
-        self.store.update(order)
         fills = await self.broker.get_fills(str(order.request.client_order_id))
-        if fills:
-            self.store.add_fills(_linked_to_local_order(order, fills))
+        linked = _linked_to_local_order(order, fills)
+        if linked:
+            self.store.add_fills(linked)
+        # Keep the durable order recoverable until every authoritative fill has
+        # been read and persisted. If either step fails, or the venue reports more
+        # executed than its fills cover, the existing row keeps its status, so a
+        # PENDING_SUBMIT/UNKNOWN order stays eligible for recovery and no order
+        # settles without its fills.
+        recorded = sum((fill.quantity for fill in linked), Decimal("0"))
+        if recorded >= order.filled_quantity:
+            self.store.update(order)
+        if self.on_recorded is not None:
+            self.on_recorded(order, linked)
         return order
 
 

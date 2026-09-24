@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -213,3 +213,174 @@ def test_sqlalchemy_order_store_persists_and_reloads_pending_order() -> None:
     assert store.get(str(request.client_order_id)).request == request
     assert len(store.pending()) == 1
     engine.dispose()
+
+
+def constraints(**changes) -> ExchangeConstraints:
+    values = dict(
+        min_quantity=Decimal("0.001"),
+        quantity_increment=Decimal("0.00000001"),
+        min_notional=Decimal("1"),
+        price_increment=Decimal("0.01"),
+    )
+    values.update(changes)
+    return ExchangeConstraints(**values)
+
+
+@pytest.mark.parametrize(
+    ("update", "limits", "gate", "reason"),
+    [
+        ({"kill_switch": KillSwitchState.PAUSED}, {}, "kill_switch", "paused"),
+        ({"operator_paused": True}, {}, "operator_pause_window", "pause is active"),
+        ({"trading_window_open": False}, {}, "operator_pause_window", "window is closed"),
+        ({"broker_healthy": False}, {}, "broker_health", "unhealthy"),
+        ({"volatility": Decimal("0.5")}, {}, "abnormal_volatility", "exceeds"),
+        ({"reference_price": Decimal("0")}, {}, "price_reference", "must be positive"),
+        ({"reference_price": Decimal("50")}, {}, "price_reference", "divergence"),
+        ({"symbol_cooldown_clear": False}, {}, "symbol_cooldown", "cooldown is active"),
+        ({"open_positions": 5}, {}, "maximum_open_positions", "reached"),
+        ({}, {"max_trade_notional": Decimal("0.5")}, "trade_notional", "exceeds the limit"),
+        ({"symbol_position": Decimal("1")}, {}, "symbol_position", "limit reached"),
+        ({"aggregate_allocation": Decimal("10000")}, {}, "aggregate_allocation", "limit"),
+        ({"available_cash": Decimal("100")}, {}, "cash_reserve", "insufficient"),
+        ({"daily_loss": Decimal("101")}, {}, "daily_loss", "limit"),
+        ({"drawdown": Decimal("0.5")}, {}, "drawdown", "limit"),
+        ({"estimated_slippage": Decimal("0.05")}, {}, "slippage", "exceeds"),
+        (
+            {"constraints": constraints(min_quantity=Decimal("0"))},
+            {},
+            "exchange_constraints",
+            "invalid",
+        ),
+        (
+            {"constraints": constraints(min_quantity=Decimal("0.1"))},
+            {},
+            "exchange_constraints",
+            "below the exchange minimum",
+        ),
+        (
+            {"constraints": constraints(max_quantity=Decimal("0.001"))},
+            {},
+            "exchange_constraints",
+            "quantity exceeds",
+        ),
+        (
+            {"constraints": constraints(max_notional=Decimal("0.5"))},
+            {},
+            "exchange_constraints",
+            "notional exceeds",
+        ),
+        (
+            {"constraints": constraints(min_notional=Decimal("5"))},
+            {},
+            "exchange_constraints",
+            "notional is below",
+        ),
+        (
+            {"constraints": constraints(quantity_increment=Decimal("0.004"))},
+            {},
+            "exchange_constraints",
+            "quantity does not match",
+        ),
+        (
+            {"constraints": constraints(price_increment=Decimal("0.03"))},
+            {},
+            "exchange_constraints",
+            "price does not match",
+        ),
+    ],
+)
+def test_every_gate_blocks_an_order_that_breaks_it(update, limits, gate, reason) -> None:
+    from risk.engine import RiskLimits
+
+    current = datetime.now(UTC)
+    approval = evaluate(
+        signal(), safe_inputs(current).model_copy(update=update), RiskLimits(**limits)
+    )
+    assert approval.approved is False
+    assert approval.failed_gate == gate
+    assert reason in approval.reason
+
+
+def test_stale_quote_and_duplicate_signal_are_refused() -> None:
+    current = datetime.now(UTC)
+    order_signal = signal()
+    inputs = safe_inputs(current)
+    stale = inputs.quote.model_copy(update={"as_of": current - timedelta(minutes=5)})
+    assert evaluate(order_signal, inputs.model_copy(update={"quote": stale})).failed_gate == (
+        "stale_price"
+    )
+    duplicate = inputs.model_copy(
+        update={"duplicate_signal_ids": frozenset({order_signal.signal_id})}
+    )
+    assert evaluate(order_signal, duplicate).failed_gate == "duplicate_prevention"
+
+
+def test_a_sell_reduces_exposure_and_is_not_blocked_by_buy_side_limits() -> None:
+    current = datetime.now(UTC)
+    sell = signal().model_copy(update={"side": OrderSide.SELL})
+    # Near every buy-side limit: no cash, full allocation, maximum open positions.
+    stretched = safe_inputs(current).model_copy(
+        update={
+            "symbol_position": Decimal("0.5"),
+            "available_cash": Decimal("0"),
+            "aggregate_allocation": Decimal("10000"),
+            "open_positions": 5,
+        }
+    )
+    assert evaluate(sell, stretched).approved is True
+    assert evaluate(signal(), stretched).approved is False
+
+
+def test_a_sell_out_of_an_oversized_or_losing_position_is_not_trapped() -> None:
+    current = datetime.now(UTC)
+    sell = signal().model_copy(update={"side": OrderSide.SELL})
+    # Above the per-symbol limit (lowered after entry) and past both loss limits.
+    trapped = safe_inputs(current).model_copy(
+        update={
+            "symbol_position": Decimal("3"),
+            "daily_loss": Decimal("500"),
+            "drawdown": Decimal("0.5"),
+        }
+    )
+    assert evaluate(sell, trapped).approved is True
+    assert evaluate(signal(), trapped).failed_gate == "symbol_position"
+    assert (
+        evaluate(signal(), trapped.model_copy(update={"symbol_position": Decimal("0")})).failed_gate
+        == "daily_loss"
+    )
+    # A sell still needs the loss measures to be known.
+    assert evaluate(sell, trapped.model_copy(update={"drawdown": None})).failed_gate == "drawdown"
+
+
+def test_a_sell_larger_than_the_position_is_refused_because_shorting_is_unsupported() -> None:
+    current = datetime.now(UTC)
+    sell = signal().model_copy(update={"side": OrderSide.SELL})
+    approval = evaluate(
+        sell, safe_inputs(current).model_copy(update={"symbol_position": Decimal("0.005")})
+    )
+    assert approval.failed_gate == "symbol_position"
+    assert "shorting is not supported" in approval.reason
+
+
+def test_external_flags_escalate_but_never_rearm(tmp_path) -> None:
+    switch = KillSwitch(tmp_path / "kill-switch.json")
+    switch.set_state(KillSwitchState.PAUSED, reason="operator pause")
+    assert (
+        switch.sync_external_state(env={"TRADING_KILL_SWITCH": "running"}) is KillSwitchState.PAUSED
+    )
+    assert (
+        switch.sync_external_state(env={"TRADING_KILL_SWITCH": "halted"}) is KillSwitchState.HALTED
+    )
+    assert (
+        switch.sync_external_state(env={"TRADING_KILL_SWITCH": "paused"}) is KillSwitchState.HALTED
+    )
+    with pytest.raises(PermissionError, match="cannot re-arm"):
+        KillSwitch().set_state(KillSwitchState.RUNNING, automatic=True)
+
+
+def test_an_unreadable_flag_file_halts(tmp_path) -> None:
+    flag = tmp_path / "flag-directory"
+    flag.mkdir()  # exists, but reading it as a file fails
+    switch = KillSwitch()
+    assert switch.sync_external_state(env={}, flag_path=flag) is KillSwitchState.HALTED
+    assert "unrecognised" in switch.audit_events[-1]["reason"]

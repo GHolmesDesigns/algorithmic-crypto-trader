@@ -11,8 +11,11 @@ from typing import Any, Protocol
 
 from core.models import Candle, Quote
 
-from data.coinbase import COINBASE_WS_URL, normalize_coinbase_candle
+from data.coinbase import COINBASE_WS_URL, GRANULARITY_SECONDS, normalize_coinbase_candle
 from data.replay import JsonlReplayRecorder
+
+# The Advanced Trade candles channel sends five-minute buckets, updated every second.
+WEBSOCKET_CANDLE_INTERVAL = "FIVE_MINUTE"
 
 
 class WebSocketTransport(Protocol):
@@ -40,6 +43,7 @@ class CoinbaseWebSocketIngestor:
         heartbeat_timeout_seconds: float = 30.0,
         reconnect_base_seconds: float = 1.0,
         reconnect_max_seconds: float = 30.0,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not product_ids:
             raise ValueError("at least one Coinbase product is required")
@@ -54,8 +58,11 @@ class CoinbaseWebSocketIngestor:
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.reconnect_base_seconds = reconnect_base_seconds
         self.reconnect_max_seconds = reconnect_max_seconds
+        self.clock = clock or (lambda: datetime.now(UTC))
         self.last_heartbeat: datetime | None = None
+        # Opening time of the newest bucket known to be closed, per product.
         self.last_candle_at: dict[str, datetime] = {}
+        self._open_buckets: dict[str, Candle] = {}
         self.last_quote: dict[str, Quote] = {}
 
     async def _connect_real(self, url: str) -> WebSocketTransport:
@@ -78,12 +85,21 @@ class CoinbaseWebSocketIngestor:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                # The bucket in progress at the disconnect never closed on the stream.
+                self._open_buckets.clear()
                 if self.gap_fill is not None and not stop.is_set():
-                    gap_end = datetime.now(UTC)
+                    # Backfill closed buckets only: stop at the start of the current one.
+                    gap_end = _bucket_start(self.clock())
+                    last_filled = gap_end - timedelta(
+                        seconds=GRANULARITY_SECONDS[WEBSOCKET_CANDLE_INTERVAL]
+                    )
                     for product_id in self.product_ids:
-                        await self.gap_fill(
-                            product_id, self.last_candle_at.get(product_id), gap_end
-                        )
+                        previous = self.last_candle_at.get(product_id)
+                        await self.gap_fill(product_id, previous, gap_end)
+                        # The backfill emitted every bucket before gap_end; the stream
+                        # must not emit one of them again.
+                        if previous is None or last_filled > previous:
+                            self.last_candle_at[product_id] = last_filled
                 if stop.is_set():
                     return
                 await asyncio.sleep(delay)
@@ -133,12 +149,10 @@ class CoinbaseWebSocketIngestor:
                     candle = normalize_coinbase_candle(
                         product_id,
                         raw,
-                        interval="ONE_MINUTE",
+                        interval=WEBSOCKET_CANDLE_INTERVAL,
                         received_at=received_at,
                     )
-                    self.last_candle_at[product_id] = candle.opened_at
-                    if self.on_candle is not None:
-                        await self.on_candle(candle)
+                    await self._update_bucket(product_id, candle)
             elif channel == "ticker":
                 for raw in event.get("tickers", []):
                     product_id = raw.get("product_id")
@@ -156,6 +170,21 @@ class CoinbaseWebSocketIngestor:
                     if self.on_quote is not None:
                         await self.on_quote(quote)
 
+    async def _update_bucket(self, product_id: str, candle: Candle) -> None:
+        """Hold the in-progress bucket; emit it only once a newer bucket starts."""
+
+        closed = self.last_candle_at.get(product_id)
+        if closed is not None and candle.opened_at <= closed:
+            return  # already emitted, or backfilled after a reconnect
+        current = self._open_buckets.get(product_id)
+        if current is not None and candle.opened_at < current.opened_at:
+            return  # a late update for a bucket that has already closed
+        if current is not None and candle.opened_at > current.opened_at:
+            self.last_candle_at[product_id] = current.opened_at
+            if self.on_candle is not None:
+                await self.on_candle(current)
+        self._open_buckets[product_id] = candle
+
     def require_fresh_quote(self, product_id: str, *, now: datetime | None = None) -> Quote:
         quote = self.last_quote.get(product_id)
         current = now or datetime.now(UTC)
@@ -172,3 +201,8 @@ class CoinbaseWebSocketIngestor:
             return float("inf")
         current = now or datetime.now(UTC)
         return max(0.0, (current - quote.received_at).total_seconds())
+
+
+def _bucket_start(moment: datetime) -> datetime:
+    seconds = GRANULARITY_SECONDS[WEBSOCKET_CANDLE_INTERVAL]
+    return datetime.fromtimestamp(int(moment.timestamp()) // seconds * seconds, tz=UTC)

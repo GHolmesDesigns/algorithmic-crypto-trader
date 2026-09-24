@@ -39,7 +39,9 @@ portable backtest/replay archives. To run the application and PostgreSQL togethe
 
 See [docs/foundation.md](docs/foundation.md) for package boundaries and the safety contracts established in Phase 1.1.
 The authenticated operator surface contract is documented in
-[docs/phase-1.7-operator-surface.md](docs/phase-1.7-operator-surface.md).
+[docs/phase-1.7-operator-surface.md](docs/phase-1.7-operator-surface.md). The Phase 1 acceptance
+evidence, including what still needs owner-run provider verification, is in
+[docs/phase-1-gate-acceptance.md](docs/phase-1-gate-acceptance.md).
 
 ## License
 

@@ -152,14 +152,18 @@ class WalkForwardReport(FrozenModel):
     holdout: BacktestReport | None = None
 
 
-def _money(value: Decimal) -> Decimal:
+def money(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+def execution_cost_rate(costs: CostAssumptions) -> Decimal:
+    """The fraction a fill moves against the trader: half the spread plus slippage."""
+
+    return costs.spread_bps / (BPS * Decimal("2")) + costs.slippage_bps / BPS
+
+
 def _execution_price(price: Decimal, side: OrderSide, costs: CostAssumptions) -> Decimal:
-    half_spread = costs.spread_bps / (BPS * Decimal("2"))
-    slippage = costs.slippage_bps / BPS
-    adjustment = half_spread + slippage
+    adjustment = execution_cost_rate(costs)
     if side is OrderSide.BUY:
         return price * (Decimal("1") + adjustment)
     return price * (Decimal("1") - adjustment)
@@ -235,6 +239,21 @@ def _period_result(
     )
 
 
+def validate_series(series: tuple[Candle, ...]) -> None:
+    """Require one symbol and at least two strictly ordered, non-overlapping bars."""
+
+    if len(series) < 2:
+        raise ValueError("a backtest requires at least two closed candles")
+    symbol = series[0].symbol
+    for previous, current in zip(series, series[1:], strict=False):
+        if current.symbol != symbol:
+            raise ValueError("a backtest cannot mix symbols")
+        if current.opened_at <= previous.opened_at:
+            raise ValueError("candles must be strictly ordered")
+        if previous.closed_at > current.opened_at:
+            raise ValueError("candles must not overlap")
+
+
 class Backtester:
     """Execute a strategy against a sequence of closed candles."""
 
@@ -243,7 +262,7 @@ class Backtester:
 
     def run(self, candles: Iterable[Candle], strategy: Strategy) -> BacktestReport:
         series = tuple(candles)
-        self._validate_series(series)
+        validate_series(series)
         symbol = series[0].symbol
         cash = self.config.initial_cash
         position = ZERO
@@ -286,12 +305,15 @@ class Backtester:
                         cash,
                     )
                 elif signal is not None and signal.side is OrderSide.SELL and position > ZERO:
+                    # Like a buy, a signal sell executes at the next bar's open.
                     cash, trade = self._sell(
                         position,
                         entry_price,
                         entry_fee,
                         entry_at,
-                        series[index + 1],
+                        series[index + 1].open,
+                        series[index + 1].opened_at,
+                        symbol,
                         cash,
                     )
                     trades.append(trade)
@@ -301,12 +323,15 @@ class Backtester:
             timestamps.append(candle.closed_at)
 
         if position > ZERO:
+            # A position still open at the end is liquidated at the final close.
             cash, trade = self._sell(
                 position,
                 entry_price,
                 entry_fee,
                 entry_at,
-                series[-1],
+                series[-1].close,
+                series[-1].closed_at,
+                symbol,
                 cash,
             )
             trades.append(trade)
@@ -321,7 +346,7 @@ class Backtester:
         drawdown, drawdown_duration = _max_drawdown(equity_curve, timestamps)
         yearly = self._group_periods(series, equity_curve, trades, position_flags, by_year=True)
         regimes = self._group_periods(series, equity_curve, trades, position_flags, by_year=False)
-        final_equity = _money(cash)
+        final_equity = money(cash)
         return BacktestReport(
             data_source=self.config.data_source,
             window_start=series[0].opened_at,
@@ -344,19 +369,6 @@ class Backtester:
             trades=tuple(trades),
         )
 
-    @staticmethod
-    def _validate_series(series: tuple[Candle, ...]) -> None:
-        if len(series) < 2:
-            raise ValueError("a backtest requires at least two closed candles")
-        symbol = series[0].symbol
-        for previous, current in zip(series, series[1:], strict=False):
-            if current.symbol != symbol:
-                raise ValueError("a backtest cannot mix symbols")
-            if current.opened_at <= previous.opened_at:
-                raise ValueError("candles must be strictly ordered")
-            if previous.closed_at > current.opened_at:
-                raise ValueError("candles must not overlap")
-
     def _buy(
         self,
         requested_quantity: Decimal,
@@ -377,17 +389,19 @@ class Backtester:
         entry_price: Decimal,
         entry_fee: Decimal,
         entry_at: datetime,
-        candle: Candle,
+        market_price: Decimal,
+        exit_at: datetime,
+        symbol: str,
         cash: Decimal,
     ) -> tuple[Decimal, Trade]:
-        price = _execution_price(candle.close, OrderSide.SELL, self.config.costs)
+        price = _execution_price(market_price, OrderSide.SELL, self.config.costs)
         fee = quantity * price * self.config.costs.taker_fee_rate
         proceeds = quantity * price - fee
         return cash + proceeds, Trade(
-            symbol=candle.symbol,
+            symbol=symbol,
             quantity=quantity,
             entry_at=entry_at,
-            exit_at=candle.closed_at,
+            exit_at=exit_at,
             entry_price=entry_price,
             exit_price=price,
             entry_fee=entry_fee,

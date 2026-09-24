@@ -117,7 +117,7 @@ failed checks and the owner decides the next step.
 OWNER-RUN VERIFICATION (agent-run with owner approval)
 Commit: <reviewed-commit-sha>
 UTC: <date/time>
-Deploy: <RESULT line>; migration 0004; startup recovery <status>
+Deploy: <RESULT line>; migration at the checkout's head; startup recovery <status>
 App restart: <RESULT line>
 Host reboot: <RESULT line>; kill switch left <state>
 Backup: <RESULT line>; <dump.age name>, <manifest.age name>

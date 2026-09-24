@@ -89,6 +89,7 @@ counts() {
     'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1' <<'SQL' | LC_ALL=C sort
 SELECT 'alembic_version=' || version_num FROM alembic_version
 UNION ALL SELECT 'signals=' || count(*) FROM signals
+UNION ALL SELECT 'risk_decisions=' || count(*) FROM risk_decisions
 UNION ALL SELECT 'orders=' || count(*) FROM orders
 UNION ALL SELECT 'fills=' || count(*) FROM fills
 UNION ALL SELECT 'system_events=' || count(*) FROM system_events
@@ -131,6 +132,16 @@ recovery_ok() {
   [ "$1" = reconciled ] || [ "$1" = no_broker ]
 }
 
+# The newest migration in this checkout: the revision no other migration builds on.
+# More than one head prints several lines, which fails the comparison below.
+alembic_head() {
+  revisions=$(sed -n 's/^revision = "\(.*\)"$/\1/p' "$project_dir"/alembic/versions/*.py)
+  parents=$(sed -n 's/^down_revision = "\(.*\)"$/\1/p' "$project_dir"/alembic/versions/*.py)
+  for revision in $revisions; do
+    printf '%s\n' "$parents" | grep -qx "$revision" || printf '%s\n' "$revision"
+  done
+}
+
 cd "$project_dir"
 require_paper
 mkdir -p -m 0700 "$state_dir"
@@ -144,7 +155,7 @@ case "${1:-}" in
     check deploy-health "$(ok wait_healthy)" "db and app healthy"
     check deploy-commit "$(ok test "$(git rev-parse HEAD)" = "$(git rev-parse "$sha")")" "$(git rev-parse --short HEAD)"
     migration=$(counts | sed -n 's/^alembic_version=//p')
-    check deploy-migration "$(ok test "$migration" = 0004_portfolio_snapshot_batches)" "alembic_version=$migration"
+    check deploy-migration "$(ok test "$migration" = "$(alembic_head)")" "alembic_version=$migration"
     check deploy-recovery-logged "$(ok recovery_logged)" "startup recovery line present"
     record_recovery deploy
     finish deploy

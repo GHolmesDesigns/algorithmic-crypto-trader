@@ -6,10 +6,12 @@ import asyncio
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
+from core.models import Order, OrderStatus
 from core.resilience import CircuitBreaker, TokenBucketRateLimiter
 
 
@@ -46,6 +48,22 @@ class ProviderOrderRejectedError(ProviderError):
     def __init__(self, order: Any, message: str = "provider rejected the order") -> None:
         super().__init__(message)
         self.order = order
+
+
+def replacement_quantity(canceled: Order, quantity: Decimal) -> Decimal:
+    """Return what a cancel-and-replace may still submit for a new total ``quantity``.
+
+    A cancel request is only acknowledged: the original can still be live, or fill
+    first. Submitting the replacement before the venue confirms the original is
+    canceled could execute both, and whatever the original filled counts toward the
+    new total.
+    """
+
+    if canceled.status is not OrderStatus.CANCELED:
+        raise ProviderHTTPError(
+            409, f"original order is {canceled.status.value}; replacement not submitted"
+        )
+    return quantity - canceled.filled_quantity
 
 
 @dataclass(frozen=True, slots=True)

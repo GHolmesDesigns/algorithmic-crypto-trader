@@ -25,6 +25,8 @@ def build_startup_broker(settings: StartupSettings) -> BrokerInterface | None:
 
     provider = os.environ.get("BROKER_PROVIDER", "").strip().lower()
     if not provider:
+        if settings.trading_mode is TradingMode.LIVE:
+            raise StartupGuardError("live mode requires BROKER_PROVIDER=coinbase")
         return None
     if settings.credential_scope is CredentialScope.NONE:
         raise StartupGuardError(
@@ -48,6 +50,25 @@ def build_startup_broker(settings: StartupSettings) -> BrokerInterface | None:
             api_secret=_required("GEMINI_API_SECRET"),
         )
     raise StartupGuardError("BROKER_PROVIDER must be coinbase or gemini-sandbox")
+
+
+async def assert_live_key_scope(settings: StartupSettings, broker: BrokerInterface | None) -> None:
+    """In live mode, require a Coinbase key that can trade and cannot move funds.
+
+    ``CREDENTIAL_SCOPE=trade`` is the operator's declaration; this asks Coinbase
+    what the configured key can actually do before anything else starts.
+    """
+
+    if settings.trading_mode is not TradingMode.LIVE:
+        return
+    key_permissions = getattr(broker, "key_permissions", None)
+    if key_permissions is None:
+        raise StartupGuardError("live mode requires the Coinbase broker")
+    permissions = await key_permissions()
+    if permissions.get("can_trade") is not True:
+        raise StartupGuardError("live mode requires a trade-capable Coinbase key")
+    if permissions.get("can_transfer") is not False:
+        raise StartupGuardError("live mode refuses a Coinbase key that can transfer funds")
 
 
 def _required(name: str) -> str:

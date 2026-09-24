@@ -53,6 +53,28 @@ async def test_reconciliation_accepts_matching_empty_portfolio() -> None:
     assert result.safety_tripped is False
 
 
+@pytest.mark.asyncio
+async def test_reconciliation_ignores_an_unavailable_provider_cost_basis() -> None:
+    broker = SimulatedBroker()
+    broker._positions["BTC-USD"] = (Decimal("1"), Decimal("0"))
+    local = PortfolioState(
+        positions=(
+            Position(
+                symbol="BTC-USD",
+                quantity=Decimal("1"),
+                average_price=Decimal("60000"),
+                as_of=utc_now(),
+            ),
+        ),
+        balances=await broker.get_balances(),
+    )
+
+    result = await Reconciler(broker, KillSwitch()).reconcile(local)
+
+    assert result.discrepancies == ()
+    assert result.safety_tripped is False
+
+
 def test_portfolio_store_persists_position_balance_and_equity_snapshots() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     for table in (

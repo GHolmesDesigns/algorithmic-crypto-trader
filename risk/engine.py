@@ -6,7 +6,15 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from core.models import FrozenModel, KillSwitchState, Quote, RiskApproval, Signal, utc_now
+from core.models import (
+    FrozenModel,
+    KillSwitchState,
+    OrderSide,
+    Quote,
+    RiskApproval,
+    Signal,
+    utc_now,
+)
 from pydantic import Field
 
 
@@ -122,7 +130,13 @@ def evaluate(signal: Signal, inputs: RiskInputs, limits: RiskLimits | None = Non
     if not inputs.symbol_cooldown_clear:
         return _reject(signal, "symbol_cooldown", "symbol cooldown is active")
 
-    if inputs.open_positions is None or inputs.open_positions >= config.max_open_positions:
+    # Exposure and loss limits stop a buy from adding risk. A sell only reduces exposure and
+    # raises cash, so it is checked against the held position (shorting is not supported)
+    # and never trapped in a position by those limits. Every input must still be known.
+    buying = signal.side is OrderSide.BUY
+    if inputs.open_positions is None or (
+        buying and inputs.open_positions >= config.max_open_positions
+    ):
         return _reject(
             signal, "maximum_open_positions", "maximum open positions reached or unknown"
         )
@@ -133,31 +147,39 @@ def evaluate(signal: Signal, inputs: RiskInputs, limits: RiskLimits | None = Non
     if notional > config.max_trade_notional:
         return _reject(signal, "trade_notional", "trade notional exceeds the limit")
 
-    if (
-        inputs.symbol_position is None
-        or abs(inputs.symbol_position + signal.quantity) > config.max_symbol_position
-    ):
-        return _reject(signal, "symbol_position", "per-symbol position limit reached or unknown")
+    if inputs.symbol_position is None:
+        return _reject(signal, "symbol_position", "per-symbol position is unknown")
+    if not buying and signal.quantity > inputs.symbol_position:
+        return _reject(
+            signal, "symbol_position", "sell exceeds the held position; shorting is not supported"
+        )
+    if buying and inputs.symbol_position + signal.quantity > config.max_symbol_position:
+        return _reject(signal, "symbol_position", "per-symbol position limit reached")
 
-    if (
-        inputs.aggregate_allocation is None
-        or inputs.aggregate_allocation + notional > config.max_aggregate_allocation
+    if inputs.aggregate_allocation is None or (
+        buying and inputs.aggregate_allocation + notional > config.max_aggregate_allocation
     ):
         return _reject(
             signal, "aggregate_allocation", "aggregate allocation limit reached or unknown"
         )
 
-    if inputs.available_cash is None or inputs.available_cash - notional < config.min_cash_reserve:
+    if inputs.available_cash is None or (
+        buying and inputs.available_cash - notional < config.min_cash_reserve
+    ):
         return _reject(signal, "cash_reserve", "cash reserve is insufficient or unknown")
 
     if (
         inputs.daily_loss is None
         or inputs.daily_loss < 0
-        or inputs.daily_loss > config.max_daily_loss
+        or (buying and inputs.daily_loss > config.max_daily_loss)
     ):
         return _reject(signal, "daily_loss", "daily loss limit reached or unknown")
 
-    if inputs.drawdown is None or inputs.drawdown < 0 or inputs.drawdown > config.max_drawdown:
+    if (
+        inputs.drawdown is None
+        or inputs.drawdown < 0
+        or (buying and inputs.drawdown > config.max_drawdown)
+    ):
         return _reject(signal, "drawdown", "drawdown limit reached or unknown")
 
     if (

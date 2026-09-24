@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Index, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, DateTime, Index, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -24,6 +24,19 @@ class SignalRecord(Base):
     side: Mapped[str] = mapped_column(String(8), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RiskDecisionRecord(Base):
+    """Every risk evaluation, approved or refused, keyed by the approval an order cites."""
+
+    __tablename__ = "risk_decisions"
+    approval_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    signal_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    failed_gate: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    correlation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class OrderRecord(Base):
