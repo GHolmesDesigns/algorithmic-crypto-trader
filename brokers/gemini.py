@@ -37,6 +37,7 @@ from brokers.http import (
     ProviderHTTPError,
     ProviderOrderRejectedError,
     ProviderTimeoutError,
+    replacement_quantity,
 )
 from brokers.interface import BrokerCapabilities, BrokerInterface
 
@@ -289,9 +290,12 @@ class GeminiBroker(BrokerInterface):
         canceled = await self.cancel_order(client_order_id)
         if canceled is None:
             raise KeyError(client_order_id)
+        remaining = replacement_quantity(canceled, quantity)
+        if remaining <= 0:
+            return canceled
         replacement = current.request.model_copy(
             update={
-                "quantity": quantity,
+                "quantity": remaining,
                 "limit_price": limit_price,
                 "client_order_id": uuid5(
                     GEMINI_ORDER_NAMESPACE, f"{client_order_id}|{quantity}|{limit_price}"

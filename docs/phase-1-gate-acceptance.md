@@ -35,10 +35,10 @@ The criteria could not be demonstrated without four pieces that did not exist:
 
 | Component | Purpose |
 | --- | --- |
-| `app/trading.py` — `TradingCycle` | One loop for every mode. It reads the kill-switch flag file and environment each loop, resolves pending or unknown orders by `client_order_id` before any new entry, records the signal, evaluates the ordered risk gates, records the decision, and submits only an approved `RiskApproval`. A failed audit or order write halts trading. |
+| `app/trading.py` — `TradingCycle` | One loop for every mode. It reads the kill-switch flag file and environment each loop, resolves pending or unknown orders by `client_order_id` before any new entry, records the signal, evaluates the ordered risk gates, records the decision, and submits only an approved `RiskApproval`. A failed audit or order write halts trading, and so does an order still unresolved after `pending_timeout` (default five minutes). Equity for the loss limits is sampled on every loop and can persist across restarts. |
 | `app/replay.py` — `ReplayRunner` | Replays closed bars through that same loop against `SimulatedBroker`, timed like the backtester: the signal forms on bar *n* and fills at bar *n+1*'s open. |
 | `execution/audit.py` and migration `0005_risk_decisions` | Persists every signal and every risk decision, approved or refused. Reports any order missing its signal, strategy version, approved decision, or fills. |
-| `portfolio/scheduler.py` and `portfolio/ledger.py` | The unattended reconciler. Each run compares the last broker-authoritative state plus locally recorded fills with the broker, then adopts the broker's record. The service starts it when a broker is configured (`RECONCILE_INTERVAL_SECONDS`, default 300) and reports it under `reconciliation` in the operator state. |
+| `portfolio/scheduler.py` and `portfolio/ledger.py` | The unattended reconciler. Each run re-reads open orders through the execution engine, which persists their status and fills, then compares the last broker-authoritative state plus locally recorded fills with the broker and adopts the broker's record. The service starts it when a broker is configured (`RECONCILE_INTERVAL_SECONDS`, default 300), seeds it with the persisted open orders, connects it to the engine the trading loop must use, and reports it under `reconciliation` in the operator state. Trading holds the reconciler's lock, so no order lands mid-comparison. |
 
 ## Evidence ledger
 
@@ -82,7 +82,7 @@ Each was fixed in this card, with a test that fails on the old behavior.
 
 **Market data** (`data/stream.py`): the candles channel sends five-minute buckets updated every second. Every update was forwarded as a closed one-minute bar, which would have produced constant false gaps and stored half-finished bars. Buckets are now emitted only after they close, and gap fill stops at the current bucket.
 
-**Risk engine** (`risk/engine.py`): the exposure gates (open positions, per-symbol position, allocation, cash reserve) treated a sell as a buy. Near a limit, that could block the sale that reduces exposure. Sells are now checked only against the held position, and a sell larger than the position is refused because shorting is unsupported.
+**Risk engine** (`risk/engine.py`): the exposure gates (open positions, per-symbol position, allocation, cash reserve) treated a sell as a buy. Near a limit, that could block the sale that reduces exposure. Sells are now checked only against the held position, and a sell larger than the position is refused because shorting is unsupported. The per-symbol, daily-loss, and drawdown limits stop buys only, so they cannot trap the system in a losing or oversized position; a sell still needs every input to be known. The owner approved this policy on 2026-09-24.
 
 **Kill switch** (`risk/kill_switch.py`): once the file and environment flags are read every loop, a flag left at `running` would have undone an operator's emergency stop. The flags can now only pause or halt, and an unreadable or unrecognised flag halts. Re-arming stays on the authenticated admin path.
 
@@ -97,9 +97,9 @@ These are decisions or later work, not criteria this card can close.
 1. **Paper runtime wiring (before the Phase 1.5 soak, #12).** The live market-data ingest feeding `TradingCycle` is not yet started by the deployed service. The soak needs it, along with the 72-hour ingest run.
 2. **Gemini market orders.** Gemini's documentation lists `exchange market` as a type but also says market orders are not directly supported. It recommends an immediate-or-cancel limit order with an aggressive price, which is what the Phase 0 capture used. Confirm in the Sandbox; if `exchange market` is refused, a price-collar decision is needed.
 3. **Coinbase key algorithm.** The Coinbase documentation read on 2026-09-24 says only ES256 (ECDSA) keys are supported, and the adapter signs ES256. The Phase 0 capture, however, signed successfully with an Ed25519 key, which this adapter cannot use. Before the read-only check, confirm which key type Coinbase accepts for Advanced Trade and issue an ECDSA view-only key if needed.
-4. **Cost basis on spot venues.** Coinbase and Gemini positions carry no average price, while the reconciler compares it. A paper runtime trading on Gemini would diverge on its first fill. Decide whether positions reconcile on quantity when a venue reports no cost basis. Relatedly, risk inputs refuse when a held asset has no price mark, which Coinbase dust balances would trigger.
-5. **Never-submitted orders.** A `PENDING_SUBMIT` order the venue has no record of blocks new entries until an operator resolves it, and there is not yet an operator control to close it.
-6. **Risk-limit state across restarts.** Daily-loss and drawdown baselines are held in memory and restart with the process.
+4. **Cost basis on spot venues.** Coinbase and Gemini positions report an average price of 0, meaning unknown. The reconciler compares average prices only when both sides report one, and the risk inputs value other holdings at the venue's current bid; a holding with no quote still refuses buys. Modelling an unknown cost basis as absent rather than zero needs a schema change to the position snapshots and is tracked in #30.
+5. **Never-submitted orders.** A `PENDING_SUBMIT` order the venue has no record of blocks new entries; after five minutes the loop halts and alerts for operator review. There is not yet an operator control to close such an order.
+6. **Risk-limit state across restarts.** `BrokerRiskInputs` persists the day's opening equity and the peak to `loss_state_path`, and an unreadable or unwritable file leaves both limits unknown. The paper runtime (#12) must pass a path in the state directory when it wires the loop.
 7. **Coinbase pre-submit lookup cost.** Before every submission, the execution engine asks the venue whether the `client_order_id` already exists. Coinbase has no direct lookup, so each check searches up to ten pages of order history. Bound the search by the order's creation time before Phase 2 places real orders.
 
 ## Owner-run verification still required
@@ -116,7 +116,7 @@ AGENTS.md keeps exchange and provider checks owner-run. What remains:
 **Local (Windows, Python 3.14, isolated worktree):**
 - Ruff format and lint: pass.
 - mypy (47 source files): pass.
-- pytest: 256 passed, none skipped; 94.0% line coverage (the CI measure, 80% required), 91.7% counting branches.
+- pytest: 282 passed, none skipped; 94.9% line coverage (the CI measure, 80% required), 92.7% counting branches.
 - Branch coverage: 100% on `risk/`, `execution/`, `app/trading.py`, and `portfolio/ledger.py`.
 - `git diff --check`: pass.
 

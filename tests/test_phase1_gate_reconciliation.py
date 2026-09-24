@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -22,7 +23,7 @@ from app.recovery import recover_on_startup
 from app.trading import CycleStatus
 from brokers.simulated import SimulatedBroker, SimulatedFault
 from core.guards import CredentialScope, StartupGuardError, StartupSettings
-from core.models import KillSwitchState, Quote, TradingMode, utc_now
+from core.models import KillSwitchState, OrderStatus, Quote, TradingMode, utc_now
 from execution.audit import SqlAlchemyAuditStore, unlinked_orders
 from execution.engine import ExecutionEngine
 from execution.persistence import SqlAlchemyOrderStore
@@ -292,6 +293,102 @@ def test_reconcile_interval_must_be_a_sane_number(tmp_path, monkeypatch, value) 
     application = create_app(settings, broker=SimulatedBroker())
     with pytest.raises(StartupGuardError, match="RECONCILE_INTERVAL_SECONDS"):
         start_scheduled_reconciliation(application)
+
+
+@pytest.mark.asyncio
+async def test_the_service_reconciler_follows_persisted_open_orders_and_the_engine(
+    tmp_path, monkeypatch
+) -> None:
+    from app.main import start_scheduled_reconciliation
+    from core.models import Fill, OrderRequest, OrderSide, OrderType, RiskApproval
+
+    monkeypatch.setenv("APP_ENV", "test")
+    engine, session_factory = sqlite_database(tmp_path)
+    orders = SqlAlchemyOrderStore(session_factory)
+    request = OrderRequest(
+        signal_id=uuid4(),
+        strategy_version="gate",
+        symbol="BTC-USD",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("1"),
+        limit_price=Decimal("100"),
+        correlation_id=uuid4(),
+    )
+    reserved = orders.reserve(
+        request,
+        RiskApproval(
+            signal_id=request.signal_id,
+            approved=True,
+            reason="gate",
+            correlation_id=request.correlation_id,
+        ),
+    )
+    orders.update(reserved.model_copy(update={"status": OrderStatus.PARTIALLY_FILLED}))
+    earlier = Fill(
+        fill_id="venue-fill-1",
+        order_id=request.client_order_id,
+        symbol="BTC-USD",
+        side=OrderSide.BUY,
+        quantity=Decimal("0.4"),
+        price=Decimal("100"),
+        fee=Decimal("0"),
+        fee_asset="USD",
+        occurred_at=utc_now(),
+    )
+    orders.add_fills((earlier,))
+    engine.dispose()
+    settings = StartupSettings(
+        TradingMode.PAPER,
+        CredentialScope.NONE,
+        "",
+        f"sqlite+pysqlite:///{tmp_path / 'trader.db'}",
+        "INFO",
+    )
+    application = create_app(settings, broker=SimulatedBroker())
+
+    stop = start_scheduled_reconciliation(application, interval_seconds=3600)
+    assert stop is not None
+    scheduler = application.state.operator_state.scheduled_reconciliation
+    execution = application.state.execution
+    try:
+        # Every order the engine records reaches the reconciler, which re-reads open
+        # orders through the engine, and trading shares the reconciler's lock.
+        assert execution.on_recorded == scheduler.observe
+        assert scheduler.refresh_order == execution.recover
+        assert application.state.trading_lock is scheduler.lock
+        # The persisted open order is followed; its recorded fill is already in the baseline.
+        key = str(request.client_order_id)
+        assert list(scheduler.expected_state().orders) == [key]
+        assert list(scheduler.expected_state().fills) == [earlier.fill_id]
+        assert scheduler.expected_state().balances == ()
+    finally:
+        await stop()
+
+
+@pytest.mark.asyncio
+async def test_a_bad_interval_stops_startup_before_recovery_and_closes_the_broker(
+    monkeypatch,
+) -> None:
+    class ClosingBroker(SimulatedBroker):
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setenv("RECONCILE_INTERVAL_SECONDS", "soon")
+    settings = StartupSettings(
+        TradingMode.PAPER, CredentialScope.NONE, "", "postgresql://unused", "INFO"
+    )
+    broker = ClosingBroker()
+    application = create_app(settings, broker=broker, recover_on_start=True)
+
+    with pytest.raises(StartupGuardError, match="RECONCILE_INTERVAL_SECONDS"):
+        async with application.router.lifespan_context(application):
+            pass
+
+    assert application.state.operator_state.startup_recovery is None  # recovery never ran
+    assert broker.closed
 
 
 def test_no_broker_means_no_scheduled_reconciliation() -> None:

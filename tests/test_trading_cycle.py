@@ -8,7 +8,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from app.trading import BrokerRiskInputs, CycleContext, CycleStatus
+from app.trading import BrokerRiskInputs, CycleContext, CycleStatus, TradingCycle
 from brokers.simulated import FaultPlan, SimulatedBroker, SimulatedFault
 from core.models import (
     Balance,
@@ -23,7 +23,7 @@ from core.models import (
     utc_now,
 )
 from execution.audit import InMemoryAuditStore, OrderLineage, SqlAlchemyAuditStore
-from execution.engine import InMemoryOrderStore, PersistenceUnavailable
+from execution.engine import ExecutionEngine, InMemoryOrderStore, PersistenceUnavailable
 from portfolio.ledger import apply_fills
 from portfolio.reconciliation import PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
@@ -276,14 +276,14 @@ async def test_scheduler_loop_survives_an_unexpected_failure() -> None:
     assert switch.state is KillSwitchState.HALTED
 
 
-def _request():
+def _request(side: OrderSide = OrderSide.SELL):
     from core.models import OrderRequest, OrderType
 
     return OrderRequest(
         signal_id=uuid4(),
         strategy_version="unit",
         symbol="BTC-USD",
-        side=OrderSide.SELL,
+        side=side,
         order_type=OrderType.MARKET,
         quantity=Decimal("1"),
         correlation_id=uuid4(),
@@ -308,6 +308,9 @@ def test_lineage_gaps_name_each_missing_link() -> None:
     assert lineage(strategy_version_matches=False).gaps == ("strategy_version",)
     assert lineage(risk_decision_approved=False).gaps == ("risk_decision_not_approved",)
     assert lineage(status=OrderStatus.OPEN, fill_count=0).gaps == ()
+    # An immediate-or-cancel order that partly filled, then canceled, still owes its fills.
+    partly = lineage(status=OrderStatus.CANCELED, fill_count=0, filled_quantity=Decimal("0.4"))
+    assert partly.gaps == ("fills",)
 
 
 def test_audit_store_reports_an_unavailable_database(tmp_path) -> None:
@@ -337,3 +340,337 @@ def test_audit_store_reports_an_unavailable_database(tmp_path) -> None:
     healthy.record_risk_decision(approval)
     assert healthy.lineage() == ()
     engine.dispose()
+
+
+class QuotingBroker(StubBroker):
+    """Quotes the traded symbol and whatever other holdings it is given prices for."""
+
+    def __init__(self, positions=(), cash="10000", prices=None) -> None:
+        super().__init__(positions, cash)
+        self.prices = prices or {}
+
+    async def get_quote(self, symbol):
+        if symbol == "BTC-USD":
+            return quote()
+        price = self.prices[symbol]  # an unknown market raises, as a venue would
+        return Quote(symbol=symbol, bid=price, ask=price + 1, as_of=utc_now(), source="unit")
+
+
+@pytest.mark.asyncio
+async def test_other_holdings_are_valued_at_the_venue_bid_not_a_missing_cost_basis() -> None:
+    # Coinbase and Gemini report no cost basis: average_price is always 0.
+    eth = Position(
+        symbol="ETH-USD", quantity=Decimal("2"), average_price=Decimal("0"), as_of=utc_now()
+    )
+    priced = BrokerRiskInputs(
+        QuotingBroker((eth,), prices={"ETH-USD": Decimal("2500")}),
+        constraints=CONSTRAINTS,
+        estimated_slippage=Decimal("0"),
+    )
+    inputs = await priced.risk_inputs(SIGNAL, STATE, context())
+    assert inputs.open_notional == inputs.aggregate_allocation == Decimal("5000")
+    assert inputs.daily_loss == Decimal("0") and inputs.drawdown == Decimal("0")
+
+    unpriced = BrokerRiskInputs(
+        QuotingBroker((eth,)), constraints=CONSTRAINTS, estimated_slippage=Decimal("0")
+    )
+    inputs = await unpriced.risk_inputs(SIGNAL, STATE, context())
+    assert inputs.aggregate_allocation is None and inputs.drawdown is None
+
+
+@pytest.mark.asyncio
+async def test_loss_limits_survive_a_restart_and_a_bad_state_file_fails_closed(tmp_path) -> None:
+    path = tmp_path / "loss-state.json"
+    broker = StubBroker()
+    noon = datetime(2026, 9, 24, 12, tzinfo=UTC)
+
+    def source(state_path=path) -> BrokerRiskInputs:
+        return BrokerRiskInputs(
+            broker,
+            constraints=CONSTRAINTS,
+            estimated_slippage=Decimal("0"),
+            clock=lambda: noon,
+            loss_state_path=state_path,
+        )
+
+    await source().risk_inputs(SIGNAL, STATE, context())
+    broker.cash = Decimal("9000")
+    restarted = await source().risk_inputs(SIGNAL, STATE, context())
+    assert restarted.daily_loss == Decimal("1000") and restarted.drawdown == Decimal("0.1")
+
+    path.write_text("{not json", encoding="utf-8")
+    unreadable = await source().risk_inputs(SIGNAL, STATE, context())
+    assert unreadable.daily_loss is None and unreadable.drawdown is None
+
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+    unwritable = await source(blocker / "loss-state.json").risk_inputs(SIGNAL, STATE, context())
+    assert unwritable.daily_loss is None and unwritable.drawdown is None
+
+
+class Silent:
+    strategy_version = "silent-v1"
+
+    def on_market_state(self, state):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_loops_without_a_signal_still_sample_equity_for_the_loss_limits() -> None:
+    broker = StubBroker()
+    source = BrokerRiskInputs(broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0"))
+    store = InMemoryOrderStore()
+    quiet = TradingCycle(
+        strategy=Silent(),
+        execution=ExecutionEngine(broker, store),
+        audit=InMemoryAuditStore(store),
+        kill_switch=KillSwitch(),
+        risk_inputs=source,
+        environ={},
+    )
+    assert (await quiet.on_market_state(STATE)).status is CycleStatus.NO_SIGNAL
+
+    broker.cash = Decimal("9000")
+    inputs = await source.risk_inputs(SIGNAL, STATE, context())
+    # Measured from the equity of the quiet bar, not from this first signal.
+    assert inputs.daily_loss == Decimal("1000") and inputs.drawdown == Decimal("0.1")
+
+
+@pytest.mark.asyncio
+async def test_an_order_the_venue_never_received_halts_after_the_pending_timeout() -> None:
+    now = [datetime(2026, 9, 24, 12, tzinfo=UTC)]
+    halts: list[str] = []
+
+    async def on_halt(reason: str) -> None:
+        halts.append(reason)
+
+    broken = cycle(
+        SimulatedBroker(quote(), fault_plan=FaultPlan(submit=(SimulatedFault.UNAVAILABLE,))),
+        clock=lambda: now[0],
+        pending_timeout=timedelta(minutes=5),
+        on_halt=on_halt,
+    )
+    assert (await broken.on_market_state(STATE)).status is CycleStatus.BROKER_ERROR
+    assert (await broken.on_market_state(STATE)).status is CycleStatus.UNRESOLVED
+    now[0] += timedelta(minutes=4)
+    assert (await broken.on_market_state(STATE)).status is CycleStatus.UNRESOLVED
+
+    now[0] += timedelta(minutes=1)
+    halted = await broken.on_market_state(STATE)
+    assert halted.status is CycleStatus.HALTED and "operator review" in halted.detail
+    assert broken.kill_switch.state is KillSwitchState.HALTED
+    assert (await broken.on_market_state(STATE)).status is CycleStatus.HALTED
+    assert len(halts) == 1  # one alert, not one per loop
+
+
+@pytest.mark.asyncio
+async def test_the_trading_loop_waits_while_the_reconciler_holds_the_lock() -> None:
+    lock = asyncio.Lock()
+    store = InMemoryOrderStore()
+    serialized = cycle(store=store, lock=lock)
+    async with lock:
+        task = asyncio.create_task(serialized.on_market_state(STATE))
+        await asyncio.sleep(0.01)
+        assert not task.done() and store.orders == {}
+    assert (await task).status is CycleStatus.SUBMITTED
+
+
+class LaggingFills:
+    """The venue reports the order filled before its fills can be listed."""
+
+    def __init__(self, order: Order) -> None:
+        self.order = order
+        self.fills: tuple[Fill, ...] = ()
+
+    async def get_order(self, client_order_id):
+        return self.order
+
+    async def get_fills(self, client_order_id):
+        return self.fills
+
+
+@pytest.mark.asyncio
+async def test_an_order_is_not_settled_until_its_fills_are_recorded() -> None:
+    request = _request()
+    key = str(request.client_order_id)
+    store = InMemoryOrderStore()
+    store.reserve(request, _approval(request))
+    broker = LaggingFills(
+        Order(
+            order_id=uuid4(),
+            request=request,
+            status=OrderStatus.FILLED,
+            filled_quantity=request.quantity,
+        )
+    )
+    engine = ExecutionEngine(broker, store)
+
+    await engine.recover(key)
+    assert store.get(key).status is OrderStatus.PENDING_SUBMIT  # still recoverable
+
+    broker.fills = (fill(OrderSide.SELL, "1", "100"),)
+    await engine.recover(key)
+    assert store.get(key).status is OrderStatus.FILLED and len(store.fills) == 1
+
+
+class SettlingVenue:
+    """A venue whose accepted order is still OPEN when recorded and fills before the next run."""
+
+    def __init__(self) -> None:
+        self.balances = {"USD": Decimal("10000")}
+        self.order: Order | None = None
+        self.fills: tuple[Fill, ...] = ()
+
+    async def get_balances(self):
+        return tuple(
+            Balance(asset=asset, available=amount, as_of=utc_now())
+            for asset, amount in sorted(self.balances.items())
+            if amount
+        )
+
+    async def get_positions(self):
+        return tuple(
+            Position(
+                symbol=f"{asset}-USD", quantity=amount, average_price=Decimal("0"), as_of=utc_now()
+            )
+            for asset, amount in self.balances.items()
+            if asset != "USD" and amount
+        )
+
+    async def get_order(self, client_order_id):
+        return self.order
+
+    async def get_fills(self, client_order_id):
+        return self.fills
+
+    def fill(self) -> None:
+        assert self.order is not None
+        quantity, price = self.order.request.quantity, Decimal("100")
+        self.balances["BTC"] = quantity
+        self.balances["USD"] -= quantity * price
+        self.order = self.order.model_copy(
+            update={"status": OrderStatus.FILLED, "filled_quantity": quantity}
+        )
+        self.fills = (
+            Fill(
+                fill_id="venue-fill-1",
+                order_id=self.order.order_id,
+                symbol="BTC-USD",
+                side=OrderSide.BUY,
+                quantity=quantity,
+                price=price,
+                fee=Decimal("0"),
+                fee_asset="USD",
+                occurred_at=utc_now(),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_order_filling_between_runs_is_progress_and_its_fills_are_persisted() -> None:
+    venue = SettlingVenue()
+    switch = KillSwitch()
+    store = InMemoryOrderStore()
+    engine = ExecutionEngine(venue, store)
+    scheduler = ScheduledReconciler(
+        Reconciler(venue, switch),
+        baseline=PortfolioState(balances=await venue.get_balances()),
+        interval_seconds=60,
+        refresh_order=engine.recover,
+    )
+    engine.on_recorded = scheduler.observe
+
+    request = _request(OrderSide.BUY)
+    key = str(request.client_order_id)
+    store.reserve(request, _approval(request))
+    # Recorded OPEN, as when the Coinbase read-back after Create Order fails.
+    venue.order = Order(order_id=uuid4(), request=request, status=OrderStatus.OPEN)
+    await engine.recover(key)
+    assert store.get(key).status is OrderStatus.OPEN
+
+    venue.fill()
+    result = await scheduler.run_once()
+
+    assert result is not None and result.discrepancies == ()
+    assert switch.state is KillSwitchState.RUNNING
+    assert store.get(key).status is OrderStatus.FILLED
+    assert [item.fill_id for item in store.fills.values()] == ["venue-fill-1"]
+    # Settled: the next run neither re-reads it nor counts its fill twice.
+    assert (await scheduler.run_once()).discrepancies == ()
+
+
+@pytest.mark.asyncio
+async def test_sampling_and_alert_failures_never_break_the_loop_or_the_halt() -> None:
+    class NoSampling:
+        async def risk_inputs(self, signal, state, context):
+            raise AssertionError("a quiet bar assembles no risk inputs")
+
+    class BrokenSampling(NoSampling):
+        async def observe(self, state):
+            raise RuntimeError("venue down")
+
+    for source in (NoSampling(), BrokenSampling()):
+        store = InMemoryOrderStore()
+        quiet = TradingCycle(
+            strategy=Silent(),
+            execution=ExecutionEngine(StubBroker(), store),
+            audit=InMemoryAuditStore(store),
+            kill_switch=KillSwitch(),
+            risk_inputs=source,
+            environ={},
+        )
+        assert (await quiet.on_market_state(STATE)).status is CycleStatus.NO_SIGNAL
+
+    async def pager_down(reason: str) -> None:
+        raise RuntimeError("pager down")
+
+    halted = cycle(store=UnreadableStore(), on_halt=pager_down)
+    assert (await halted.on_market_state(STATE)).status is CycleStatus.HALTED
+    assert halted.kill_switch.state is KillSwitchState.HALTED
+
+
+@pytest.mark.asyncio
+async def test_scheduler_reads_open_orders_itself_and_halts_when_it_cannot() -> None:
+    venue = SettlingVenue()
+    request = _request(OrderSide.BUY)
+    venue.order = Order(order_id=uuid4(), request=request, status=OrderStatus.OPEN)
+    switch = KillSwitch()
+    scheduler = ScheduledReconciler(
+        Reconciler(venue, switch),
+        baseline=PortfolioState(balances=await venue.get_balances()),
+        interval_seconds=60,
+    )
+    scheduler.observe(venue.order, ())
+    venue.fill()
+    # Without an execution engine the scheduler re-reads the order from the broker.
+    assert (await scheduler.run_once()).discrepancies == ()
+    assert switch.state is KillSwitchState.RUNNING
+
+    reasons: list[str] = []
+
+    async def unavailable(detail: str) -> None:
+        reasons.append(detail)
+
+    async def unreachable(client_order_id: str) -> None:
+        raise RuntimeError("venue down")
+
+    blind = ScheduledReconciler(
+        Reconciler(venue, switch),
+        baseline=PortfolioState(),
+        interval_seconds=60,
+        refresh_order=unreachable,
+        on_unavailable=unavailable,
+    )
+    blind.observe(Order(order_id=uuid4(), request=_request(), status=OrderStatus.OPEN), ())
+    assert await blind.run_once() is None
+    assert reasons == ["open orders could not be refreshed"]
+    assert switch.state is KillSwitchState.HALTED
+
+
+def _approval(request) -> RiskApproval:
+    return RiskApproval(
+        signal_id=request.signal_id,
+        approved=True,
+        reason="unit",
+        correlation_id=request.correlation_id,
+    )

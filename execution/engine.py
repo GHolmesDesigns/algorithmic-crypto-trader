@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Protocol
 
 from brokers.interface import BrokerInterface
@@ -127,9 +128,13 @@ class ExecutionEngine:
         if linked:
             self.store.add_fills(linked)
         # Keep the durable order recoverable until every authoritative fill has
-        # been read and persisted. If either step fails, the existing
-        # PENDING_SUBMIT/UNKNOWN row remains eligible for restart recovery.
-        self.store.update(order)
+        # been read and persisted. If either step fails, or the venue reports more
+        # executed than its fills cover, the existing row keeps its status, so a
+        # PENDING_SUBMIT/UNKNOWN order stays eligible for recovery and no order
+        # settles without its fills.
+        recorded = sum((fill.quantity for fill in linked), Decimal("0"))
+        if recorded >= order.filled_quantity:
+            self.store.update(order)
         if self.on_recorded is not None:
             self.on_recorded(order, linked)
         return order

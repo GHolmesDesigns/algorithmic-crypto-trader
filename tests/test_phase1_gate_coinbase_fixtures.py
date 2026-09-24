@@ -187,7 +187,8 @@ async def test_accounts_are_read_across_every_page() -> None:
     assert len(balances) == 130
     assert len(positions) == 129
     assert requests[0] == {"limit": "250"}
-    assert [item.get("cursor") for item in requests] == [None, "p2", "p3"] * 2
+    # Positions read right after balances reuse that listing rather than paging again.
+    assert [item.get("cursor") for item in requests] == [None, "p2", "p3"]
 
 
 @pytest.mark.asyncio
@@ -533,3 +534,159 @@ async def test_unknown_venue_order_is_reported_as_missing() -> None:
 )
 def test_every_documented_order_status_maps_to_a_local_state(status, expected) -> None:
     assert _order_status({"status": status, "filled_size": "0"}, Decimal("1")) is expected
+
+
+def test_a_live_status_is_never_settled_by_a_guessed_size() -> None:
+    # Coinbase still reports the order live, so a filled size equal to the believed
+    # request size must not settle it.
+    assert _order_status({"status": "OPEN", "filled_size": "0.3"}, Decimal("0.3")) is (
+        OrderStatus.PARTIALLY_FILLED
+    )
+    # A create acknowledgement carries no status: the filled size decides.
+    assert _order_status({"filled_size": "1"}, Decimal("1")) is OrderStatus.FILLED
+    assert _order_status({"filled_size": "0.4"}, Decimal("1")) is OrderStatus.PARTIALLY_FILLED
+
+
+@pytest.mark.asyncio
+async def test_after_a_restart_recovery_reads_the_size_and_price_coinbase_nests() -> None:
+    client_id = str(uuid4())
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.removeprefix(PREFIX)
+        if path == "/orders/historical/batch":
+            order = fixture("get_order_filled.json", client_order_id=client_id)["order"]
+            order.update(
+                status="OPEN",
+                filled_size="0.3",
+                order_type="LIMIT",
+                order_configuration={
+                    "limit_limit_gtc": {
+                        "base_size": "1",
+                        "limit_price": "50000",
+                        "post_only": False,
+                    }
+                },
+            )
+            return httpx.Response(200, json={"orders": [order], "has_next": False, "cursor": ""})
+        raise AssertionError(f"unexpected {req.method} {path}")
+
+    broker = broker_for(handler)  # a fresh adapter holds no request, as after a restart
+    order = await broker.get_order(client_id)
+    await broker.close()
+
+    assert order is not None and order.status is OrderStatus.PARTIALLY_FILLED
+    assert order.filled_quantity == Decimal("0.3")
+    assert order.request.quantity == Decimal("1")
+    assert order.request.order_type is OrderType.LIMIT
+    assert order.request.limit_price == Decimal("50000")
+
+
+async def cancel_and_replace_venue(status_after_cancel: str, filled_after_cancel: str):
+    """A limit order still pending at the venue, so an edit falls back to cancel-and-replace."""
+
+    request = order_request(order_type=OrderType.LIMIT, limit_price=Decimal("50000"))
+    client_id = str(request.client_order_id)
+    creates: list[dict] = []
+    canceled = False
+
+    def venue_order(order_id: str, cid: str, status: str, filled: str) -> httpx.Response:
+        order = fixture("get_order_filled.json", client_order_id=cid)["order"]
+        order.update(order_id=order_id, status=status, filled_size=filled, order_type="LIMIT")
+        return httpx.Response(200, json={"order": order})
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal canceled
+        path = req.url.path.removeprefix(PREFIX)
+        if req.method == "POST" and path == "/orders":
+            body = json.loads(req.content)
+            creates.append(body)
+            response = {
+                "order_id": f"venue-{len(creates)}",
+                "product_id": "BTC-USD",
+                "side": "BUY",
+                "client_order_id": body["client_order_id"],
+            }
+            return httpx.Response(200, json={"success": True, "success_response": response})
+        if req.method == "POST" and path == "/orders/batch_cancel":
+            canceled = True
+            return httpx.Response(200, json={"results": [{"success": True}]})
+        if path == "/orders/historical/venue-1":
+            if canceled:
+                return venue_order("venue-1", client_id, status_after_cancel, filled_after_cancel)
+            return venue_order("venue-1", client_id, "PENDING", "0")
+        if path == "/orders/historical/venue-2":
+            return venue_order("venue-2", creates[1]["client_order_id"], "OPEN", "0")
+        raise AssertionError(f"unexpected {req.method} {path}")
+
+    broker = broker_for(handler)
+    pending = await broker.submit_order(request, approval(request))
+    assert pending.status is OrderStatus.PENDING_SUBMIT
+    return broker, request, creates
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_replace_never_submits_while_the_original_can_still_execute() -> None:
+    broker, request, creates = await cancel_and_replace_venue("FILLED", "0.01")
+
+    with pytest.raises(ProviderHTTPError, match="replacement not submitted") as error:
+        await broker.edit_order(
+            str(request.client_order_id),
+            quantity=Decimal("0.02"),
+            limit_price=Decimal("49000"),
+            approval=approval(request),
+        )
+    await broker.close()
+
+    assert error.value.status_code == 409
+    assert len(creates) == 1  # only the original order
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_replace_submits_only_what_the_original_left_unfilled() -> None:
+    broker, request, creates = await cancel_and_replace_venue("CANCELLED", "0.004")
+
+    replacement = await broker.edit_order(
+        str(request.client_order_id),
+        quantity=Decimal("0.01"),
+        limit_price=Decimal("49000"),
+        approval=approval(request),
+    )
+    await broker.close()
+
+    assert replacement.request.quantity == Decimal("0.006")
+    assert creates[1]["order_configuration"]["limit_limit_gtc"]["base_size"] == "0.006"
+
+
+@pytest.mark.asyncio
+async def test_positions_list_accounts_again_after_an_order_write() -> None:
+    listings = 0
+    request = order_request()
+    client_id = str(request.client_order_id)
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal listings
+        path = req.url.path.removeprefix(PREFIX)
+        if path == "/accounts":
+            listings += 1
+            return httpx.Response(
+                200, json=accounts_page(["USD", "BTC"], cursor="", has_next=False)
+            )
+        if req.method == "POST" and path == "/orders":
+            return httpx.Response(
+                200, json=fixture("create_order_success.json", client_order_id=client_id)
+            )
+        if path == "/orders/historical/11111111-1111-4111-8111-111111111111":
+            return httpx.Response(
+                200, json=fixture("get_order_filled.json", client_order_id=client_id)
+            )
+        raise AssertionError(f"unexpected {req.method} {path}")
+
+    broker = broker_for(handler)
+    await broker.get_balances()
+    await broker.get_positions()
+    assert listings == 1  # positions reused the listing balances just took
+    await broker.submit_order(request, approval(request))
+    await broker.get_positions()
+    await broker.close()
+
+    assert listings == 2  # the order write discarded it

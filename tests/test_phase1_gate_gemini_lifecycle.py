@@ -240,6 +240,41 @@ async def test_working_order_is_canceled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_and_replace_submits_only_the_unfilled_remainder() -> None:
+    book = GeminiSandboxBook()
+    broker = gemini(book)
+    partly, approval = request(order_type=OrderType.LIMIT, limit_price="50000")
+    await broker.submit_order(partly, approval)
+    book.fill(book.by_client[str(partly.client_order_id)], "0.004", "50000")
+
+    replacement = await broker.edit_order(
+        str(partly.client_order_id),
+        quantity=Decimal("0.01"),
+        limit_price=Decimal("49000"),
+        approval=approval,
+    )
+    assert replacement.request.quantity == Decimal("0.006")
+
+    # An order that filled completely before the cancel leaves nothing to replace.
+    done, done_approval = request(order_type=OrderType.LIMIT, limit_price="50000")
+    await broker.submit_order(done, done_approval)
+    book.fill(book.by_client[str(done.client_order_id)], "0.01", "50000")
+    kept = await broker.edit_order(
+        str(done.client_order_id),
+        quantity=Decimal("0.01"),
+        limit_price=Decimal("49000"),
+        approval=done_approval,
+    )
+    assert kept.filled_quantity == Decimal("0.01")
+    assert [order["original"] for order in book.orders.values()] == [
+        Decimal("0.01"),
+        Decimal("0.006"),
+        Decimal("0.01"),
+    ]
+    await broker.close()
+
+
+@pytest.mark.asyncio
 async def test_undersized_order_is_rejected_and_never_retried() -> None:
     book = GeminiSandboxBook()
     broker = gemini(book)

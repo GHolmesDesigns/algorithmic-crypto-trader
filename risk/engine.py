@@ -130,8 +130,9 @@ def evaluate(signal: Signal, inputs: RiskInputs, limits: RiskLimits | None = Non
     if not inputs.symbol_cooldown_clear:
         return _reject(signal, "symbol_cooldown", "symbol cooldown is active")
 
-    # Exposure gates limit what a buy adds. A sell reduces exposure and raises cash, so it
-    # is checked only against the held position: shorting is not supported.
+    # Exposure and loss limits stop a buy from adding risk. A sell only reduces exposure and
+    # raises cash, so it is checked against the held position (shorting is not supported)
+    # and never trapped in a position by those limits. Every input must still be known.
     buying = signal.side is OrderSide.BUY
     if inputs.open_positions is None or (
         buying and inputs.open_positions >= config.max_open_positions
@@ -152,8 +153,7 @@ def evaluate(signal: Signal, inputs: RiskInputs, limits: RiskLimits | None = Non
         return _reject(
             signal, "symbol_position", "sell exceeds the held position; shorting is not supported"
         )
-    projected = inputs.symbol_position + (signal.quantity if buying else -signal.quantity)
-    if abs(projected) > config.max_symbol_position:
+    if buying and inputs.symbol_position + signal.quantity > config.max_symbol_position:
         return _reject(signal, "symbol_position", "per-symbol position limit reached")
 
     if inputs.aggregate_allocation is None or (
@@ -171,11 +171,15 @@ def evaluate(signal: Signal, inputs: RiskInputs, limits: RiskLimits | None = Non
     if (
         inputs.daily_loss is None
         or inputs.daily_loss < 0
-        or inputs.daily_loss > config.max_daily_loss
+        or (buying and inputs.daily_loss > config.max_daily_loss)
     ):
         return _reject(signal, "daily_loss", "daily loss limit reached or unknown")
 
-    if inputs.drawdown is None or inputs.drawdown < 0 or inputs.drawdown > config.max_drawdown:
+    if (
+        inputs.drawdown is None
+        or inputs.drawdown < 0
+        or (buying and inputs.drawdown > config.max_drawdown)
+    ):
         return _reject(signal, "drawdown", "drawdown limit reached or unknown")
 
     if (

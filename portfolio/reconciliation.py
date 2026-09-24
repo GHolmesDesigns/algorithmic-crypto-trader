@@ -52,8 +52,9 @@ class Reconciler:
 
     async def reconcile(self, local: PortfolioState) -> ReconciliationResult:
         try:
-            positions = await self.broker.get_positions()
+            # Balances first: adapters that derive positions from balances reuse that read.
             balances = await self.broker.get_balances()
+            positions = await self.broker.get_positions()
         except Exception as exc:
             self.kill_switch.trip("broker unavailable during reconciliation")
             raise ReconciliationUnavailable("broker state could not be read") from exc

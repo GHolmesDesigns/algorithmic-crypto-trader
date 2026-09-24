@@ -20,6 +20,7 @@ from core.guards import (
 )
 from core.logging import configure_logging
 from db.session import create_database_engine, create_session_factory
+from execution.engine import ExecutionEngine
 from execution.persistence import SqlAlchemyOrderStore
 from fastapi import FastAPI
 from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
@@ -71,16 +72,19 @@ def create_app(
 @asynccontextmanager
 async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
     broker = application.state.operator_state.broker
-    await assert_live_key_scope(application.state.startup_settings, broker)
-    recovery = await run_startup_recovery(application)
-    logger.info(
-        "startup recovery %s: %s (kill switch %s)",
-        recovery.status,
-        recovery.detail,
-        application.state.kill_switch.state.value,
-    )
-    stop_reconciliation = start_scheduled_reconciliation(application)
+    stop_reconciliation: Callable[[], Awaitable[None]] | None = None
     try:
+        # Reject a bad interval before recovery does any work.
+        interval = _reconcile_interval() if broker is not None else None
+        await assert_live_key_scope(application.state.startup_settings, broker)
+        recovery = await run_startup_recovery(application)
+        logger.info(
+            "startup recovery %s: %s (kill switch %s)",
+            recovery.status,
+            recovery.detail,
+            application.state.kill_switch.state.value,
+        )
+        stop_reconciliation = start_scheduled_reconciliation(application, interval_seconds=interval)
         yield
     finally:
         if stop_reconciliation is not None:
@@ -91,24 +95,39 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 
 def start_scheduled_reconciliation(
-    application: FastAPI,
+    application: FastAPI, *, interval_seconds: float | None = None
 ) -> Callable[[], Awaitable[None]] | None:
     """Reconcile against the configured broker every interval; return a stop callback.
 
     Without a broker there is nothing to reconcile against, so nothing starts.
-    The baseline is the broker snapshot that startup recovery just saved; if it
-    cannot be loaded, the first run compares against an empty portfolio and halts.
+    The baseline is the broker snapshot that startup recovery just saved, plus
+    the persisted orders still open and their recorded fills; if it cannot be
+    loaded, the first run compares against an empty portfolio and halts.
+
+    Trading must go through ``application.state.execution`` while holding
+    ``application.state.trading_lock``: that engine persists every order and
+    reports it and its fills to the reconciler, which re-reads open orders
+    through it before each comparison.
     """
 
     operator_state: OperatorState = application.state.operator_state
     if operator_state.broker is None:
         return None
-    interval = _reconcile_interval()
+    interval = interval_seconds if interval_seconds is not None else _reconcile_interval()
     settings: StartupSettings = application.state.startup_settings
     engine = create_database_engine(settings.database_url, settings.trading_mode)
-    portfolio_store = SqlAlchemyPortfolioStore(create_session_factory(engine))
+    session_factory = create_session_factory(engine)
+    portfolio_store = SqlAlchemyPortfolioStore(session_factory)
+    order_store = SqlAlchemyOrderStore(session_factory)
     try:
-        baseline = portfolio_store.latest_state(source="broker") or PortfolioState()
+        snapshot = portfolio_store.latest_state(source="broker") or PortfolioState()
+        open_orders = order_store.open_orders()
+        baseline = PortfolioState(
+            orders={str(order.request.client_order_id): order for order in open_orders},
+            fills={fill.fill_id: fill for fill in order_store.fills_for(open_orders)},
+            positions=snapshot.positions,
+            balances=snapshot.balances,
+        )
     except Exception:
         logger.exception("reconciliation baseline could not be loaded")
         baseline = PortfolioState()
@@ -134,13 +153,18 @@ def start_scheduled_reconciliation(
             )
         )
 
+    execution = ExecutionEngine(operator_state.broker, order_store)
     scheduler = ScheduledReconciler(
         Reconciler(operator_state.broker, application.state.kill_switch, store=portfolio_store),
         baseline=baseline,
         interval_seconds=interval,
+        refresh_order=execution.recover,
         on_divergence=on_divergence,
         on_unavailable=on_unavailable,
     )
+    execution.on_recorded = scheduler.observe
+    application.state.execution = execution
+    application.state.trading_lock = scheduler.lock
     operator_state.scheduled_reconciliation = scheduler
     stop = asyncio.Event()
     task = asyncio.create_task(scheduler.run(stop))

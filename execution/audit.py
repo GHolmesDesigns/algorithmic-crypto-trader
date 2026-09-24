@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC
+from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
@@ -32,6 +33,10 @@ class OrderLineage:
     risk_decision_recorded: bool
     risk_decision_approved: bool
     fill_count: int
+    # What the venue reported executed. The orders table does not store it, so the
+    # database check relies on ExecutionEngine, which never settles an order whose
+    # fills fall short of it.
+    filled_quantity: Decimal = Decimal("0")
 
     @property
     def gaps(self) -> tuple[str, ...]:
@@ -44,7 +49,9 @@ class OrderLineage:
             gaps.append("risk_decision")
         elif not self.risk_decision_approved:
             gaps.append("risk_decision_not_approved")
-        if self.status in FILLED_STATUSES and self.fill_count == 0:
+        # A canceled or expired order can still have executed in part.
+        executed = self.status in FILLED_STATUSES or self.filled_quantity > 0
+        if executed and self.fill_count == 0:
             gaps.append("fills")
         return tuple(gaps)
 
@@ -100,6 +107,7 @@ class InMemoryAuditStore:
                     risk_decision_recorded=decision is not None,
                     risk_decision_approved=decision is not None and decision.approved,
                     fill_count=_fill_count(self.orders, order),
+                    filled_quantity=order.filled_quantity,
                 )
             )
         return tuple(result)

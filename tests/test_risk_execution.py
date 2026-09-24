@@ -331,6 +331,27 @@ def test_a_sell_reduces_exposure_and_is_not_blocked_by_buy_side_limits() -> None
     assert evaluate(signal(), stretched).approved is False
 
 
+def test_a_sell_out_of_an_oversized_or_losing_position_is_not_trapped() -> None:
+    current = datetime.now(UTC)
+    sell = signal().model_copy(update={"side": OrderSide.SELL})
+    # Above the per-symbol limit (lowered after entry) and past both loss limits.
+    trapped = safe_inputs(current).model_copy(
+        update={
+            "symbol_position": Decimal("3"),
+            "daily_loss": Decimal("500"),
+            "drawdown": Decimal("0.5"),
+        }
+    )
+    assert evaluate(sell, trapped).approved is True
+    assert evaluate(signal(), trapped).failed_gate == "symbol_position"
+    assert (
+        evaluate(signal(), trapped.model_copy(update={"symbol_position": Decimal("0")})).failed_gate
+        == "daily_loss"
+    )
+    # A sell still needs the loss measures to be known.
+    assert evaluate(sell, trapped.model_copy(update={"drawdown": None})).failed_gate == "drawdown"
+
+
 def test_a_sell_larger_than_the_position_is_refused_because_shorting_is_unsupported() -> None:
     current = datetime.now(UTC)
     sell = signal().model_copy(update={"side": OrderSide.SELL})

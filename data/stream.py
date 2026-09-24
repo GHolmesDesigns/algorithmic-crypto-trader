@@ -90,10 +90,16 @@ class CoinbaseWebSocketIngestor:
                 if self.gap_fill is not None and not stop.is_set():
                     # Backfill closed buckets only: stop at the start of the current one.
                     gap_end = _bucket_start(self.clock())
+                    last_filled = gap_end - timedelta(
+                        seconds=GRANULARITY_SECONDS[WEBSOCKET_CANDLE_INTERVAL]
+                    )
                     for product_id in self.product_ids:
-                        await self.gap_fill(
-                            product_id, self.last_candle_at.get(product_id), gap_end
-                        )
+                        previous = self.last_candle_at.get(product_id)
+                        await self.gap_fill(product_id, previous, gap_end)
+                        # The backfill emitted every bucket before gap_end; the stream
+                        # must not emit one of them again.
+                        if previous is None or last_filled > previous:
+                            self.last_candle_at[product_id] = last_filled
                 if stop.is_set():
                     return
                 await asyncio.sleep(delay)
@@ -167,6 +173,9 @@ class CoinbaseWebSocketIngestor:
     async def _update_bucket(self, product_id: str, candle: Candle) -> None:
         """Hold the in-progress bucket; emit it only once a newer bucket starts."""
 
+        closed = self.last_candle_at.get(product_id)
+        if closed is not None and candle.opened_at <= closed:
+            return  # already emitted, or backfilled after a reconnect
         current = self._open_buckets.get(product_id)
         if current is not None and candle.opened_at < current.opened_at:
             return  # a late update for a bucket that has already closed

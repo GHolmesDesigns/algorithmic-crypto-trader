@@ -53,6 +53,7 @@ from brokers.http import (
     ProviderHTTPError,
     ProviderOrderRejectedError,
     ProviderTimeoutError,
+    replacement_quantity,
 )
 from brokers.interface import BrokerCapabilities, BrokerInterface
 
@@ -64,6 +65,8 @@ PAGE_LIMIT = 250
 MAX_ACCOUNT_PAGES = 40
 MAX_FILL_PAGES = 20
 ORDER_SEARCH_PAGES = 10
+# Positions read right after balances reuse that account listing instead of listing again.
+ACCOUNT_SNAPSHOT_SECONDS = 1.0
 
 
 class CoinbaseJWTProvider:
@@ -207,6 +210,7 @@ class CoinbaseBroker(BrokerInterface):
         self._requests: dict[str, OrderRequest] = {}
         self._orders: dict[str, Order] = {}
         self._provider_order_ids: dict[str, str] = {}
+        self._account_snapshot: tuple[float, tuple[Balance, ...]] | None = None
 
     @property
     def capabilities(self) -> BrokerCapabilities:
@@ -254,10 +258,23 @@ class CoinbaseBroker(BrokerInterface):
             hold = _decimal(_nested(row, "hold", "value"), default=Decimal("0"))
             if available or hold:
                 result.append(Balance(asset=currency, available=available, hold=hold, as_of=now))
-        return tuple(sorted(result, key=lambda item: item.asset))
+        balances = tuple(sorted(result, key=lambda item: item.asset))
+        self._account_snapshot = (time.monotonic(), balances)
+        return balances
 
     async def get_positions(self) -> tuple[Position, ...]:
-        balances = await self.get_balances()
+        """Derive positions from the account listing.
+
+        Callers read balances and then positions, so a listing ``get_balances`` took
+        within ``ACCOUNT_SNAPSHOT_SECONDS`` is reused: half the paginated requests, and
+        both views from the same moment. Any order write discards it.
+        """
+
+        snapshot = self._account_snapshot
+        if snapshot is not None and time.monotonic() - snapshot[0] < ACCOUNT_SNAPSHOT_SECONDS:
+            balances = snapshot[1]
+        else:
+            balances = await self.get_balances()
         now = utc_now()
         return tuple(
             Position(
@@ -349,8 +366,9 @@ class CoinbaseBroker(BrokerInterface):
         order = self._order_from_payload(payload, request=request)
         self._orders[key] = order
         # Create Order's success_response carries identifiers only, not fill state.
-        # Read the order back; if that read fails, the accepted order stays OPEN and
-        # reconciliation settles its state.
+        # Read the order back; if that read fails, the accepted order stays OPEN. The
+        # scheduled reconciler tracks every order the execution engine records and
+        # re-reads open ones through it, which persists their status and fills.
         try:
             refreshed = await self.get_order(key)
         except (ProviderError, CircuitOpen, RateLimitExceeded):
@@ -523,9 +541,12 @@ class CoinbaseBroker(BrokerInterface):
         canceled = await self.cancel_order(client_order_id)
         if canceled is None:
             raise KeyError(client_order_id)
+        remaining = replacement_quantity(canceled, quantity)
+        if remaining <= 0:
+            return canceled
         replacement = current.request.model_copy(
             update={
-                "quantity": quantity,
+                "quantity": remaining,
                 "limit_price": limit_price,
                 "client_order_id": uuid5(
                     COINBASE_ORDER_NAMESPACE, f"{client_order_id}|{quantity}|{limit_price}"
@@ -612,16 +633,21 @@ class CoinbaseBroker(BrokerInterface):
         params: Mapping[str, Any] | None = None,
         json: Any = None,
     ) -> Any:
-        return await self._http.request_json(
-            method,
-            f"{self._base_url}{path}",
-            params=params,
-            json=json,
-            auth_headers=lambda force: {
-                "Authorization": f"Bearer {self._token(method, path, force=force)}"
-            },
-            refresh_auth=self._invalidate_token,
-        )
+        try:
+            return await self._http.request_json(
+                method,
+                f"{self._base_url}{path}",
+                params=params,
+                json=json,
+                auth_headers=lambda force: {
+                    "Authorization": f"Bearer {self._token(method, path, force=force)}"
+                },
+                refresh_auth=self._invalidate_token,
+            )
+        finally:
+            if method != "GET":
+                # An order write can move balances; the next portfolio read lists afresh.
+                self._account_snapshot = None
 
     def _token(self, method: str, path: str, *, force: bool = False) -> str:
         if self._auth_token is not None:
@@ -738,19 +764,40 @@ def _order_status(raw: Mapping[str, Any], requested: Decimal) -> OrderStatus:
     if value in {"rejected", "failed"} or raw.get("success") is False:
         return OrderStatus.REJECTED
     filled = _decimal(raw.get("filled_size") or raw.get("filled_quantity"), default=Decimal("0"))
-    if value == "filled" or filled >= requested:
+    if value == "filled":
         return OrderStatus.FILLED
     if filled > 0 or value in {"partially_filled", "partial"}:
-        return OrderStatus.PARTIALLY_FILLED
+        # An order Coinbase still reports live (OPEN, QUEUED, CANCEL_QUEUED) is never
+        # settled, whatever the requested size is believed to be.
+        if value or filled < requested:
+            return OrderStatus.PARTIALLY_FILLED
+        # A create acknowledgement carries no status: infer it from the filled size.
+        return OrderStatus.FILLED
     if value in {"pending", "pending_submit"}:
         return OrderStatus.PENDING_SUBMIT
     return OrderStatus.OPEN
 
 
+def _configured_order(raw: Mapping[str, Any]) -> tuple[Decimal | None, Decimal | None]:
+    """Return the base size and limit price nested in Coinbase's ``order_configuration``."""
+
+    configuration = raw.get("order_configuration")
+    if isinstance(configuration, Mapping):
+        for settings in configuration.values():
+            if isinstance(settings, Mapping):
+                return (
+                    _optional_decimal(settings.get("base_size")),
+                    _optional_decimal(settings.get("limit_price")),
+                )
+    return None, None
+
+
 def _recovered_request(raw: Mapping[str, Any], client_order_id: str) -> OrderRequest:
     side = OrderSide(str(raw.get("side") or "buy").lower())
-    order_type = OrderType.LIMIT if raw.get("limit_price") or raw.get("price") else OrderType.MARKET
-    quantity = _decimal(
+    configured_size, configured_price = _configured_order(raw)
+    limit_price = configured_price or _optional_decimal(raw.get("limit_price") or raw.get("price"))
+    order_type = OrderType.LIMIT if limit_price else OrderType.MARKET
+    quantity = configured_size or _decimal(
         raw.get("original_size") or raw.get("size") or raw.get("filled_size"),
         default=Decimal("0.00000001"),
     )
@@ -762,9 +809,7 @@ def _recovered_request(raw: Mapping[str, Any], client_order_id: str) -> OrderReq
         side=side,
         order_type=order_type,
         quantity=max(quantity, Decimal("0.00000001")),
-        limit_price=_optional_decimal(raw.get("limit_price") or raw.get("price"))
-        if order_type is OrderType.LIMIT
-        else None,
+        limit_price=limit_price if order_type is OrderType.LIMIT else None,
         client_order_id=UUID(client_order_id),
         correlation_id=uuid5(COINBASE_ORDER_NAMESPACE, f"correlation|{client_order_id}"),
     )

@@ -178,6 +178,45 @@ async def test_forced_disconnect_is_gap_filled_with_no_unexplained_data_loss(tmp
 
 
 @pytest.mark.asyncio
+async def test_a_backfilled_bucket_replayed_after_reconnect_is_not_emitted_again() -> None:
+    stop = asyncio.Event()
+    emitted: list[datetime] = []
+    gap_fills: list[tuple[datetime | None, datetime]] = []
+
+    async def on_candle(candle) -> None:
+        emitted.append(candle.opened_at)
+
+    async def gap_fill(product_id: str, last_closed: datetime | None, end: datetime) -> None:
+        gap_fills.append((last_closed, end))
+
+    first = ScriptedSocket(
+        [HEARTBEAT, candle_update(1), candle_update(2), candle_update(3)], then="drop", stop=stop
+    )
+    # The new subscription first repeats bucket 5, which the backfill already wrote.
+    second = ScriptedSocket(
+        [HEARTBEAT, candle_update(5), candle_update(6), candle_update(7)], then="end", stop=stop
+    )
+    sockets = iter((first, second))
+
+    async def connect(_: str) -> ScriptedSocket:
+        return next(sockets)
+
+    ingestor = CoinbaseWebSocketIngestor(
+        ("BTC-USD",),
+        connect=connect,
+        on_candle=on_candle,
+        gap_fill=gap_fill,
+        reconnect_base_seconds=0.001,
+        clock=lambda: bucket(6) + timedelta(seconds=40),
+    )
+    await ingestor.run(stop, max_connections=2)
+
+    assert gap_fills == [(bucket(2), bucket(6))]
+    # Buckets 3-5 came from the backfill; the stream emits each bar once.
+    assert emitted == [bucket(1), bucket(2), bucket(6)]
+
+
+@pytest.mark.asyncio
 async def test_disconnect_before_any_bucket_closes_backfills_from_the_window_start() -> None:
     stop = asyncio.Event()
     gap_fills: list[tuple[datetime | None, datetime]] = []
