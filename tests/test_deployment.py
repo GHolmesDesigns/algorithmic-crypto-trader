@@ -403,3 +403,16 @@ def test_restore_drill_workflow_is_manual_or_scheduled_and_keeps_secrets_out_of_
     assert "set -x" not in script
     assert "${{ secrets." not in script
     assert job["steps"][-1]["if"] == "always()"
+
+
+def test_vps_bootstrap_generates_paper_only_env_without_printing_secrets() -> None:
+    script = (ROOT / "deploy" / "bootstrap-vps.sh").read_text()
+    printed = "\n".join(line for line in script.splitlines() if "printf" in line or "echo" in line)
+
+    assert "TRADING_MODE=paper" in script
+    assert "CREDENTIAL_SCOPE=none" in script
+    assert 'if [ ! -f "$env_file" ]; then' in script
+    assert 'chmod 0600 "$env_file"' in script
+    assert "set -x" not in script
+    for secret in ("db_password", "OPERATOR_TOKEN", "OPERATOR_ADMIN_TOKEN", "openssl rand"):
+        assert secret not in printed
