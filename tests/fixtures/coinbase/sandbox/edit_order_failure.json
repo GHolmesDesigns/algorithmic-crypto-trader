@@ -1,0 +1,21 @@
+{
+  "request": {
+    "body": {
+      "order_id": "f898eaf4-6ffc-47be-a159-7ff292e5cdcf",
+      "price": "50000",
+      "size": "0.0002"
+    },
+    "method": "POST",
+    "path": "/orders/edit",
+    "x_sandbox": "EditOrder_failure"
+  },
+  "response": {
+    "errors": [
+      {
+        "edit_failure_reason": "ORDER_NOT_FOUND"
+      }
+    ],
+    "success": false
+  },
+  "status": 200
+}

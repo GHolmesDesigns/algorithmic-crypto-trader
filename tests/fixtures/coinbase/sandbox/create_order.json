@@ -1,0 +1,38 @@
+{
+  "request": {
+    "body": {
+      "client_order_id": "62225c36-7445-4f75-9d17-181feb866a61",
+      "order_configuration": {
+        "market_market_ioc": {
+          "base_size": "0.0001"
+        }
+      },
+      "product_id": "BTC-USD",
+      "side": "BUY"
+    },
+    "method": "POST",
+    "path": "/orders"
+  },
+  "response": {
+    "order_configuration": {
+      "limit_limit_gtc": {
+        "base_size": "1",
+        "currency_size": null,
+        "limit_price": "70000.44",
+        "oco_ref": "",
+        "post_only": false,
+        "reduce_only": false,
+        "rfq_disabled": false
+      }
+    },
+    "success": true,
+    "success_response": {
+      "attached_order_id": "",
+      "client_order_id": "sandbox_success_order",
+      "order_id": "f898eaf4-6ffc-47be-a159-7ff292e5cdcf",
+      "product_id": "BTC-USD",
+      "side": "SELL"
+    }
+  },
+  "status": 200
+}

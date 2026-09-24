@@ -1,0 +1,16 @@
+{
+  "request": {
+    "body": {
+      "order_id": "f898eaf4-6ffc-47be-a159-7ff292e5cdcf",
+      "price": "50000",
+      "size": "0.0002"
+    },
+    "method": "POST",
+    "path": "/orders/edit"
+  },
+  "response": {
+    "errors": [],
+    "success": true
+  },
+  "status": 200
+}

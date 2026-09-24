@@ -875,12 +875,16 @@ def _timestamp(value: Any) -> datetime:
 
 def _error_message(payload: Any) -> str:
     if isinstance(payload, Mapping):
-        return str(
-            payload.get("error_response")
-            or payload.get("error")
-            or payload.get("message")
-            or "provider rejected request"
-        )
+        # A rejected Create Order nests its reason, e.g. {"error": "INSUFFICIENT_FUND",
+        # "message": "Insufficient balance in source account"}, under error_response.
+        nested = payload.get("error_response")
+        if nested and not isinstance(nested, Mapping):
+            return str(nested)
+        source = nested if isinstance(nested, Mapping) else payload
+        code, message = source.get("error"), source.get("message")
+        if code and message:
+            return f"{code}: {message}"
+        return str(code or message or "provider rejected request")
     return "provider rejected request"
 
 

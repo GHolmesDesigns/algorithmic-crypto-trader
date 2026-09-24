@@ -1,0 +1,38 @@
+{
+  "request": {
+    "body": {
+      "client_order_id": "37a8ac23-2b97-4b81-90eb-019cff8a6566",
+      "order_configuration": {
+        "market_market_ioc": {
+          "base_size": "0.0001"
+        }
+      },
+      "product_id": "BTC-USD",
+      "side": "BUY"
+    },
+    "method": "POST",
+    "path": "/orders",
+    "x_sandbox": "PostOrder_insufficient_fund"
+  },
+  "response": {
+    "error_response": {
+      "error": "INSUFFICIENT_FUND",
+      "error_details": "",
+      "message": "Insufficient balance in source account",
+      "preview_failure_reason": "PREVIEW_INSUFFICIENT_FUND"
+    },
+    "order_configuration": {
+      "limit_limit_gtc": {
+        "base_size": "1",
+        "currency_size": null,
+        "limit_price": "70000.44",
+        "oco_ref": "",
+        "post_only": false,
+        "reduce_only": false,
+        "rfq_disabled": false
+      }
+    },
+    "success": false
+  },
+  "status": 200
+}

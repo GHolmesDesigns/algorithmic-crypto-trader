@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-09-24T18:36:22.881315+00:00",
+  "source": "https://api-sandbox.coinbase.com/api/v3/brokerage",
+  "documentation": "https://docs.cdp.coinbase.com/coinbase-app/advanced-trade-apis/sandbox",
+  "authentication": "none: the sandbox is unauthenticated",
+  "redaction": "none needed: responses are the sandbox's static, predefined data",
+  "requests": [
+    "list_accounts",
+    "get_account",
+    "create_order",
+    "create_order_insufficient_fund",
+    "list_orders",
+    "get_order",
+    "list_fills",
+    "cancel_orders",
+    "cancel_orders_failure",
+    "edit_order",
+    "edit_order_failure"
+  ]
+}
