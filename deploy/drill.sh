@@ -113,7 +113,8 @@ wait_healthy() {
 }
 
 recovery_logged() {
-  compose logs --no-color app 2>/dev/null | grep -q "startup recovery"
+  # Match the structured log entry, not a logging error that merely quotes the text.
+  compose logs --no-color app 2>/dev/null | grep -q '"message": "startup recovery '
 }
 
 record_recovery() {

@@ -284,7 +284,7 @@ while [ $# -gt 0 ]; do
 done
 case "$1" in
   ps) echo container-id ;;
-  logs) echo '{"message": "startup recovery no_broker"}' ;;
+  logs) echo '{"message": "startup recovery no_broker: clean (kill switch running)"}' ;;
   exec)
     if [ "$3" = db ]; then cat "$STUB_DIR/counts.txt"; exit 0; fi
     case "$7 $8" in

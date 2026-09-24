@@ -59,7 +59,10 @@ def scrub_secrets(value: Any) -> Any:
             key: REDACTED if _normalise_key(key) in SECRET_FIELD_NAMES else scrub_secrets(item)
             for key, item in value.items()
         }
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, tuple):
+        # LogRecord.args must stay a tuple for %-style formatting of several values.
+        return tuple(scrub_secrets(item) for item in value)
+    if isinstance(value, (list, set)):
         return [scrub_secrets(item) for item in value]
     if isinstance(value, str):
         return _SECRET_TEXT.sub(lambda match: f"{match.group(1)}{REDACTED}", value)
