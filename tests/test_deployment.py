@@ -538,3 +538,30 @@ def test_restore_refuses_incomplete_or_malformed_manifests(tmp_path, manifest, e
     assert error in result.stderr
     assert "restore_verified" not in result.stdout
     assert "pg_restore" not in (tmp_path / "restore" / "calls.log").read_text()
+
+
+def migration_head() -> str:
+    revisions, parents = set(), set()
+    for path in (ROOT / "alembic" / "versions").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        revisions.update(re.findall(r'^revision = "(.*)"$', text, re.MULTILINE))
+        parents.update(re.findall(r'^down_revision = "(.*)"$', text, re.MULTILINE))
+    (head,) = revisions - parents
+    return head
+
+
+@needs_sh
+def test_drill_expects_the_checkout_migration_head_not_a_fixed_revision() -> None:
+    script = (ROOT / "deploy" / "drill.sh").read_text(encoding="utf-8")
+    assert not re.search(r"\b\d{4}_[a-z_]+", script), "the drill must not pin a revision"
+    body = script.split("alembic_head() {", 1)[1].split("\n}\n", 1)[0]
+    assert SH is not None
+    program = f'project_dir="$1"\nalembic_head() {{{body}\n}}\nalembic_head'
+    result = subprocess.run(
+        [SH, "-c", program, "sh", str(ROOT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [migration_head()] == ["0005_risk_decisions"]

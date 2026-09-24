@@ -100,6 +100,7 @@ These are decisions or later work, not criteria this card can close.
 4. **Cost basis on spot venues.** Coinbase and Gemini positions carry no average price, while the reconciler compares it. A paper runtime trading on Gemini would diverge on its first fill. Decide whether positions reconcile on quantity when a venue reports no cost basis. Relatedly, risk inputs refuse when a held asset has no price mark, which Coinbase dust balances would trigger.
 5. **Never-submitted orders.** A `PENDING_SUBMIT` order the venue has no record of blocks new entries until an operator resolves it, and there is not yet an operator control to close it.
 6. **Risk-limit state across restarts.** Daily-loss and drawdown baselines are held in memory and restart with the process.
+7. **Coinbase pre-submit lookup cost.** Before every submission, the execution engine asks the venue whether the `client_order_id` already exists. Coinbase has no direct lookup, so each check searches up to ten pages of order history. Bound the search by the order's creation time before Phase 2 places real orders.
 
 ## Owner-run verification still required
 
@@ -115,7 +116,7 @@ AGENTS.md keeps exchange and provider checks owner-run. What remains:
 **Local (Windows, Python 3.14, isolated worktree):**
 - Ruff format and lint: pass.
 - mypy (47 source files): pass.
-- pytest: 255 passed, none skipped, 91.7% coverage (80% required).
+- pytest: 256 passed, none skipped; 94.0% line coverage (the CI measure, 80% required), 91.7% counting branches.
 - Branch coverage: 100% on `risk/`, `execution/`, `app/trading.py`, and `portfolio/ledger.py`.
 - `git diff --check`: pass.
 
