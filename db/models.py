@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import DateTime, Index, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -93,9 +93,18 @@ class MarketCandleRecord(Base):
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class PortfolioSnapshotRecord(Base):
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (Index("ix_portfolio_snapshots_source_recorded_at", "source", "recorded_at"),)
+    batch_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class PositionSnapshotRecord(Base):
     __tablename__ = "positions_snapshot"
     snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    batch_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
     average_price: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
@@ -106,6 +115,7 @@ class PositionSnapshotRecord(Base):
 class BalanceSnapshotRecord(Base):
     __tablename__ = "balances_snapshot"
     snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    batch_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     asset: Mapped[str] = mapped_column(String(32), nullable=False)
     available: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
     hold: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)

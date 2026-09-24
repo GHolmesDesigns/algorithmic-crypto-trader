@@ -7,12 +7,15 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import uuid4
 
+from core.models import Balance, Position
 from db.models import (
     BalanceSnapshotRecord,
     DiscrepancyRecord,
     EquitySnapshotRecord,
+    PortfolioSnapshotRecord,
     PositionSnapshotRecord,
 )
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from portfolio.reconciliation import Discrepancy, PortfolioState
@@ -24,6 +27,8 @@ class PortfolioStore(Protocol):
     ) -> None: ...
 
     def save_discrepancy(self, discrepancy: Discrepancy, *, safety_action: str) -> None: ...
+
+    def latest_state(self, *, source: str = "broker") -> PortfolioState | None: ...
 
 
 class PortfolioPersistenceUnavailable(RuntimeError):
@@ -38,12 +43,18 @@ class SqlAlchemyPortfolioStore:
         self, state: PortfolioState, *, equity: Decimal | None = None, source: str
     ) -> None:
         now = datetime.now(UTC)
+        batch_id = uuid4()
         try:
             with self.session_factory() as session:
+                # The batch row marks a complete snapshot, including one with no positions.
+                session.add(
+                    PortfolioSnapshotRecord(batch_id=batch_id, source=source, recorded_at=now)
+                )
                 session.add_all(
                     [
                         PositionSnapshotRecord(
                             snapshot_id=uuid4(),
+                            batch_id=batch_id,
                             symbol=position.symbol,
                             quantity=position.quantity,
                             average_price=position.average_price,
@@ -57,6 +68,7 @@ class SqlAlchemyPortfolioStore:
                     [
                         BalanceSnapshotRecord(
                             snapshot_id=uuid4(),
+                            batch_id=batch_id,
                             asset=balance.asset,
                             available=balance.available,
                             hold=balance.hold,
@@ -96,6 +108,50 @@ class SqlAlchemyPortfolioStore:
         except SQLAlchemyError as exc:
             raise PortfolioPersistenceUnavailable(
                 "database unavailable for discrepancy record"
+            ) from exc
+
+    def latest_state(self, *, source: str = "broker") -> PortfolioState | None:
+        """Return the most recent complete snapshot, or None when no baseline exists."""
+
+        try:
+            with self.session_factory() as session:
+                batch_id = session.scalar(
+                    select(PortfolioSnapshotRecord.batch_id)
+                    .filter_by(source=source)
+                    .order_by(PortfolioSnapshotRecord.recorded_at.desc())
+                    .limit(1)
+                )
+                if batch_id is None:
+                    return None
+                positions = session.scalars(
+                    select(PositionSnapshotRecord).filter_by(batch_id=batch_id)
+                ).all()
+                balances = session.scalars(
+                    select(BalanceSnapshotRecord).filter_by(batch_id=batch_id)
+                ).all()
+                return PortfolioState(
+                    positions=tuple(
+                        Position(
+                            symbol=item.symbol,
+                            quantity=item.quantity,
+                            average_price=item.average_price,
+                            as_of=item.as_of,
+                        )
+                        for item in positions
+                    ),
+                    balances=tuple(
+                        Balance(
+                            asset=item.asset,
+                            available=item.available,
+                            hold=item.hold,
+                            as_of=item.as_of,
+                        )
+                        for item in balances
+                    ),
+                )
+        except SQLAlchemyError as exc:
+            raise PortfolioPersistenceUnavailable(
+                "database unavailable while loading portfolio snapshot"
             ) from exc
 
 

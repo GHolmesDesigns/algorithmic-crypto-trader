@@ -3,7 +3,12 @@ from decimal import Decimal
 import pytest
 from brokers.simulated import SimulatedBroker
 from core.models import Balance, Position, utc_now
-from db.models import BalanceSnapshotRecord, EquitySnapshotRecord, PositionSnapshotRecord
+from db.models import (
+    BalanceSnapshotRecord,
+    EquitySnapshotRecord,
+    PortfolioSnapshotRecord,
+    PositionSnapshotRecord,
+)
 from portfolio.reconciliation import PortfolioState, Reconciler
 from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
@@ -51,6 +56,7 @@ async def test_reconciliation_accepts_matching_empty_portfolio() -> None:
 def test_portfolio_store_persists_position_balance_and_equity_snapshots() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     for table in (
+        PortfolioSnapshotRecord.__table__,
         PositionSnapshotRecord.__table__,
         BalanceSnapshotRecord.__table__,
         EquitySnapshotRecord.__table__,

@@ -116,8 +116,23 @@ class ExecutionEngine:
         self.store.update(order)
         fills = await self.broker.get_fills(str(order.request.client_order_id))
         if fills:
-            self.store.add_fills(fills)
+            self.store.add_fills(_linked_to_local_order(order, fills))
         return order
+
+
+def _linked_to_local_order(order: Order, fills: tuple[Fill, ...]) -> tuple[Fill, ...]:
+    """Link fills to the persisted order, which is keyed by its client_order_id.
+
+    Provider adapters label fills with the venue's own order ID; persisting that
+    would orphan the fills from the local order and break restart reconciliation.
+    """
+
+    local_id = order.request.client_order_id
+    assert local_id is not None
+    return tuple(
+        fill if fill.order_id == local_id else fill.model_copy(update={"order_id": local_id})
+        for fill in fills
+    )
 
 
 async def submit_approved_order(

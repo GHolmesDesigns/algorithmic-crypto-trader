@@ -17,7 +17,11 @@ COPY risk risk
 COPY strategy strategy
 COPY alembic alembic
 COPY alembic.ini .
+COPY deploy/entrypoint.sh /usr/local/bin/trading-service-entrypoint
 
 RUN pip install --no-cache-dir .
 
+RUN chmod 0555 /usr/local/bin/trading-service-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/trading-service-entrypoint"]
 CMD ["python", "-m", "app"]

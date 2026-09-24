@@ -54,3 +54,20 @@ def test_scrubber_handles_text_and_json_correlation() -> None:
         assert json.loads(output)["correlation_id"]
     finally:
         reset_correlation_id(token)
+
+
+def test_scrubbed_records_format_several_arguments_and_redact_them() -> None:
+    record = logging.LogRecord(
+        "test",
+        logging.INFO,
+        __file__,
+        1,
+        "startup recovery %s: %s (kill switch %s)",
+        ("halted", "token=abc123 leaked", "halted"),
+        None,
+    )
+    assert SecretScrubber().filter(record)
+
+    message = json.loads(JsonFormatter().format(record))["message"]
+
+    assert message == "startup recovery halted: token=[REDACTED] leaked (kill switch halted)"

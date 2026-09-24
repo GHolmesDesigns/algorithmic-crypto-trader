@@ -96,6 +96,17 @@ Report validation in three separate categories:
 2. **Remote CI:** completed checks for the exact pull-request head SHA.
 3. **Owner-run verification:** manual sandbox or production checks that require credentials or real provider access.
 
+### Agent-run infrastructure verification
+
+The owner authorizes agents to run infrastructure checks on the project VPS themselves instead of handing the owner a checklist. This covers deploying a reviewed commit, restart and reboot drills, installing and running the encrypted backup, and triggering the `Restore drill` workflow. Exchange and provider checks, including Coinbase production access, remain owner-run.
+
+- Connect only with the dedicated agent SSH key the owner installed for this VPS, and only to the host the owner named.
+- Use `deploy/drill.sh` and the `Restore drill` workflow. Do not improvise equivalent commands against the production database.
+- Ask the owner in chat immediately before a host reboot or any other action that interrupts the service. Approval covers that one action.
+- Never read, print, or retype secrets. Operator tokens stay inside the app container, backup keys and storage credentials stay in owner-prepared files or GitHub secrets, and output is limited to pass/fail results, counts, and artifact names.
+- Refuse to run the drill when the VPS is configured for `live` mode or a trade-capable credential scope.
+- Record results in a PR or issue comment under **Owner-run verification**, marked as agent-run with the date and commit, and without hostnames, IP addresses, bucket names, or tokens.
+
 A mock, skipped check, or successful plan-only run is not evidence of live-provider behavior. Do not claim a provider capability until the dated result and source are recorded in `docs/`.
 
 The repository currently has a lightweight `Repository preflight` workflow. Add expensive replay, integration, soak, or provider checks as manual or scheduled work unless the card explicitly requires a protected check.
