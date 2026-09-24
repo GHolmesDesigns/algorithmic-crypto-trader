@@ -12,8 +12,9 @@ SH = shutil.which("sh")
 needs_sh = pytest.mark.skipif(SH is None, reason="POSIX sh is required to execute deploy scripts")
 
 MANIFEST = [
-    "alembic_version=0004_portfolio_snapshot_batches",
+    "alembic_version=0005_risk_decisions",
     "signals=3",
+    "risk_decisions=3",
     "orders=2",
     "fills=4",
     "system_events=0",
@@ -169,7 +170,13 @@ def test_backup_covers_every_table_the_restore_requires() -> None:
 
     assert backup_tables is not None and required is not None
     assert set(required.group(1).split()) <= set(backup_tables.group(1).split())
-    for table in ("portfolio_snapshots", "system_events", "audit_notes", "market_candles"):
+    for table in (
+        "portfolio_snapshots",
+        "system_events",
+        "audit_notes",
+        "market_candles",
+        "risk_decisions",
+    ):
         assert table in backup_tables.group(1).split()
     for script in ("backup-postgres.sh", "restore-verify-postgres.sh"):
         assert "set -x" not in (ROOT / "deploy" / script).read_text()
@@ -266,7 +273,7 @@ def test_restore_verifies_row_counts_against_backup_manifest(tmp_path) -> None:
     lines = result.stdout.splitlines()
     assert lines[-1] == "restore_verified=1"
     assert "verified orders=2" in lines
-    assert "verified alembic_version=0004_portfolio_snapshot_batches" in lines
+    assert "verified alembic_version=0005_risk_decisions" in lines
     assert "restore@" not in result.stdout + result.stderr
     calls = (tmp_path / "restore" / "calls.log").read_text()
     assert "pg_restore --clean --if-exists --exit-on-error --no-owner" in calls
@@ -280,7 +287,7 @@ def test_restore_verifies_row_counts_against_backup_manifest(tmp_path) -> None:
     [
         [line.replace("fills=4", "fills=3") for line in MANIFEST],
         [line for line in MANIFEST if not line.startswith("discrepancies")],
-        [line.replace("0004_portfolio", "0003_portfolio") for line in MANIFEST],
+        [line.replace("0005_risk", "0004_risk") for line in MANIFEST],
     ],
     ids=["row-count", "missing-table", "migration-version"],
 )

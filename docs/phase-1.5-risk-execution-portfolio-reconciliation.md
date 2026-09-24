@@ -7,7 +7,8 @@ This package adds the safety boundary required before any order-capable venue ad
 - `risk.engine.evaluate` evaluates the gates in order and returns a `RiskApproval`; any absent or unsafe input refuses the order.
 - `execution.ExecutionEngine` writes a `PENDING_SUBMIT` record before calling a broker. The deterministic `OrderRequest.client_order_id` is the idempotency key and the store enforces uniqueness.
 - Unknown or pending submissions are resolved by querying the broker by client order ID before a retry. A persistence failure raises before any broker call.
-- `risk.kill_switch.KillSwitch` persists `RUNNING`, `PAUSED`, and `HALTED`, reads environment/file actuation, and does not automatically re-arm `HALTED`.
+- `risk.kill_switch.KillSwitch` persists `RUNNING`, `PAUSED`, and `HALTED`, reads environment/file actuation, and does not automatically re-arm `HALTED`. The flags can pause or halt but never re-arm, and an unreadable flag halts ([Phase 1 gate](phase-1-gate-acceptance.md)).
+- The exposure gates limit what a buy adds; a sell is checked only against the held position, and shorting is refused.
 - `portfolio.reconciliation.Reconciler` treats broker orders, fills, positions, and balances as authoritative. Any divergence emits an alert callback and trips the kill switch before new entries.
 - The operator endpoints are authenticated and work as ordinary POST form actions, so they do not depend on JavaScript.
 

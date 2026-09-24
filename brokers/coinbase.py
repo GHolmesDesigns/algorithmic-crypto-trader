@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID, uuid5
 
 import httpx
@@ -30,7 +32,12 @@ from core.models import (
     RiskApproval,
     utc_now,
 )
-from core.resilience import CircuitBreaker, TokenBucketRateLimiter
+from core.resilience import (
+    CircuitBreaker,
+    CircuitOpen,
+    RateLimitExceeded,
+    TokenBucketRateLimiter,
+)
 from data.coinbase import (
     COINBASE_REST_URL,
     COINBASE_WS_URL,
@@ -41,6 +48,7 @@ from data.coinbase import (
 from brokers.http import (
     AmbiguousSubmissionError,
     AuthenticatedOrderEvent,
+    ProviderError,
     ProviderHTTPClient,
     ProviderHTTPError,
     ProviderOrderRejectedError,
@@ -49,10 +57,23 @@ from brokers.http import (
 from brokers.interface import BrokerCapabilities, BrokerInterface
 
 COINBASE_ORDER_NAMESPACE = UUID("8c3c7e68-982d-4e4f-93c1-6d5e7d2c52a1")
+COINBASE_SANDBOX_REST_URL = "https://api-sandbox.coinbase.com/api/v3/brokerage"
+# Page-size maximum documented for List Accounts, List Orders, and List Fills.
+PAGE_LIMIT = 250
+# Bounded request budgets: a listing that keeps paginating past these fails closed.
+MAX_ACCOUNT_PAGES = 40
+MAX_FILL_PAGES = 20
+ORDER_SEARCH_PAGES = 10
 
 
 class CoinbaseJWTProvider:
-    """Short-lived JWT provider with one explicit invalidation path on expiry."""
+    """Short-lived, per-request JWTs with one explicit invalidation path on expiry.
+
+    Coinbase binds each JWT to one request through its ``uri`` claim, written as
+    ``"GET api.coinbase.com/api/v3/brokerage/accounts"``, so tokens are cached per
+    method and path. The header carries the key name as ``kid`` and a random
+    ``nonce``.
+    """
 
     def __init__(
         self,
@@ -61,6 +82,7 @@ class CoinbaseJWTProvider:
         private_key: str | None,
         token_provider: Callable[[str, str], str] | None = None,
         ttl_seconds: int = 120,
+        host: str = "api.coinbase.com",
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("JWT TTL must be positive")
@@ -72,15 +94,20 @@ class CoinbaseJWTProvider:
         self.private_key = private_key
         self.token_provider = token_provider
         self.ttl_seconds = ttl_seconds
-        self._cached: tuple[str, float] | None = None
+        self.host = host
+        self._cached: dict[tuple[str, str], tuple[str, float]] = {}
 
     def invalidate(self) -> None:
-        self._cached = None
+        self._cached.clear()
 
     def token(self, method: str, path: str, *, force_refresh: bool = False) -> str:
+        """Return a JWT for ``method`` on the full request ``path`` (``/api/v3/...``)."""
+
         now = time.time()
-        if not force_refresh and self._cached is not None and self._cached[1] > now + 5:
-            return self._cached[0]
+        key = (method.upper(), path)
+        cached = self._cached.get(key)
+        if not force_refresh and cached is not None and cached[1] > now + 5:
+            return cached[0]
         if self.token_provider is not None:
             token = self.token_provider(method, path)
         else:
@@ -96,12 +123,13 @@ class CoinbaseJWTProvider:
                     "iss": "cdp",
                     "nbf": issued,
                     "exp": issued + self.ttl_seconds,
-                    "uri": f"{method.upper()} api.coinbase.com{path}",
+                    "uri": f"{method.upper()} {self.host}{path}",
                 },
                 self.private_key,
                 algorithm="ES256",
+                headers={"kid": self.api_key, "nonce": secrets.token_hex(16)},
             )
-        self._cached = (token, now + self.ttl_seconds)
+        self._cached[key] = (token, now + self.ttl_seconds)
         return token
 
 
@@ -127,6 +155,9 @@ class CoinbaseBroker(BrokerInterface):
         if not base_url.startswith("https://") and client is None:
             raise ValueError("Coinbase broker requires an HTTPS base URL")
         self._base_url = base_url.rstrip("/")
+        parsed = urlparse(self._base_url)
+        # JWT uri claims name the full request path, e.g. /api/v3/brokerage/accounts.
+        self._path_prefix = parsed.path
         self._auth_token = auth_token
         self._jwt = (
             None
@@ -135,6 +166,7 @@ class CoinbaseBroker(BrokerInterface):
                 api_key=api_key,
                 private_key=private_key,
                 token_provider=token_provider,
+                host=parsed.hostname or "api.coinbase.com",
             )
         )
         self._http = ProviderHTTPClient(
@@ -182,8 +214,8 @@ class CoinbaseBroker(BrokerInterface):
         )
 
     async def get_balances(self) -> tuple[Balance, ...]:
-        payload = await self._private("GET", "/accounts")
-        rows = _rows(payload, "accounts")
+        # List Accounts returns 49 accounts per page by default; read every page.
+        rows = await self._paginate("/accounts", "accounts", max_pages=MAX_ACCOUNT_PAGES)
         now = utc_now()
         result: list[Balance] = []
         for row in rows:
@@ -267,6 +299,7 @@ class CoinbaseBroker(BrokerInterface):
         body = {
             "client_order_id": key,
             "product_id": request.symbol,
+            "side": request.side.value.upper(),
             "order_configuration": _coinbase_order_configuration(request),
         }
         try:
@@ -274,13 +307,27 @@ class CoinbaseBroker(BrokerInterface):
         except ProviderTimeoutError as exc:
             self._orders[key] = unknown
             raise AmbiguousSubmissionError(unknown) from exc
+        except ProviderHTTPError as exc:
+            # A 400/422 (e.g. INVALID_ARGUMENT) means Coinbase did not create the order.
+            if exc.status_code in {400, 422}:
+                rejected = unknown.model_copy(update={"status": OrderStatus.REJECTED})
+                self._orders[key] = rejected
+                raise ProviderOrderRejectedError(rejected, _error_message(exc.payload)) from exc
+            raise
         if payload.get("success") is False:
             rejected = unknown.model_copy(update={"status": OrderStatus.REJECTED})
             self._orders[key] = rejected
             raise ProviderOrderRejectedError(rejected, _error_message(payload))
         order = self._order_from_payload(payload, request=request)
         self._orders[key] = order
-        return order
+        # Create Order's success_response carries identifiers only, not fill state.
+        # Read the order back; if that read fails, the accepted order stays OPEN and
+        # reconciliation settles its state.
+        try:
+            refreshed = await self.get_order(key)
+        except (ProviderError, CircuitOpen, RateLimitExceeded):
+            return order
+        return refreshed or order
 
     async def get_order(self, client_order_id: str) -> Order | None:
         cached = self._orders.get(client_order_id)
@@ -290,16 +337,24 @@ class CoinbaseBroker(BrokerInterface):
             OrderStatus.REJECTED,
         }:
             return cached
-        try:
-            payload = await self._private("GET", f"/orders/client:{client_order_id}")
-        except ProviderHTTPError as exc:
-            if exc.status_code == 404:
-                return None
-            raise
-        if _is_missing(payload):
+        provider_id = self._provider_order_ids.get(client_order_id)
+        raw: Mapping[str, Any] | None
+        if provider_id is not None:
+            try:
+                payload = await self._private("GET", f"/orders/historical/{provider_id}")
+            except ProviderHTTPError as exc:
+                if exc.status_code == 404:
+                    return None
+                raise
+            raw = None if _is_missing(payload) else payload
+        else:
+            # A timed-out submission has no venue order ID yet. Coinbase documents no
+            # lookup by client_order_id, so search recent orders for it.
+            raw = await self._find_by_client_order_id(client_order_id)
+        if raw is None:
             return None
         request = self._requests.get(client_order_id)
-        order = self._order_from_payload(payload, request=request, client_order_id=client_order_id)
+        order = self._order_from_payload(raw, request=request, client_order_id=client_order_id)
         self._orders[client_order_id] = order
         return order
 
@@ -312,13 +367,69 @@ class CoinbaseBroker(BrokerInterface):
             provider_id = self._provider_order_ids.get(client_order_id)
         if provider_id is None:
             return ()
-        payload = await self._private("GET", f"/orders/{provider_id}/fills")
+        rows = await self._paginate(
+            "/orders/historical/fills",
+            "fills",
+            params={"order_ids": [provider_id]},
+            max_pages=MAX_FILL_PAGES,
+        )
         order = self._orders.get(client_order_id)
         if order is None:
             order = await self.get_order(client_order_id)
         if order is None:
             return ()
-        return tuple(_coinbase_fill(row, order) for row in _rows(payload, "fills"))
+        return tuple(_coinbase_fill(row, order) for row in rows)
+
+    async def key_permissions(self) -> dict[str, bool]:
+        """Report whether this key can view, trade, and transfer funds."""
+
+        payload = await self._private("GET", "/key_permissions")
+        if not isinstance(payload, Mapping):
+            raise ProviderHTTPError(502, "key permissions response was not an object")
+        return {
+            name: payload.get(name) is True for name in ("can_view", "can_trade", "can_transfer")
+        }
+
+    async def _find_by_client_order_id(self, client_order_id: str) -> Mapping[str, Any] | None:
+        request = self._requests.get(client_order_id)
+        params: dict[str, Any] = {"limit": PAGE_LIMIT}
+        if request is not None:
+            params["product_ids"] = [request.symbol]
+        cursor = ""
+        for _ in range(ORDER_SEARCH_PAGES):
+            page_params = dict(params, cursor=cursor) if cursor else params
+            payload = await self._private("GET", "/orders/historical/batch", params=page_params)
+            for row in _rows(payload, "orders"):
+                if str(row.get("client_order_id")) == client_order_id:
+                    return row
+            cursor = _next_cursor(payload, cursor)
+            if not cursor:
+                return None
+        # Not found within the search budget. Resubmitting is still safe: Coinbase returns
+        # the existing order for a reused client_order_id instead of creating a second one.
+        return None
+
+    async def _paginate(
+        self,
+        path: str,
+        key: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        max_pages: int,
+    ) -> list[Mapping[str, Any]]:
+        rows: list[Mapping[str, Any]] = []
+        cursor = ""
+        base = dict(params or {}, limit=PAGE_LIMIT)
+        for _ in range(max_pages):
+            payload = await self._private(
+                "GET", path, params=dict(base, cursor=cursor) if cursor else base
+            )
+            page = _rows(payload, key)
+            rows.extend(page)
+            cursor = _next_cursor(payload, cursor) if page else ""
+            if not cursor:
+                return rows
+        raise ProviderHTTPError(502, f"{key} pagination exceeded {max_pages} pages")
 
     async def cancel_order(self, client_order_id: str) -> Order | None:
         provider_id = self._provider_order_ids.get(client_order_id)
@@ -329,8 +440,11 @@ class CoinbaseBroker(BrokerInterface):
         payload = await self._private(
             "POST", "/orders/batch_cancel", json={"order_ids": [provider_id]}
         )
-        if payload.get("success") is False:
-            raise ProviderHTTPError(409, _error_message(payload), payload=payload)
+        # Cancel Orders reports each order in "results"; a failed cancel keeps the order live.
+        results = _rows(payload, "results")
+        if not any(row.get("success") is True for row in results):
+            reason = next((row.get("failure_reason") for row in results), None)
+            raise ProviderHTTPError(409, f"cancel failed: {reason or 'no result'}")
         canceled = current.model_copy(
             update={"status": OrderStatus.CANCELED, "updated_at": utc_now()}
         )
@@ -365,8 +479,13 @@ class CoinbaseBroker(BrokerInterface):
                 "/orders/edit",
                 json={"order_id": provider_id, "size": str(quantity), "price": str(limit_price)},
             )
-            updated = self._order_from_payload(payload, request=current.request)
-            self._orders[client_order_id] = updated
+            # Edit Order returns only success and errors; a failed edit leaves the order as is.
+            if not isinstance(payload, Mapping) or payload.get("success") is not True:
+                raise ProviderHTTPError(409, f"edit failed: {_edit_errors(payload)}")
+            self._orders.pop(client_order_id, None)
+            updated = await self.get_order(client_order_id)
+            if updated is None:
+                raise KeyError(client_order_id)
             return updated
         if approval is None:
             raise PermissionError("cancel-and-replace requires a fresh RiskApproval")
@@ -477,7 +596,7 @@ class CoinbaseBroker(BrokerInterface):
         if self._auth_token is not None:
             return self._auth_token
         assert self._jwt is not None
-        return self._jwt.token(method, path, force_refresh=force)
+        return self._jwt.token(method, f"{self._path_prefix}{path}", force_refresh=force)
 
     def _invalidate_token(self) -> None:
         if self._jwt is not None:
@@ -509,7 +628,7 @@ class CoinbaseBroker(BrokerInterface):
             average_fill_price=_optional_decimal(
                 raw.get("average_filled_price") or raw.get("average_fill_price")
             ),
-            created_at=_timestamp(raw.get("created_at")),
+            created_at=_timestamp(raw.get("created_time") or raw.get("created_at")),
             updated_at=utc_now(),
         )
 
@@ -535,8 +654,12 @@ def _coinbase_order_configuration(request: OrderRequest) -> dict[str, dict[str, 
 
 
 def _coinbase_fill(raw: Mapping[str, Any], order: Order) -> Fill:
+    # entry_id is unique per fill; trade_id repeats for adjusted fills.
     fill_id = str(
-        raw.get("trade_id") or raw.get("fill_id") or f"{order.order_id}-{raw.get('price')}"
+        raw.get("entry_id")
+        or raw.get("trade_id")
+        or raw.get("fill_id")
+        or f"{order.order_id}-{raw.get('price')}"
     )
     return Fill(
         fill_id=fill_id,
@@ -571,6 +694,8 @@ def _coinbase_events(payload: Mapping[str, Any]) -> tuple[AuthenticatedOrderEven
 
 def _order_status(raw: Mapping[str, Any], requested: Decimal) -> OrderStatus:
     value = str(raw.get("status") or raw.get("order_status") or "").lower()
+    if value == "unknown_order_status":
+        return OrderStatus.UNKNOWN
     if value in {"cancelled", "canceled", "expired"}:
         return OrderStatus.CANCELED
     if value in {"rejected", "failed"} or raw.get("success") is False:
@@ -675,6 +800,28 @@ def _error_message(payload: Any) -> str:
             or "provider rejected request"
         )
     return "provider rejected request"
+
+
+def _edit_errors(payload: Any) -> str:
+    if isinstance(payload, Mapping):
+        reasons = [
+            str(row.get("edit_failure_reason") or row.get("preview_failure_reason"))
+            for row in _rows(payload, "errors")
+        ]
+        if reasons:
+            return ", ".join(reasons)
+    return "provider rejected the edit"
+
+
+def _next_cursor(payload: Any, previous: str) -> str:
+    """Return the next page cursor, or "" when the listing is complete."""
+
+    if not isinstance(payload, Mapping) or payload.get("has_next") is False:
+        return ""
+    cursor = str(payload.get("cursor") or "")
+    if cursor and cursor == previous:
+        raise ProviderHTTPError(502, "pagination cursor did not advance")
+    return cursor
 
 
 def _is_missing(payload: Any) -> bool:

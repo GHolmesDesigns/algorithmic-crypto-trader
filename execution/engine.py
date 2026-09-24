@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -72,9 +73,17 @@ class InMemoryOrderStore:
 
 
 class ExecutionEngine:
-    def __init__(self, broker: BrokerInterface, store: OrderStore | None = None) -> None:
+    def __init__(
+        self,
+        broker: BrokerInterface,
+        store: OrderStore | None = None,
+        *,
+        on_recorded: Callable[[Order, tuple[Fill, ...]], None] | None = None,
+    ) -> None:
         self.broker = broker
         self.store = store or InMemoryOrderStore()
+        # Observers such as the scheduled reconciler see each persisted order and its fills.
+        self.on_recorded = on_recorded
 
     async def submit(self, request: OrderRequest, approval: RiskApproval) -> Order:
         if request.signal_id != approval.signal_id:
@@ -85,10 +94,10 @@ class ExecutionEngine:
         persisted = self.store.reserve(request, approval)
         if persisted.status not in {OrderStatus.UNKNOWN, OrderStatus.PENDING_SUBMIT}:
             return persisted
-        if persisted.status in {OrderStatus.UNKNOWN, OrderStatus.PENDING_SUBMIT}:
-            existing = await self.broker.get_order(str(request.client_order_id))
-            if existing is not None:
-                return await self._record(existing)
+        # Pending or unknown: ask the venue by client_order_id before any (re)submission.
+        existing = await self.broker.get_order(str(request.client_order_id))
+        if existing is not None:
+            return await self._record(existing)
         try:
             result = await self.broker.submit_order(request, approval)
         except Exception as exc:
@@ -115,8 +124,11 @@ class ExecutionEngine:
     async def _record(self, order: Order) -> Order:
         self.store.update(order)
         fills = await self.broker.get_fills(str(order.request.client_order_id))
-        if fills:
-            self.store.add_fills(_linked_to_local_order(order, fills))
+        linked = _linked_to_local_order(order, fills)
+        if linked:
+            self.store.add_fills(linked)
+        if self.on_recorded is not None:
+            self.on_recorded(order, linked)
         return order
 
 

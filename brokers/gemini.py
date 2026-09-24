@@ -193,7 +193,8 @@ class GeminiBroker(BrokerInterface):
             if exc.status_code in {400, 409, 422}:
                 rejected = unknown.model_copy(update={"status": OrderStatus.REJECTED})
                 self._orders[key] = rejected
-                raise ProviderOrderRejectedError(rejected, str(exc)) from exc
+                reason = exc.payload.get("reason") if isinstance(exc.payload, Mapping) else None
+                raise ProviderOrderRejectedError(rejected, str(reason or exc)) from exc
             raise
         if (
             isinstance(payload, Mapping)
@@ -217,11 +218,33 @@ class GeminiBroker(BrokerInterface):
             OrderStatus.REJECTED,
         }:
             return cached
+        return await self._order_status(client_order_id)
+
+    async def get_fills(self, client_order_id: str) -> tuple[Fill, ...]:
+        order = self._orders.get(client_order_id) or await self.get_order(client_order_id)
+        if order is None:
+            return ()
+        # New Order responses carry no trades; Order Status returns them on request.
+        if _traded(self._raw_fills.get(client_order_id, ())) < order.filled_quantity:
+            refreshed = await self._order_status(client_order_id)
+            if refreshed is not None and (refreshed.status, refreshed.filled_quantity) != (
+                order.status,
+                order.filled_quantity,
+            ):
+                order = refreshed
+            else:
+                self._orders[client_order_id] = order  # unchanged; keep the acknowledged record
+        raw_fills = self._raw_fills.get(client_order_id, ())
+        return tuple(_gemini_fill(row, order) for row in raw_fills)
+
+    async def _order_status(self, client_order_id: str) -> Order | None:
         request = self._requests.get(client_order_id)
-        body = {"client_order_id": client_order_id}
+        body: dict[str, Any] = {"client_order_id": client_order_id, "include_trades": True}
         provider_id = self._provider_order_ids.get(client_order_id)
         if provider_id is not None:
-            body = {"order_id": provider_id}
+            # order_id and client_order_id cannot be combined; order_id is an integer.
+            order_id: int | str = int(provider_id) if provider_id.isdigit() else provider_id
+            body = {"order_id": order_id, "include_trades": True}
         try:
             payload = await self._private("POST", "/v1/order/status", body)
         except ProviderHTTPError as exc:
@@ -233,13 +256,6 @@ class GeminiBroker(BrokerInterface):
         order = self._order_from_payload(payload, request=request, client_order_id=client_order_id)
         self._orders[client_order_id] = order
         return order
-
-    async def get_fills(self, client_order_id: str) -> tuple[Fill, ...]:
-        order = self._orders.get(client_order_id) or await self.get_order(client_order_id)
-        if order is None:
-            return ()
-        raw_fills = self._raw_fills.get(client_order_id, ())
-        return tuple(_gemini_fill(row, order) for row in raw_fills)
 
     async def cancel_order(self, client_order_id: str) -> Order | None:
         current = self._orders.get(client_order_id) or await self.get_order(client_order_id)
@@ -349,7 +365,8 @@ class GeminiBroker(BrokerInterface):
         request = request or self._requests.get(client_id) or _recovered_request(raw, client_id)
         provider_id = str(raw.get("order_id") or client_id)
         self._provider_order_ids[client_id] = provider_id
-        self._raw_fills[client_id] = tuple(raw.get("fills") or ())
+        if "trades" in raw:
+            self._raw_fills[client_id] = tuple(raw.get("trades") or ())
         return Order(
             order_id=_provider_uuid(provider_id),
             request=request,
@@ -380,10 +397,14 @@ def _gemini_fill(raw: Mapping[str, Any], order: Order) -> Fill:
         side=order.request.side,
         quantity=_decimal(raw.get("amount"), default=Decimal("0.00000001")),
         price=_decimal(raw.get("price"), default=Decimal("0.00000001")),
-        fee=_decimal(raw.get("fee"), default=Decimal("0")),
+        fee=_decimal(raw.get("fee_amount"), default=Decimal("0")),
         fee_asset=str(raw.get("fee_currency") or "USD"),
         occurred_at=_timestamp(raw.get("timestampms")),
     )
+
+
+def _traded(trades: tuple[Mapping[str, Any], ...]) -> Decimal:
+    return sum((_decimal(row.get("amount"), default=Decimal("0")) for row in trades), Decimal("0"))
 
 
 def _order_status(raw: Mapping[str, Any], requested: Decimal) -> OrderStatus:

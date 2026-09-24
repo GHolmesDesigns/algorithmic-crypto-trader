@@ -70,24 +70,14 @@ async def test_coinbase_adapter_satisfies_unchanged_contract_and_authenticates_p
                 },
                 request=request_,
             )
-        if request_.method == "GET" and "/orders/client:" in request_.url.path:
-            client_id = request_.url.path.rsplit(":", 1)[1]
+        if request_.method == "GET" and request_.url.path.endswith("/orders/historical/fills"):
+            assert request_.url.params["order_ids"] == order_id
             return httpx.Response(
                 200,
                 json={
-                    "order": {
-                        "order_id": order_id,
-                        "client_order_id": client_id,
-                        "status": "FILLED",
-                        "filled_size": "0.01",
-                    }
+                    "fills": [{"entry_id": "cb-fill-1", "size": "0.01", "price": "100"}],
+                    "cursor": "",
                 },
-                request=request_,
-            )
-        if request_.method == "GET" and request_.url.path.endswith("/fills"):
-            return httpx.Response(
-                200,
-                json={"fills": [{"trade_id": "cb-fill-1", "size": "0.01", "price": "100"}]},
                 request=request_,
             )
         raise AssertionError(f"unexpected request: {request_.method} {request_.url}")
@@ -105,7 +95,7 @@ async def test_coinbase_adapter_satisfies_unchanged_contract_and_authenticates_p
 
 @pytest.mark.asyncio
 async def test_gemini_adapter_satisfies_contract_using_only_sandbox_paths() -> None:
-    provider_order_id = "gemini-123"
+    provider_order_id = "123"
 
     async def handler(request_: httpx.Request) -> httpx.Response:
         if request_.method == "GET" and "/v2/ticker/" in request_.url.path:
@@ -124,11 +114,12 @@ async def test_gemini_adapter_satisfies_contract_using_only_sandbox_paths() -> N
                     "executed_amount": "0.01",
                     "avg_execution_price": "100",
                     "is_live": False,
-                    "fills": [{"tid": "gm-fill-1", "amount": "0.01", "price": "100"}],
                 },
                 request=request_,
             )
         if payload["request"] == "/v1/order/status":
+            # Documented shape: trades appear only when include_trades is requested.
+            assert payload["include_trades"] is True
             return httpx.Response(
                 200,
                 json={
@@ -139,6 +130,9 @@ async def test_gemini_adapter_satisfies_contract_using_only_sandbox_paths() -> N
                     "original_amount": "0.01",
                     "executed_amount": "0.01",
                     "is_live": False,
+                    "trades": [
+                        {"tid": 1001, "amount": "0.01", "price": "100", "fee_amount": "0.006"}
+                    ],
                 },
                 request=request_,
             )
@@ -170,16 +164,23 @@ async def test_coinbase_timeout_is_unknown_and_second_submission_queries_before_
         calls.append(request_.url.path)
         if request_.method == "POST":
             raise httpx.ReadTimeout("ambiguous", request=request_)
-        client_id = request_.url.path.rsplit(":", 1)[1]
+        # Coinbase documents no lookup by client_order_id; the adapter searches List Orders.
+        assert request_.url.path.endswith("/orders/historical/batch")
+        assert request_.url.params["product_ids"] == "BTC-USD"
         return httpx.Response(
             200,
             json={
-                "order": {
-                    "order_id": "22222222-2222-4222-8222-222222222222",
-                    "client_order_id": client_id,
-                    "status": "OPEN",
-                    "filled_size": "0",
-                }
+                "orders": [
+                    {
+                        "order_id": "22222222-2222-4222-8222-222222222222",
+                        "client_order_id": str(order_request.client_order_id),
+                        "product_id": "BTC-USD",
+                        "status": "OPEN",
+                        "filled_size": "0",
+                    }
+                ],
+                "has_next": False,
+                "cursor": "",
             },
             request=request_,
         )
@@ -196,7 +197,7 @@ async def test_coinbase_timeout_is_unknown_and_second_submission_queries_before_
         recovered = await broker.submit_order(order_request, approval(order_request))
         assert recovered.status is OrderStatus.OPEN
         assert calls[0].endswith("/orders")
-        assert "/orders/client:" in calls[1]
+        assert calls[1].endswith("/orders/historical/batch")
         assert sum(path.endswith("/orders") for path in calls) == 1
     finally:
         await broker.close()

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
 
 from core.models import KillSwitchState, utc_now
+
+_SEVERITY = {KillSwitchState.RUNNING: 0, KillSwitchState.PAUSED: 1, KillSwitchState.HALTED: 2}
 
 
 class KillSwitch:
@@ -60,20 +63,33 @@ class KillSwitch:
         self.set_state(KillSwitchState.HALTED, automatic=True, reason=reason)
 
     def sync_external_state(
-        self, *, env: dict[str, str] | None = None, flag_path: Path | None = None
+        self, *, env: Mapping[str, str] | None = None, flag_path: Path | None = None
     ) -> KillSwitchState:
+        """Apply the file and environment flags, read on every trading loop.
+
+        The flags can only pause or halt. A flag left at ``running`` must not undo an
+        operator's emergency stop, so re-arming stays on the authenticated path. An
+        unreadable or unrecognised flag halts trading.
+        """
+
         values = env if env is not None else os.environ
-        raw = values.get("TRADING_KILL_SWITCH")
+        requests = [("environment", values.get("TRADING_KILL_SWITCH", ""))]
         if flag_path is not None and flag_path.exists():
-            raw = flag_path.read_text(encoding="utf-8").strip()
-        if raw:
-            requested = KillSwitchState(raw.lower())
-            if requested is not self.state:
-                self.set_state(
-                    requested,
-                    automatic=requested is not KillSwitchState.RUNNING,
-                    reason="external actuation",
-                )
+            try:
+                requests.append(("file", flag_path.read_text(encoding="utf-8")))
+            except OSError:
+                requests.append(("file", "unreadable"))
+        for source, raw in requests:
+            value = raw.strip().lower()
+            if not value:
+                continue
+            try:
+                requested = KillSwitchState(value)
+            except ValueError:
+                self.trip(f"external actuation ({source}): unrecognised kill-switch flag")
+                continue
+            if _SEVERITY[requested] > _SEVERITY[self.state]:
+                self.set_state(requested, automatic=True, reason=f"external actuation ({source})")
         return self.state
 
     def _persist(self) -> None:

@@ -49,6 +49,21 @@ and recovery states; Coinbase must perform read-only production reconciliation
 with a view-only credential. No automated test places an order or contacts a
 production exchange.
 
+## Phase 1 gate corrections
+
+The [Phase 1 gate](phase-1-gate-acceptance.md) checked both adapters against
+the providers' documentation on 2026-09-24 and corrected their wire formats:
+
+- **Coinbase:**
+  - reads every page of accounts;
+  - uses the documented historical order and fill endpoints, and searches
+    List Orders for a timed-out order;
+  - builds per-request JWTs with the full path, `kid`, and `nonce`;
+  - sends `side` on create and reads the order back for its fill state;
+  - treats failed cancels and edits as failures;
+  - checks key permissions for live mode.
+- **Gemini:** requests `include_trades` and reads `trades` and `fee_amount`.
+
 ## Local validation
 
 The repository preflight remains the required CI gate: Ruff format, Ruff lint,

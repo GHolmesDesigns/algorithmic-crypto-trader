@@ -61,6 +61,7 @@ class OperatorState:
         self.broker = broker
         self.alert_router = alert_router or AlertRouter()
         self.startup_recovery: Any = None
+        self.scheduled_reconciliation: Any = None
         strategy = StrategyHeartbeat(name="primary", version=strategy_version)
         self.snapshot = OperatorSnapshot(
             strategy_version=strategy_version,
@@ -225,6 +226,11 @@ class OperatorState:
                 self.startup_recovery.to_dict()
                 if self.startup_recovery is not None
                 else {"status": "not_run", "detail": "startup recovery has not run"}
+            ),
+            "reconciliation": (
+                self.scheduled_reconciliation.status.to_dict()
+                if self.scheduled_reconciliation is not None
+                else {"last_result": "not_scheduled"}
             ),
             "portfolio": {
                 "status": snapshot.portfolio_status,

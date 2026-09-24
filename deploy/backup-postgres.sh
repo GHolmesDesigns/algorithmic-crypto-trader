@@ -23,7 +23,7 @@ manifest_before="${backup_dir}/.${manifest_name}.before"
 manifest_after="${backup_dir}/.${manifest_name}.after"
 
 # Must include every required_tables entry in restore-verify-postgres.sh.
-tables='signals orders fills system_events audit_notes market_candles portfolio_snapshots positions_snapshot balances_snapshot equity_curve discrepancies'
+tables='signals risk_decisions orders fills system_events audit_notes market_candles portfolio_snapshots positions_snapshot balances_snapshot equity_curve discrepancies'
 
 cleanup() {
   rm -f -- "$plain_path" "$manifest_before" "$manifest_after"

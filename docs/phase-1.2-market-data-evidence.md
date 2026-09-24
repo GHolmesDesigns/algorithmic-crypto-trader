@@ -9,7 +9,9 @@ owner-run provider evidence:
   uses the `(symbol, interval, opened_at)` unique key for idempotent writes.
 - `data.stream.CoinbaseWebSocketIngestor` subscribes to candles, ticker, and heartbeats,
   records raw messages, fails closed on heartbeat timeout, and invokes REST gap fill after
-  disconnect.
+  disconnect. The candles channel sends five-minute buckets updated every second, so a
+  bucket is emitted only after it closes, and gap fill stops at the bucket in progress
+  (corrected by the [Phase 1 gate](phase-1-gate-acceptance.md)).
 - `data.validation.MarketDataValidator` rejects duplicate bars, gaps, bad durations,
   suspicious jumps, and stale quotes before downstream use.
 

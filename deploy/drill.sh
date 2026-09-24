@@ -89,6 +89,7 @@ counts() {
     'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1' <<'SQL' | LC_ALL=C sort
 SELECT 'alembic_version=' || version_num FROM alembic_version
 UNION ALL SELECT 'signals=' || count(*) FROM signals
+UNION ALL SELECT 'risk_decisions=' || count(*) FROM risk_decisions
 UNION ALL SELECT 'orders=' || count(*) FROM orders
 UNION ALL SELECT 'fills=' || count(*) FROM fills
 UNION ALL SELECT 'system_events=' || count(*) FROM system_events
