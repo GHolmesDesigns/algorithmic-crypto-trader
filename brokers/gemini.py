@@ -10,7 +10,7 @@ import json
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid5
@@ -44,10 +44,22 @@ from brokers.interface import BrokerCapabilities, BrokerInterface
 GEMINI_SANDBOX_REST_URL = "https://api.sandbox.gemini.com"
 GEMINI_SANDBOX_WS_URL = "wss://api.sandbox.gemini.com/v2/marketdata"
 GEMINI_ORDER_NAMESPACE = UUID("e2fd1e2e-89a0-4c8f-86a9-9ad7f54ee32b")
+# The risk engine's default slippage limit: how far past the quote a market order may fill.
+DEFAULT_MARKET_COLLAR = Decimal("0.01")
+PRICE_TICK = Decimal("0.01")
+# Gemini answers an order it refuses with 400, 409, or 422, and insufficient funds with 406.
+REJECTION_STATUSES = frozenset({400, 406, 409, 422})
 
 
 class GeminiBroker(BrokerInterface):
-    """Gemini adapter that can only address a ``*.sandbox.gemini.com`` host."""
+    """Gemini adapter that can only address a ``*.sandbox.gemini.com`` host.
+
+    Gemini has no price-protected market order: its market buy takes a dollar amount
+    and fills at any price. A ``MARKET`` request is therefore sent as an
+    immediate-or-cancel limit order capped ``market_collar`` past a fresh quote (above
+    the ask for a buy, below the bid for a sell). Whatever cannot fill within the cap
+    is cancelled at once, never left resting.
+    """
 
     def __init__(
         self,
@@ -60,10 +72,14 @@ class GeminiBroker(BrokerInterface):
         circuit_breaker: CircuitBreaker | None = None,
         max_429_retries: int = 2,
         backoff_base_seconds: float = 0.25,
+        market_collar: Decimal = DEFAULT_MARKET_COLLAR,
     ) -> None:
         self._validate_sandbox_host(base_url)
         if (api_key is None) != (api_secret is None):
             raise ValueError("Gemini api_key and api_secret must be supplied together")
+        if not Decimal("0") < market_collar < Decimal("0.1"):
+            raise ValueError("market_collar must be between 0 and 10%")
+        self._market_collar = market_collar
         self._base_url = GEMINI_SANDBOX_REST_URL
         self._api_key = api_key
         self._api_secret = api_secret
@@ -178,12 +194,13 @@ class GeminiBroker(BrokerInterface):
             "symbol": _gemini_symbol(request.symbol),
             "amount": str(request.quantity),
             "side": request.side.value,
-            "type": "exchange market"
-            if request.order_type is OrderType.MARKET
-            else "exchange limit",
+            "type": "exchange limit",
             "client_order_id": key,
         }
-        if request.limit_price is not None:
+        if request.order_type is OrderType.MARKET:
+            body["price"] = str(await self._market_cap(request, unknown))
+            body["options"] = ["immediate-or-cancel"]
+        elif request.limit_price is not None:
             body["price"] = str(request.limit_price)
         try:
             payload = await self._private("POST", "/v1/order/new", body)
@@ -191,7 +208,7 @@ class GeminiBroker(BrokerInterface):
             self._orders[key] = unknown
             raise AmbiguousSubmissionError(unknown) from exc
         except ProviderHTTPError as exc:
-            if exc.status_code in {400, 409, 422}:
+            if exc.status_code in REJECTION_STATUSES:
                 rejected = unknown.model_copy(update={"status": OrderStatus.REJECTED})
                 self._orders[key] = rejected
                 reason = exc.payload.get("reason") if isinstance(exc.payload, Mapping) else None
@@ -210,6 +227,28 @@ class GeminiBroker(BrokerInterface):
         order = self._order_from_payload(payload, request=request)
         self._orders[key] = order
         return order
+
+    async def _market_cap(self, request: OrderRequest, unknown: Order) -> Decimal:
+        """Price a market request's limit from a fresh quote, rounded against the trader.
+
+        Without a quote nothing is sent, so the order is refused outright rather than
+        left pending as if it might have reached the venue.
+        """
+
+        refused = unknown.model_copy(update={"status": OrderStatus.REJECTED})
+        try:
+            quote = await self.get_quote(request.symbol)
+        except Exception as exc:
+            self._orders[str(request.client_order_id)] = refused
+            raise ProviderOrderRejectedError(refused, "no quote to cap the order's price") from exc
+        if request.side is OrderSide.BUY:
+            cap = (quote.ask * (1 + self._market_collar)).quantize(PRICE_TICK, rounding=ROUND_DOWN)
+        else:
+            cap = (quote.bid * (1 - self._market_collar)).quantize(PRICE_TICK, rounding=ROUND_UP)
+        if cap <= 0:
+            self._orders[str(request.client_order_id)] = refused
+            raise ProviderOrderRejectedError(refused, "the quote cannot price a capped order")
+        return cap
 
     async def get_order(self, client_order_id: str) -> Order | None:
         cached = self._orders.get(client_order_id)

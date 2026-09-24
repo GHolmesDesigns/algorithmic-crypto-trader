@@ -161,19 +161,28 @@ async def test_a_failed_sandbox_request_marks_the_capture_incomplete(tmp_path) -
 
 
 class FakeGeminiSandbox:
-    """Balances, tickers, a one-level ask book, candles, and orders in Gemini's shapes."""
+    """Balances, tickers, a one-level ask book, candles, and orders in Gemini's shapes.
+
+    Immediate-or-cancel orders trade at ``execution_ask`` when their limit reaches it
+    and cancel whatever is left; ``execution_ask`` can sit past the quoted ask to
+    model a book that moved beyond a capped order.
+    """
 
     def __init__(
         self,
         *,
-        market_orders: bool = True,
         ask_depth: str = "0.002",
         fail_first_cancel: bool = False,
+        usd: str = "100000",
+        execution_ask: str = "60010",
+        insufficient_funds: bool = False,
     ) -> None:
-        self.market_orders = market_orders
         self.ask = Decimal("60010")
+        self.execution_ask = Decimal(execution_ask)
         self.ask_depth = Decimal(ask_depth)
         self.fail_first_cancel = fail_first_cancel
+        self.usd = usd
+        self.insufficient_funds = insufficient_funds
         self.orders: dict[int, dict[str, Any]] = {}
         self.by_client: dict[str, int] = {}
         self._ids = count(8_000_000_001)
@@ -196,7 +205,7 @@ class FakeGeminiSandbox:
                 json=[
                     {"currency": "BTC", "amount": "10", "available": "10"},
                     {"currency": "ETH", "amount": "20", "available": "20"},
-                    {"currency": "USD", "amount": "100000", "available": "100000"},
+                    {"currency": "USD", "amount": self.usd, "available": self.usd},
                 ],
             )
         if path == "/v1/order/new":
@@ -240,9 +249,10 @@ class FakeGeminiSandbox:
 
     def new_order(self, payload: dict[str, Any]) -> httpx.Response:
         amount = Decimal(payload["amount"])
-        if payload["type"] == "exchange market" and not self.market_orders:
+        assert payload["type"] == "exchange limit"  # never an unprotected market order
+        if self.insufficient_funds:
             return httpx.Response(
-                400, json={"result": "error", "reason": "InvalidOrderType", "message": "no"}
+                406, json={"result": "error", "reason": "InsufficientFunds", "message": "funds"}
             )
         if amount < Decimal("0.00001"):
             return httpx.Response(
@@ -262,13 +272,14 @@ class FakeGeminiSandbox:
         }
         self.orders[order_id] = order
         self.by_client[payload["client_order_id"]] = order_id
-        crosses = payload["type"] == "exchange market" or Decimal(payload["price"]) >= self.ask
-        if crosses:
-            fill = amount if payload["type"] == "exchange market" else min(amount, self.ask_depth)
+        immediate = "immediate-or-cancel" in payload.get("options", ())
+        touch = self.execution_ask if immediate else self.ask
+        if Decimal(payload["price"]) >= touch:
+            fill = min(amount, self.ask_depth)
             order["trades"].append(
                 {
                     "tid": next(self._tids),
-                    "price": str(self.ask),
+                    "price": str(touch),
                     "amount": str(fill),
                     "fee_amount": "0.01",
                     "fee_currency": "USD",
@@ -277,6 +288,8 @@ class FakeGeminiSandbox:
             )
             order["executed"] = fill
             order["is_live"] = fill < amount
+        if immediate and order["is_live"]:  # the rest of an immediate-or-cancel order
+            order.update(is_live=False, is_cancelled=True)
         return httpx.Response(200, json=self.body(order, trades=False))
 
     @staticmethod
@@ -310,7 +323,8 @@ async def test_the_gemini_lifecycle_passes_and_leaves_nothing_resting() -> None:
 
     results = {step["step"]: step for step in report.steps}
     assert report.outcome == "pass", report.steps
-    assert results["market_order"]["accepted"] is True
+    assert results["usd_available"]["result"] == "pass"
+    assert results["capped_market_order"]["status"] == "filled"
     assert results["recovery_by_client_order_id"]["result"] == "pass"
     assert results["undersized_rejection"]["reason"] == "InvalidQuantity"
     assert results["partial_fill"] == {
@@ -329,25 +343,63 @@ async def test_the_gemini_lifecycle_passes_and_leaves_nothing_resting() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_sandbox_without_market_orders_is_reported_for_review() -> None:
-    venue = FakeGeminiSandbox(market_orders=False, ask_depth="5")
+async def test_an_account_without_enough_dollars_stops_before_any_order() -> None:
+    venue = FakeGeminiSandbox(usd="5")
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, inner=httpx.MockTransport(venue.handler)
+    )
+
+    assert [step["step"] for step in report.steps] == ["authenticate", "usd_available"]
+    assert report.steps[1]["result"] == "fail"
+    assert Decimal(report.steps[1]["needed_usd"]) > 5
+    assert venue.orders == {} and report.requests_made == 2
+    assert any("Add test funds" in note for note in report.notes)
+    assert report.outcome == "needs review"
+    assert '"5"' not in report.render()  # only whether it suffices, never the balance
+
+
+@pytest.mark.asyncio
+async def test_a_book_beyond_the_cap_is_reported_and_nothing_rests() -> None:
+    venue = FakeGeminiSandbox(execution_ask="61000", ask_depth="5")
     report = await gemini_sandbox_lifecycle.lifecycle(
         KEY, SECRET, inner=httpx.MockTransport(venue.handler)
     )
 
     results = {step["step"]: step for step in report.steps}
-    assert results["market_order"] == {
-        "step": "market_order",
-        "result": "answered",
-        "accepted": False,
-        "reason": "InvalidOrderType",
+    assert results["capped_market_order"] == {
+        "step": "capped_market_order",
+        "result": "refused",
+        "status": "canceled",
+        "filled": "0",
+        "fills": 0,
     }
     assert results["partial_fill"]["result"] == "skipped"  # the best ask is too deep
-    assert results["trading_loop"]["result"] == "refused"
-    assert results["trading_loop"]["status"] == "rejected"
+    assert any("thin near its quote" in note for note in report.notes)
     assert report.outcome == "needs review"
-    assert any("price collar" in note for note in report.notes)
     assert venue.live() == []
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_names_gemini_reason_code() -> None:
+    venue = FakeGeminiSandbox(insufficient_funds=True)
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, inner=httpx.MockTransport(venue.handler)
+    )
+
+    results = {step["step"]: step for step in report.steps}
+    assert results["capped_market_order"] == {
+        "step": "capped_market_order",
+        "result": "fail",
+        "reason": "InsufficientFunds",
+    }
+    assert results["stopped"] == {
+        "step": "stopped",
+        "result": "fail",
+        "error": "ProviderOrderRejectedError",
+        "http_status": 406,
+        "reason": "InsufficientFunds",
+    }
+    assert venue.orders == {}
 
 
 @pytest.mark.asyncio
@@ -361,7 +413,9 @@ async def test_a_failure_mid_run_still_cancels_the_resting_order() -> None:
     assert results["stopped"] == {
         "step": "stopped",
         "result": "fail",
-        "error": "ProviderHTTPError (HTTP 500)",
+        "error": "ProviderHTTPError",
+        "http_status": 500,
+        "reason": "System",
     }
     assert results["cleanup"] == {"step": "cleanup", "result": "pass", "canceled": 1}
     assert venue.live() == []
