@@ -1,0 +1,123 @@
+name: Restore drill
+
+# Downloads the newest encrypted backup, restores it into a throwaway database,
+# and verifies it against its encrypted row-count manifest. Runs weekly, on
+# demand, or when a same-repository pull request is labeled `restore-drill`.
+# It never contacts an exchange or the production database. Logs show only the
+# artifact name, pass/fail, and the number of verified tables.
+
+on:
+  schedule:
+    - cron: "43 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      max_age_hours:
+        description: Fail when the newest backup is older than this many hours
+        default: "36"
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-drill
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    name: Restore newest backup into scratch database
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.label.name == 'restore-drill' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      scratch:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: restore_user
+          POSTGRES_PASSWORD: scratch-only
+          POSTGRES_DB: trader_restore
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U restore_user -d trader_restore"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      SCRATCH_DATABASE_URL: postgresql://restore_user:scratch-only@127.0.0.1:5433/trader_restore
+      MAX_AGE_HOURS: ${{ github.event.inputs.max_age_hours || '36' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install age, rclone, and PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age rclone postgresql-client >/dev/null
+
+      - name: Write backup credentials to private files
+        env:
+          BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+          BACKUP_RCLONE_CONF: ${{ secrets.BACKUP_RCLONE_CONF }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -z "$BACKUP_AGE_IDENTITY" ] || [ -z "$BACKUP_RCLONE_CONF" ]; then
+            echo "::error::BACKUP_AGE_IDENTITY and BACKUP_RCLONE_CONF secrets are required"
+            exit 1
+          fi
+          printf '%s\n' "$BACKUP_AGE_IDENTITY" > "$RUNNER_TEMP/identity.txt"
+          printf '%s\n' "$BACKUP_RCLONE_CONF" > "$RUNNER_TEMP/rclone.conf"
+          echo "AGE_IDENTITY_FILE=$RUNNER_TEMP/identity.txt" >> "$GITHUB_ENV"
+          echo "RCLONE_CONFIG=$RUNNER_TEMP/rclone.conf" >> "$GITHUB_ENV"
+
+      - name: Download newest backup and manifest
+        run: |
+          set -euo pipefail
+          umask 077
+          newest=$(rclone lsf trader-backups: --include 'trader-*.dump.age' --log-level ERROR | sort | tail -n 1)
+          if [ -z "$newest" ]; then
+            echo "::error::no backups found at the configured remote"
+            exit 1
+          fi
+          manifest="${newest%.dump.age}.manifest.age"
+          stamp=${newest#trader-}; stamp=${stamp%.dump.age}
+          taken=$(date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}" +%s)
+          age_hours=$(( ($(date -u +%s) - taken) / 3600 ))
+          echo "Newest backup: $newest (${age_hours}h old)"
+          if [ "$age_hours" -gt "$MAX_AGE_HOURS" ]; then
+            echo "::error::newest backup is ${age_hours}h old; nightly backups may have stopped"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/backup"
+          rclone copyto "trader-backups:$newest" "$RUNNER_TEMP/backup/$newest" --log-level ERROR
+          rclone copyto "trader-backups:$manifest" "$RUNNER_TEMP/backup/$manifest" --log-level ERROR
+          echo "BACKUP_FILE=$RUNNER_TEMP/backup/$newest" >> "$GITHUB_ENV"
+          echo "MANIFEST_FILE=$RUNNER_TEMP/backup/$manifest" >> "$GITHUB_ENV"
+          echo "BACKUP_NAME=$newest" >> "$GITHUB_ENV"
+
+      - name: Restore and verify against manifest
+        run: |
+          set -euo pipefail
+          if sh deploy/restore-verify-postgres.sh "$BACKUP_FILE" "$MANIFEST_FILE" \
+              > "$RUNNER_TEMP/restore.out" 2> "$RUNNER_TEMP/restore.err"; then
+            tables=$(grep -c '^verified ' "$RUNNER_TEMP/restore.out")
+            migration=$(sed -n 's/^verified alembic_version=//p' "$RUNNER_TEMP/restore.out")
+            grep -qx 'restore_verified=1' "$RUNNER_TEMP/restore.out"
+            echo "restore_verified=1 backup=$BACKUP_NAME checks=$tables migration=$migration"
+            {
+              echo "### Restore drill passed"
+              echo "- Backup: \`$BACKUP_NAME\`"
+              echo "- Verified: $tables checks (migration \`$migration\` and row counts)"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::restore verification failed for $BACKUP_NAME"
+            grep -vE 'postgres(ql)?://' "$RUNNER_TEMP/restore.err" || true
+            exit 1
+          fi
+
+      - name: Remove decrypted material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/identity.txt" "$RUNNER_TEMP/rclone.conf" "$RUNNER_TEMP/backup" "$RUNNER_TEMP"/restore.*

@@ -1,239 +1,84 @@
-# Phase 1.8 VPS drill checklist
+# Phase 1.8 VPS drill
 
-Owner-run checklist for the Issue #10 acceptance evidence: Compose startup,
-restart and reboot state recovery, encrypted backup creation, and scratch
-restore verification. It complements the
-[deployment, backups, and restore runbook](phase-1.8-deployment-backups-restore.md).
+This drill produces the Issue #10 acceptance evidence:
+- Compose startup;
+- state recovery after an app restart and after a host reboot;
+- encrypted backup creation;
+- scratch-database restore verification.
 
-Every command runs **on the VPS** as root in `/opt/algorithmic-crypto-trader`
-unless a step says otherwise. Keep `TRADING_MODE=paper` and
-`CREDENTIAL_SCOPE=none` throughout. Record results in the evidence template at
-the end.
+An agent runs it under the "Agent-run infrastructure verification" rules in
+[`AGENTS.md`](../AGENTS.md). The owner's part is a one-time setup in web pages
+plus a yes before the reboot. See the
+[deployment, backups, and restore runbook](phase-1.8-deployment-backups-restore.md)
+for how each piece works.
 
-## 0. Before you start
+## One-time owner setup
 
-- [ ] Pick a maintenance window. This is a reboot of a paper deployment, with
-      no live trading.
-- [ ] Make sure you have a separate operator machine with `age`, PostgreSQL 16+
-      client tools and `rclone`, plus somewhere to run an empty scratch
-      database. You need this for phase 5.
-- [ ] Create a scratch folder and put a helper and an auth header in it. The
-      header keeps the operator token out of shell history.
+1. **Agent SSH access.** Install the agent's public SSH key for the VPS login
+   user, usually through the provider's web console, and tell the agent the
+   server address. The key can be removed at any time.
+2. **Backup storage.** Create a private bucket, for example on Backblaze B2, and
+   an application key limited to that bucket. Fill the key ID, key, and bucket
+   name into the `rclone.conf` template the agent prepares on the owner's
+   computer. The agent copies that file to the VPS without opening it.
+3. **GitHub secrets.** Under the repository's Settings → Secrets and variables →
+   Actions, add:
+   - `BACKUP_AGE_IDENTITY`: the backup unlock key file the agent generated.
+     Keep a second copy in a password manager, because GitHub secrets cannot
+     be read back and backups are unreadable without the key.
+   - `BACKUP_RCLONE_CONF`: the same filled-in `rclone.conf` contents.
 
-```sh
-mkdir -p -m 0700 /root/drill && cd /opt/algorithmic-crypto-trader
-dc() { docker compose -f docker-compose.yml -f deploy/docker-compose.vps.yml --env-file .env "$@"; }
-printf 'X-Operator-Token: %s\n' "$(grep ^OPERATOR_TOKEN= .env | cut -d= -f2-)" > /root/drill/op-header && chmod 0600 /root/drill/op-header
-```
+## What the agent runs
 
-- [ ] Save the row-count query. It's the same query the backup manifest uses.
-
-```sh
-cat > /root/drill/counts.sql <<'SQL'
-SELECT 'alembic_version=' || version_num FROM alembic_version
-UNION ALL SELECT 'signals=' || count(*) FROM signals
-UNION ALL SELECT 'orders=' || count(*) FROM orders
-UNION ALL SELECT 'fills=' || count(*) FROM fills
-UNION ALL SELECT 'portfolio_snapshots=' || count(*) FROM portfolio_snapshots
-UNION ALL SELECT 'positions_snapshot=' || count(*) FROM positions_snapshot
-UNION ALL SELECT 'balances_snapshot=' || count(*) FROM balances_snapshot
-UNION ALL SELECT 'equity_curve=' || count(*) FROM equity_curve
-UNION ALL SELECT 'discrepancies=' || count(*) FROM discrepancies;
-SQL
-counts() { dc exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1' < /root/drill/counts.sql | LC_ALL=C sort; }
-```
-
-The `dc` and `counts` helpers only last for the current shell. Define them
-again after the reboot in phase 3.
-
-## 1. Deploy the reviewed commit
-
-- [ ] Check out the reviewed commit and rebuild:
+On the VPS, in `/opt/algorithmic-crypto-trader`:
 
 ```sh
-git fetch origin && git checkout --detach <reviewed-commit-sha>
-dc up -d --build
-dc ps
+sh deploy/drill.sh deploy <reviewed-commit-sha>
+sh deploy/drill.sh before-reboot
+systemctl reboot            # only after the owner says yes in chat
+sh deploy/drill.sh after-reboot
+sh deploy/drill.sh backup
 ```
 
-- [ ] Both `db` and `app` show `healthy`.
-- [ ] Confirm the migration ran and startup recovery logged a result:
+Each phase prints `CHECK <name>: PASS|FAIL …` lines and a final `RESULT`, and
+exits non-zero on any failure. The drill:
 
-```sh
-dc logs app | grep -E "0003_risk_execution_portfolio -> 0004|startup recovery"
-```
+- refuses to run in `live` mode or with trade-capable credentials;
+- reads operator tokens only inside the app container;
+- pauses trading as a marker and checks that the pause survives the app restart
+  and the reboot;
+- compares the migration version and every state table's row count across the
+  app restart and the reboot;
+- restores the original kill-switch state only if every check passed.
 
-- [ ] **Expected:** `startup recovery no_broker: … (kill switch running)`. No
-      broker is connected yet, so recovery only checks for pending orders. If
-      you get `halted`, **stop here**: pending orders exist that can't be
-      resolved. Record the detail line.
-- [ ] Check health and the recovery status:
+On GitHub, the agent then runs the **Restore drill** workflow, either from the
+Actions tab or by adding the `restore-drill` label to the pull request. The
+workflow downloads the newest backup, restores it into a throwaway database,
+and prints `restore_verified=1` when the migration version and row counts match
+the backup's manifest. It also runs every Monday and fails if the newest backup
+is more than 36 hours old.
 
-```sh
-curl -fsS http://127.0.0.1:8000/health
-curl -fsS -H @/root/drill/op-header http://127.0.0.1:8000/operator/state | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["recovery"], d["risk"])'
-```
+## Pass criteria
 
-- [ ] The operator dashboard shows a "Startup recovery" line.
+- `RESULT deploy: PASS`, `RESULT before-reboot: PASS`,
+  `RESULT after-reboot: PASS`, and `RESULT backup: PASS`.
+- The Restore drill job succeeds with `restore_verified=1`, and the backup it
+  restored is the one named by `CHECK backup-artifacts` (or newer).
 
-## 2. App restart drill
+If any check fails, trading stays paused or halted. The agent reports the
+failed checks and the owner decides the next step.
 
-- [ ] Pause trading on purpose. The paused state is the marker that shows the
-      kill switch survived the restart. Then record the baseline row counts:
-
-```sh
-curl -fsS -X POST -H @/root/drill/op-header http://127.0.0.1:8000/operator/pause
-counts > /root/drill/before.txt && cat /root/drill/before.txt
-```
-
-- [ ] Restart the app:
-
-```sh
-dc restart app
-dc ps
-```
-
-- [ ] Verify what came back:
-
-```sh
-curl -fsS -H @/root/drill/op-header http://127.0.0.1:8000/operator/kill-switch
-dc logs --since 5m app | grep "startup recovery"
-counts > /root/drill/after-app-restart.txt && diff /root/drill/before.txt /root/drill/after-app-restart.txt && echo ROWS-MATCH
-```
-
-- [ ] **Pass criteria:**
-  - the kill switch still reads `paused`;
-  - the recovery line is present with the same status as in phase 1;
-  - `ROWS-MATCH` is printed.
-
-## 3. Host reboot drill
-
-- [ ] Note the most recent backup-timer result first (skip this if phase 4 isn't
-      set up yet), then reboot:
-
-```sh
-systemctl reboot
-```
-
-- [ ] After reconnecting, define the `dc` and `counts` helpers again (phase 0),
-      then check:
-
-```sh
-cd /opt/algorithmic-crypto-trader && dc ps
-docker volume ls | grep -E "postgres-data|kill-switch-data"
-curl -fsS http://127.0.0.1:8000/health
-curl -fsS -H @/root/drill/op-header http://127.0.0.1:8000/operator/kill-switch
-dc logs app | grep "startup recovery" | tail -1
-counts > /root/drill/after-reboot.txt && diff /root/drill/before.txt /root/drill/after-reboot.txt && echo ROWS-MATCH
-```
-
-- [ ] **Pass criteria:**
-  - both containers came back on their own (`restart: unless-stopped`);
-  - both named volumes are listed;
-  - the kill switch is still `paused`;
-  - the recovery line shows the same status as before;
-  - `ROWS-MATCH` is printed.
-- [ ] Re-arm through the operator dashboard with the **admin** token. Don't
-      paste the admin token into a terminal.
-
-## 4. Encrypted backup
-
-- [ ] Set up the config. `/etc/crypto-trader/backup.env` (mode `0600`) needs
-      only `BACKUP_REMOTE` and `AGE_RECIPIENT`, the **public** `age1…` key. The
-      private identity file must never be on the VPS. Use a key-based rclone
-      remote such as S3 or B2 keys.
-
-```sh
-install -d -m 0700 /etc/crypto-trader /var/backups/trader
-install -m 0600 /root/.config/rclone/rclone.conf /etc/crypto-trader/rclone.conf
-install -m 0644 deploy/systemd/crypto-trader-backup.service deploy/systemd/crypto-trader-backup.timer /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now crypto-trader-backup.timer
-```
-
-- [ ] Run one backup and check the output:
-
-```sh
-systemctl start crypto-trader-backup.service
-journalctl -u crypto-trader-backup.service -n 20 --no-pager
-```
-
-- [ ] **Expected:** two lines, `encrypted_backup=trader-<UTC>.dump.age` and
-      `encrypted_manifest=trader-<UTC>.manifest.age`. If you see
-      `row counts changed during pg_dump`, run it again.
-- [ ] Confirm the artifacts are off-box and that no plaintext was left behind:
-
-```sh
-RCLONE_CONFIG=/etc/crypto-trader/rclone.conf rclone lsl "$(grep ^BACKUP_REMOTE= /etc/crypto-trader/backup.env | cut -d= -f2-)"
-ls -la /var/backups/trader
-```
-
-  The folder listing contains only `.age` files.
-- [ ] Confirm nothing secret was logged. The journal contains filenames only:
-
-```sh
-journalctl -u crypto-trader-backup.service --no-pager | grep -iE "postgres(ql)?://|password|AGE-SECRET" || echo CLEAN
-```
-
-- [ ] Confirm the timer is scheduled:
-      `systemctl list-timers crypto-trader-backup.timer`
-
-## 5. Scratch restore (operator machine, not the VPS)
-
-- [ ] Start a throwaway scratch database. This example uses Docker; any empty
-      PostgreSQL 16+ database works.
-
-```sh
-docker run -d --name trader-restore -e POSTGRES_USER=restore_user -e POSTGRES_PASSWORD=<scratch-password> -e POSTGRES_DB=trader_restore -p 127.0.0.1:5433:5432 postgres:16-alpine
-```
-
-- [ ] Pull both artifacts from the remote:
-
-```sh
-rclone copyto remote:trader/trader-<UTC>.dump.age ./trader-<UTC>.dump.age
-rclone copyto remote:trader/trader-<UTC>.manifest.age ./trader-<UTC>.manifest.age
-```
-
-- [ ] Run the restore check from a checkout of the reviewed commit:
-
-```sh
-export AGE_IDENTITY_FILE=/secure/operator/trader-backup-identity.txt
-export SCRATCH_DATABASE_URL=postgresql://restore_user:<scratch-password>@127.0.0.1:5433/trader_restore
-sh deploy/restore-verify-postgres.sh ./trader-<UTC>.dump.age ./trader-<UTC>.manifest.age
-```
-
-- [ ] **Pass criteria:**
-  - nine `verified …` lines, then `restore_verified=1`;
-  - the `verified` counts match `/root/drill/after-reboot.txt` from the VPS
-    (unless something was written after the reboot).
-- [ ] Tear down the scratch database and delete the local copies:
-
-```sh
-docker rm -f trader-restore
-rm -f ./trader-*.dump.age ./trader-*.manifest.age
-```
-
-## 6. Clean up and record
-
-- [ ] On the VPS: `rm -rf /root/drill`. It holds the token header.
-- [ ] Post the evidence as a PR or issue comment. Leave out hostnames, IPs,
-      tokens, and bucket names. Do not commit the evidence, logs, or artifacts.
+## Evidence comment
 
 ```text
-OWNER-RUN VERIFICATION
+OWNER-RUN VERIFICATION (agent-run with owner approval)
 Commit: <reviewed-commit-sha>
 UTC: <date/time>
-Compose startup: db+app healthy; migration 0003 -> 0004 applied
-Startup recovery: <status> (kill switch <state>)
-App restart: kill switch persisted (paused); row counts unchanged; recovery <status>
-Host reboot: containers auto-restarted; volumes present; kill switch persisted; row counts unchanged; recovery <status>
-Backup: <dump.age name>, <manifest.age name>; off-box copy confirmed; no plaintext left; journal clean
-Scratch restore: restore_verified=1
-  <paste the nine "verified ..." lines>
-Secrets: none in artifacts or logs
-Operator: <initials>
+Deploy: <RESULT line>; migration 0004; startup recovery <status>
+App restart: <RESULT line>
+Host reboot: <RESULT line>; kill switch left <state>
+Backup: <RESULT line>; <dump.age name>, <manifest.age name>
+Restore drill: <workflow run URL>; restore_verified=1; <N> checks
+Secrets: none printed; no hostnames, IPs, bucket names, or tokens recorded
 No provider writes or live-trading activation performed.
 ```
-
-If every box is ticked, the owner-run acceptance for Issue #10 is complete. If
-any step fails, leave the kill switch halted or paused, capture redacted output,
-and follow the incident process in the runbook.

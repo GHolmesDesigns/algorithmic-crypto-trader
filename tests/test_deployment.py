@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).parents[1]
 SH = shutil.which("sh")
@@ -264,3 +265,141 @@ def test_restore_rejects_contents_that_differ_from_manifest(tmp_path, restored) 
     assert result.returncode != 0
     assert "restore_verified" not in result.stdout
     assert "do not match" in result.stderr
+
+
+DRILL_DOCKER_STUB = """#!/bin/sh
+echo "docker $*" >> "$STUB_LOG"
+state_file="$STUB_DIR/kill-switch"
+[ -f "$state_file" ] || echo running > "$state_file"
+case "$1" in
+  inspect) echo healthy; exit 0 ;;
+  volume) printf 'trader_postgres-data\ntrader_kill-switch-data\n'; exit 0 ;;
+esac
+shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project-directory|-f|--env-file) shift 2 ;;
+    *) break ;;
+  esac
+done
+case "$1" in
+  ps) echo container-id ;;
+  logs) echo '{"message": "startup recovery no_broker"}' ;;
+  exec)
+    if [ "$3" = db ]; then cat "$STUB_DIR/counts.txt"; exit 0; fi
+    case "$7 $8" in
+      "GET /operator/kill-switch") cat "$state_file" ;;
+      "POST /operator/pause") echo paused > "$state_file"; echo paused ;;
+      "POST /operator/rearm")
+        echo "$9" > "$STUB_DIR/rearm-role"; echo running > "$state_file"; echo running ;;
+      "GET /operator/state") echo "${FAKE_RECOVERY:-no_broker}" ;;
+    esac ;;
+esac
+"""
+
+
+def drill_env(
+    tmp_path: Path, mode: str = "paper", scope: str = "none", **extra: str
+) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(DRILL_DOCKER_STUB, encoding="utf-8", newline="\n")
+    docker.chmod(0o755)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text(
+        f"TRADING_MODE={mode}\nCREDENTIAL_SCOPE={scope}\nOPERATOR_TOKEN=never-printed\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "counts.txt").write_text("\n".join(MANIFEST) + "\n", encoding="utf-8")
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{bin_dir}{os.pathsep}{env['PATH']}",
+        STUB_DIR=str(tmp_path),
+        STUB_LOG=str(tmp_path / "calls.log"),
+        COMPOSE_PROJECT_DIR=str(project),
+        DRILL_STATE_DIR=str(tmp_path / "state"),
+    )
+    env.update(extra)
+    return env
+
+
+def test_drill_api_helper_is_valid_python() -> None:
+    script = (ROOT / "deploy" / "drill.sh").read_text()
+    code = script.split("python -c '", 1)[1].split('\' "$@"', 1)[0]
+
+    compile(code, "drill-api", "exec")
+    assert "OPERATOR_ADMIN_TOKEN" in code
+    assert "print(token" not in code
+
+
+@needs_sh
+def test_drill_restart_and_reboot_phases_pass_and_restore_kill_switch(tmp_path) -> None:
+    env = drill_env(tmp_path)
+
+    before = run_script("drill.sh", env, "before-reboot")
+    after = run_script("drill.sh", env, "after-reboot")
+
+    assert before.returncode == 0, before.stdout + before.stderr
+    assert "RESULT before-reboot: PASS" in before.stdout
+    assert "CHECK app-restart-kill-switch: PASS state=paused" in before.stdout
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert "CHECK reboot-rows: PASS row counts unchanged" in after.stdout
+    assert "INFO kill switch left running (was running before the drill)" in after.stdout
+    assert (tmp_path / "rearm-role").read_text().strip() == "admin"
+    assert "never-printed" not in before.stdout + after.stdout + before.stderr + after.stderr
+
+
+@needs_sh
+def test_drill_fails_and_stays_paused_when_rows_change_across_reboot(tmp_path) -> None:
+    env = drill_env(tmp_path)
+    assert run_script("drill.sh", env, "before-reboot").returncode == 0
+    counts = tmp_path / "counts.txt"
+    counts.write_text(counts.read_text().replace("orders=2", "orders=1"), encoding="utf-8")
+
+    after = run_script("drill.sh", env, "after-reboot")
+
+    assert after.returncode != 0
+    assert "CHECK reboot-rows: FAIL" in after.stdout
+    assert "RESULT after-reboot: FAIL (1 failed checks)" in after.stdout
+    assert "INFO kill switch left paused" in after.stdout
+    assert not (tmp_path / "rearm-role").exists()
+
+
+@needs_sh
+def test_drill_fails_when_startup_recovery_halted(tmp_path) -> None:
+    env = drill_env(tmp_path, FAKE_RECOVERY="halted")
+
+    result = run_script("drill.sh", env, "before-reboot")
+
+    assert result.returncode != 0
+    assert "CHECK app-restart-recovery: FAIL status=halted" in result.stdout
+
+
+@needs_sh
+@pytest.mark.parametrize(("mode", "scope"), [("live", "none"), ("paper", "trade")])
+def test_drill_refuses_live_or_trade_capable_configuration(tmp_path, mode, scope) -> None:
+    env = drill_env(tmp_path, mode=mode, scope=scope)
+
+    result = run_script("drill.sh", env, "before-reboot")
+
+    assert result.returncode == 2
+    assert "refusing" in result.stderr
+    assert not (tmp_path / "calls.log").exists()
+
+
+def test_restore_drill_workflow_is_manual_or_scheduled_and_keeps_secrets_out_of_logs() -> None:
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "restore-drill.yml").read_text())
+    triggers = workflow[True]
+    job = workflow["jobs"]["restore"]
+    script = "\n".join(step.get("run", "") for step in job["steps"])
+
+    assert set(triggers) == {"schedule", "workflow_dispatch", "pull_request"}
+    assert triggers["pull_request"] == {"types": ["labeled"]}
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in job["if"]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert "sh deploy/restore-verify-postgres.sh" in script
+    assert "set -x" not in script
+    assert "${{ secrets." not in script
+    assert job["steps"][-1]["if"] == "always()"
