@@ -83,7 +83,9 @@ Create `/etc/crypto-trader/backup.env` with mode `0600`. It must define
 `/etc/crypto-trader/rclone.conf` (mode `0600`, never committed) and caches under
 `/var/cache/crypto-trader-backup`. `/etc` is read-only to the unit, so use a
 key-based remote (for example S3 or B2 keys) rather than an OAuth remote that
-must rewrite its token.
+must rewrite its token. For the AWS S3 setup, including the least-privilege
+policy and `RCLONE_S3_NO_HEAD=true` for versioned buckets, see the
+[VPS drill](phase-1.8-vps-drill-checklist.md#one-time-setup).
 
 ```sh
 install -d -m 0700 /etc/crypto-trader /var/backups/trader

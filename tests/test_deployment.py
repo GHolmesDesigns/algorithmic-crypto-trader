@@ -416,3 +416,39 @@ def test_vps_bootstrap_generates_paper_only_env_without_printing_secrets() -> No
     assert "set -x" not in script
     for secret in ("db_password", "OPERATOR_TOKEN", "OPERATOR_ADMIN_TOKEN", "openssl rand"):
         assert secret not in printed
+
+
+@needs_sh
+def test_drill_status_reports_kill_switch_and_recovery(tmp_path) -> None:
+    env = drill_env(tmp_path, FAKE_RECOVERY="halted")
+
+    result = run_script("drill.sh", env, "status")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["kill_switch=running", "recovery=halted"]
+
+
+def test_drill_backup_phase_fails_on_any_error_in_the_run_log() -> None:
+    script = (ROOT / "deploy" / "drill.sh").read_text()
+
+    assert "grep -cE 'ERROR|Forbidden|AccessDenied'" in script
+    assert "check backup-log-clean" in script
+
+
+def test_restart_rehearsal_is_manual_uses_no_secrets_and_proves_fail_closed_restart() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "restart-rehearsal.yml").read_text()
+    )
+    job = workflow["jobs"]["rehearsal"]
+    script = "\n".join(step.get("run", "") for step in job["steps"])
+
+    assert set(workflow[True]) == {"workflow_dispatch", "pull_request"}
+    assert workflow[True]["pull_request"] == {"types": ["labeled"]}
+    assert workflow["permissions"] == {"contents": "read"}
+    assert "secrets." not in (ROOT / ".github" / "workflows" / "restart-rehearsal.yml").read_text()
+    assert "TRADING_MODE=paper" in script
+    assert "sudo systemctl restart docker" in script
+    assert "'pending_submit'" in script
+    assert "grep -qx 'kill_switch=halted'" in script
+    assert "grep -qx 'restore_verified=1'" in script
+    assert job["steps"][-1]["if"] == "always()"

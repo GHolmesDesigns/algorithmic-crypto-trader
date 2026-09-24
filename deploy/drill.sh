@@ -9,6 +9,7 @@
 #   systemctl reboot               (only with owner approval for the window)
 #   drill.sh after-reboot          post-reboot checks, restore the original kill-switch state
 #   drill.sh backup                install the nightly backup and run it once
+#   drill.sh status                print the kill-switch state and startup recovery status
 #
 # Operator tokens are read inside the app container from its own environment;
 # they never appear on the host command line or in output. The drill refuses to
@@ -193,6 +194,10 @@ case "${1:-}" in
     dump=$(printf '%s\n' "$output" | sed -n 's/^encrypted_backup=//p' | tail -n 1)
     manifest=$(printf '%s\n' "$output" | sed -n 's/^encrypted_manifest=//p' | tail -n 1)
     check backup-artifacts "$(ok test -n "$dump" -a -n "$manifest")" "$dump $manifest"
+    # A retried upload still completes; any error line means the setup needs attention.
+    errors=$(printf '%s
+' "$output" | grep -cE 'ERROR|Forbidden|AccessDenied' || true)
+    check backup-log-clean "$(ok test "$errors" -eq 0)" "$errors error lines in this run's log"
     remote=$(sed -n 's/^BACKUP_REMOTE=//p' /etc/crypto-trader/backup.env | tail -n 1)
     listed=$(RCLONE_CONFIG=/etc/crypto-trader/rclone.conf rclone lsf "$remote" 2>/dev/null \
       | grep -cxF -e "$dump" -e "$manifest" || true)
@@ -206,8 +211,15 @@ case "${1:-}" in
     finish backup
     ;;
 
+  status)
+    printf 'kill_switch=%s
+' "$(api GET /operator/kill-switch operator state || echo unavailable)"
+    printf 'recovery=%s
+' "$(api GET /operator/state operator recovery.status || echo unavailable)"
+    ;;
+
   *)
-    echo "usage: drill.sh deploy <sha> | before-reboot | after-reboot | backup" >&2
+    echo "usage: drill.sh deploy <sha> | before-reboot | after-reboot | backup | status" >&2
     exit 2
     ;;
 esac
