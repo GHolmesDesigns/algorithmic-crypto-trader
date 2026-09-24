@@ -14,7 +14,7 @@ manifest_path=${2:?$usage}
 : "${SCRATCH_DATABASE_URL:?SCRATCH_DATABASE_URL must be configured}"
 
 # Keep this list identical to backup-postgres.sh.
-tables='signals orders fills portfolio_snapshots positions_snapshot balances_snapshot equity_curve discrepancies'
+tables='signals orders fills system_events audit_notes market_candles portfolio_snapshots positions_snapshot balances_snapshot equity_curve discrepancies'
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/trader-restore.XXXXXX")
 cleanup() {

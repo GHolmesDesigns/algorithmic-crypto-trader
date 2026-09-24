@@ -120,7 +120,11 @@ recovery_logged() {
 record_recovery() {
   status=$(api GET /operator/state operator recovery.status || echo unavailable)
   printf '%s\n' "$status" > "$state_dir/$1-recovery"
-  check "$1-recovery" "$(ok test "$status" != halted)" "status=$status"
+  check "$1-recovery" "$(ok recovery_ok "$status")" "status=$status"
+}
+
+recovery_ok() {
+  [ "$1" = reconciled ] || [ "$1" = no_broker ]
 }
 
 cd "$project_dir"

@@ -326,6 +326,31 @@ async def test_service_startup_runs_recovery_and_reports_it(tmp_path, monkeypatc
     assert KillSwitch(switch_path).state is KillSwitchState.HALTED
 
 
+@pytest.mark.asyncio
+async def test_service_startup_uses_the_configured_app_broker(tmp_path, monkeypatch) -> None:
+    engine, session_factory = database(tmp_path)
+    broker = SimulatedBroker()
+    SqlAlchemyPortfolioStore(session_factory).save_snapshot(
+        PortfolioState(balances=await broker.get_balances()), source="broker"
+    )
+    engine.dispose()
+    monkeypatch.setenv("KILL_SWITCH_FILE", str(tmp_path / "kill-switch.json"))
+    monkeypatch.setenv("APP_ENV", "test")
+    settings = StartupSettings(
+        TradingMode.PAPER,
+        CredentialScope.NONE,
+        "",
+        f"sqlite+pysqlite:///{tmp_path / 'trader.db'}",
+        "INFO",
+    )
+    application = create_app(settings, broker=broker)
+
+    result = await run_startup_recovery(application)
+
+    assert result.status == "reconciled"
+    assert application.state.operator_state.to_dict()["recovery"]["status"] == "reconciled"
+
+
 def test_latest_snapshot_batch_includes_an_empty_position_set(tmp_path) -> None:
     engine, session_factory = database(tmp_path)
     store = SqlAlchemyPortfolioStore(session_factory)

@@ -31,6 +31,7 @@ POSTGRES_PASSWORD=REPLACE_WITH_RANDOM_DATABASE_PASSWORD
 DATABASE_URL=postgresql+psycopg://trader:REPLACE_WITH_URL_ESCAPED_PASSWORD@db:5432/trader
 TRADING_MODE=paper
 CREDENTIAL_SCOPE=none
+BROKER_PROVIDER=
 OPERATOR_TOKEN=REPLACE_WITH_RANDOM_OPERATOR_TOKEN
 OPERATOR_ADMIN_TOKEN=REPLACE_WITH_RANDOM_ADMIN_TOKEN
 ```
@@ -65,9 +66,15 @@ persisted database state:
    `HALTED`. Only an operator can re-arm it.
 
 The result is shown as "Startup recovery" on the operator dashboard and under
-`recovery` in `/operator/state`. The service currently starts without a
-broker. In that configuration, a clean database reports `no_broker` and any
-pending order halts trading, because it cannot be resolved.
+`recovery` in `/operator/state`. An empty `BROKER_PROVIDER` is intentionally
+allowed for backtest/replay and the paper-only drill: a clean database reports
+`no_broker`, while any pending order halts trading because it cannot be
+resolved. For provider-backed recovery, set `BROKER_PROVIDER=coinbase` with
+`COINBASE_API_KEY` and `COINBASE_PRIVATE_KEY`, or
+`BROKER_PROVIDER=gemini-sandbox` with `GEMINI_API_KEY` and
+`GEMINI_API_SECRET`. Startup constructs that adapter and passes it to order and
+portfolio recovery; missing credentials or a live/Gemini mismatch fails before
+the HTTP server starts. Gemini remains sandbox-only.
 
 ## Nightly encrypted off-box backup
 

@@ -20,6 +20,11 @@ services:
     environment:
       TRADING_MODE: ${TRADING_MODE:-backtest}
       CREDENTIAL_SCOPE: ${CREDENTIAL_SCOPE:-none}
+      BROKER_PROVIDER: ${BROKER_PROVIDER:-}
+      COINBASE_API_KEY: ${COINBASE_API_KEY:-}
+      COINBASE_PRIVATE_KEY: ${COINBASE_PRIVATE_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_SECRET: ${GEMINI_API_SECRET:-}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-trader}:${POSTGRES_PASSWORD:-trader}@db:5432/${POSTGRES_DB:-trader}
       KILL_SWITCH_FILE: /var/lib/trader/kill-switch.json
     healthcheck:

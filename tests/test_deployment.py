@@ -16,6 +16,9 @@ MANIFEST = [
     "signals=3",
     "orders=2",
     "fills=4",
+    "system_events=0",
+    "audit_notes=0",
+    "market_candles=0",
     "portfolio_snapshots=1",
     "positions_snapshot=1",
     "balances_snapshot=2",
@@ -135,6 +138,8 @@ def test_vps_compose_requires_runtime_secrets_and_persists_state() -> None:
     assert "POSTGRES_PASSWORD:?" in compose
     assert "DATABASE_URL:?" in compose
     assert "OPERATOR_TOKEN:?" in compose
+    assert "BROKER_PROVIDER" in compose
+    assert "COINBASE_PRIVATE_KEY" in compose
     assert "KILL_SWITCH_FILE: /var/lib/trader/kill-switch.json" in compose
     assert "kill-switch-data" in base_compose
     assert "postgres-data" in base_compose
@@ -160,6 +165,8 @@ def test_backup_and_restore_scripts_check_the_same_tables() -> None:
     assert backup_tables is not None and restore_tables is not None
     assert backup_tables.group(1) == restore_tables.group(1)
     assert "portfolio_snapshots" in backup_tables.group(1).split()
+    for table in ("system_events", "audit_notes", "market_candles"):
+        assert table in backup_tables.group(1).split()
     for script in ("backup-postgres.sh", "restore-verify-postgres.sh"):
         assert "set -x" not in (ROOT / "deploy" / script).read_text()
 
@@ -375,6 +382,16 @@ def test_drill_fails_when_startup_recovery_halted(tmp_path) -> None:
 
     assert result.returncode != 0
     assert "CHECK app-restart-recovery: FAIL status=halted" in result.stdout
+
+
+@needs_sh
+def test_drill_fails_when_startup_recovery_is_unavailable(tmp_path) -> None:
+    env = drill_env(tmp_path, FAKE_RECOVERY="unavailable")
+
+    result = run_script("drill.sh", env, "before-reboot")
+
+    assert result.returncode != 0
+    assert "CHECK app-restart-recovery: FAIL status=unavailable" in result.stdout
 
 
 @needs_sh

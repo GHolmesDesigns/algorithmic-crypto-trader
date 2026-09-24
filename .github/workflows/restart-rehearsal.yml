@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           sh deploy/drill.sh after-reboot | tee "$RUNNER_TEMP/after.txt"
-          for expected in orders=1 fills=1 signals=1 portfolio_snapshots=1 positions_snapshot=1 balances_snapshot=1 equity_curve=1; do
+          for expected in orders=1 fills=1 signals=1 system_events=0 audit_notes=0 market_candles=0 portfolio_snapshots=1 positions_snapshot=1 balances_snapshot=1 equity_curve=1 discrepancies=0; do
             grep -q "INFO   $expected\$" "$RUNNER_TEMP/after.txt" || { echo "::error::expected $expected after restart"; exit 1; }
           done
 

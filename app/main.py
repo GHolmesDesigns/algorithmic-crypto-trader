@@ -19,6 +19,7 @@ from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
 
 from app.recovery import StartupRecoveryResult, recover_on_startup
+from app.startup_broker import build_startup_broker
 
 
 def create_app(
@@ -47,6 +48,7 @@ async def run_startup_recovery(application: FastAPI, *, broker=None) -> StartupR
     """Recover persisted state before the HTTP server accepts any request."""
 
     settings: StartupSettings = application.state.startup_settings
+    recovery_broker = broker if broker is not None else application.state.operator_state.broker
     engine = create_database_engine(settings.database_url, settings.trading_mode)
     try:
         session_factory = create_session_factory(engine)
@@ -54,7 +56,7 @@ async def run_startup_recovery(application: FastAPI, *, broker=None) -> StartupR
             kill_switch=application.state.kill_switch,
             order_store=SqlAlchemyOrderStore(session_factory),
             portfolio_store=SqlAlchemyPortfolioStore(session_factory),
-            broker=broker,
+            broker=recovery_broker,
         )
     finally:
         engine.dispose()
@@ -67,8 +69,9 @@ def main() -> None:
     configure_logging(settings.log_level)
     logger = logging.getLogger(__name__)
     logger.info(startup_banner(settings))
-    application = create_app(settings)
-    recovery = asyncio.run(run_startup_recovery(application))
+    broker = build_startup_broker(settings)
+    application = create_app(settings, broker=broker)
+    recovery = asyncio.run(run_startup_recovery(application, broker=broker))
     logger.info(
         "startup recovery %s: %s (kill switch %s)",
         recovery.status,
