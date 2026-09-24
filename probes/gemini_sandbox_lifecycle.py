@@ -3,7 +3,9 @@
 Everything goes through ``GeminiBroker``, which refuses any host outside
 ``*.sandbox.gemini.com``, so no production account can be reached. Orders are
 tiny, the request budget is fixed, and any order still resting at the end is
-canceled in ``finally``. The Sandbox key needs the Trader role only.
+canceled in ``finally``. The Sandbox key must be created for the Primary account
+(a group-level Master key is refused) with the Trader role only, and the account
+needs test US dollars, which the first step checks before any order.
 
 Run from the repository root and type the key and secret into the hidden prompts::
 
@@ -150,16 +152,15 @@ async def lifecycle(
     )
     run = SandboxRun(api_key, api_secret, client)
     try:
-        balances = await run.broker.get_balances()
-        report.step("authenticate", "pass", currencies=len(balances))
-        quote = await run.broker.get_quote(SYMBOL)
-        await _market_order(run, report)
-        await _resting_limit_and_recovery(run, report, quote)
-        await _undersized(run, report, quote)
-        await _partial_fill(run, report)
-        await _trading_loop(run, report)
+        quote = await _funded_quote(run, report)
+        if quote is not None:
+            await _capped_market_order(run, report)
+            await _resting_limit_and_recovery(run, report, quote)
+            await _undersized(run, report, quote)
+            await _partial_fill(run, report)
+            await _trading_loop(run, report)
     except (ProviderError, CircuitOpen, RateLimitExceeded, BudgetExhausted, UnexpectedHost) as exc:
-        report.step("stopped", "fail", error=_describe(exc))
+        report.step("stopped", "fail", **_describe(exc))
     finally:
         await _cancel_leftovers(run, report, transport)
         await client.aclose()
@@ -174,25 +175,52 @@ async def lifecycle(
     return report
 
 
-async def _market_order(run: SandboxRun, report: ProbeReport) -> None:
+async def _funded_quote(run: SandboxRun, report: ProbeReport) -> Quote | None:
+    """Authenticate, then confirm the account holds enough US dollars for every order.
+
+    Returns the quote, or ``None`` when the run should stop before placing anything.
+    Only whether the balance suffices is recorded, never the balance itself.
+    """
+
+    balances = await run.broker.get_balances()
+    report.step("authenticate", "pass", currencies=len(balances))
+    quote = await run.broker.get_quote(SYMBOL)
+    usd = next((item.available for item in balances if item.asset == "USD"), Decimal("0"))
+    # Two capped buys, one resting buy, and a partial fill of up to the cap, plus fees.
+    needed = _price(quote.ask * (3 * PROBE_SIZE + PARTIAL_FILL_CAP) * Decimal("1.03")) + CENT
+    enough = usd >= needed
+    report.step("usd_available", _check(enough), needed_usd=str(needed))
+    if not enough:
+        report.notes.append(
+            f"The Sandbox Primary account needs at least {needed} USD for this check. Add "
+            "test funds on the Gemini Sandbox website, then run it again."
+        )
+        return None
+    return quote
+
+
+async def _capped_market_order(run: SandboxRun, report: ProbeReport) -> None:
+    """A market request goes out as an immediate-or-cancel limit capped 1% past the ask."""
+
     try:
         key, order = await run.submit(OrderType.MARKET, PROBE_SIZE)
     except ProviderOrderRejectedError as exc:
-        report.step("market_order", "answered", accepted=False, reason=str(exc))
-        report.notes.append(
-            "The Sandbox refuses 'exchange market'; the trading loop needs an "
-            "immediate-or-cancel limit order with a price collar (#11 open item 2)."
-        )
+        report.step("capped_market_order", "fail", reason=str(exc))
         return
     fills = await run.broker.get_fills(key)
+    filled = order.status is OrderStatus.FILLED
     report.step(
-        "market_order",
-        "answered",
-        accepted=True,
+        "capped_market_order",
+        "pass" if filled else "refused",
         status=order.status.value,
         filled=str(order.filled_quantity),
         fills=len(fills),
     )
+    if not filled:
+        report.notes.append(
+            "The capped order did not fill completely within 1% of the Sandbox quote, so "
+            "the Sandbox book is thin near its quote; the unfilled part was cancelled."
+        )
 
 
 async def _resting_limit_and_recovery(run: SandboxRun, report: ProbeReport, quote: Quote) -> None:
@@ -379,9 +407,22 @@ def _check(ok: bool) -> str:
     return "pass" if ok else "fail"
 
 
-def _describe(exc: Exception) -> str:
-    status = getattr(exc, "status_code", None)
-    return f"{type(exc).__name__} (HTTP {status})" if status else type(exc).__name__
+def _describe(exc: Exception) -> dict[str, Any]:
+    """The error type, HTTP status, and Gemini's reason code (e.g. ``InvalidSignature``)."""
+
+    details: dict[str, Any] = {"error": type(exc).__name__}
+    # An adapter rejection wraps Gemini's HTTP error, which carries the status and reason.
+    source = exc.__cause__ if isinstance(exc, ProviderOrderRejectedError) and exc.__cause__ else exc
+    status = getattr(source, "status_code", None)
+    if status:
+        details["http_status"] = status
+    payload = getattr(source, "payload", None)
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    if not reason and isinstance(exc, ProviderOrderRejectedError):
+        reason = str(exc)
+    if isinstance(reason, str) and reason:
+        details["reason"] = reason[:64]
+    return details
 
 
 async def _prompted() -> ProbeReport:

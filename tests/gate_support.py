@@ -246,7 +246,8 @@ class FakeGeminiSandbox(FakeVenue):
             "client_order_id": order["client_order_id"],
             "symbol": order["symbol"].replace("-", "").lower(),
             "side": order["side"],
-            "type": "exchange market",
+            "type": "exchange limit",
+            "options": ["immediate-or-cancel"],
             "original_amount": str(order["size"]),
             "executed_amount": str(order["size"]),
             "remaining_amount": "0",
@@ -293,6 +294,11 @@ class FakeGeminiSandbox(FakeVenue):
             ]
             return httpx.Response(200, json=rows, request=request)
         if path == "/v1/order/new":
+            # A market request arrives as an immediate-or-cancel limit capped past the quote.
+            assert payload["type"] == "exchange limit"
+            assert payload["options"] == ["immediate-or-cancel"]
+            limit = Decimal(payload["price"])
+            assert limit >= self.price if payload["side"] == "buy" else limit <= self.price
             symbol = payload["symbol"].upper()
             order = self.fill_market(
                 payload["client_order_id"],
