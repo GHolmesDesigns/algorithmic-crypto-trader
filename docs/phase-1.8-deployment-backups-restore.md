@@ -66,15 +66,30 @@ persisted database state:
    `HALTED`. Only an operator can re-arm it.
 
 The result is shown as "Startup recovery" on the operator dashboard and under
-`recovery` in `/operator/state`. An empty `BROKER_PROVIDER` is intentionally
-allowed for backtest/replay and the paper-only drill: a clean database reports
-`no_broker`, while any pending order halts trading because it cannot be
-resolved. For provider-backed recovery, set `BROKER_PROVIDER=coinbase` with
-`COINBASE_API_KEY` and `COINBASE_PRIVATE_KEY`, or
-`BROKER_PROVIDER=gemini-sandbox` with `GEMINI_API_KEY` and
-`GEMINI_API_SECRET`. Startup constructs that adapter and passes it to order and
-portfolio recovery; missing credentials or a live/Gemini mismatch fails before
-the HTTP server starts. Gemini remains sandbox-only.
+`recovery` in `/operator/state`. It runs in the server's startup phase, on the
+same event loop that later serves requests, so a provider adapter stays usable
+after recovery. uvicorn accepts connections only after it completes.
+
+`BROKER_PROVIDER` selects the venue that actually holds this mode's orders:
+
+- empty: no provider. This is valid for backtest, replay, and the credential-free
+  paper drill. A clean database reports `no_broker`, and any pending order halts
+  trading because it cannot be resolved.
+- `gemini-sandbox`: `paper` only, with `GEMINI_API_KEY` and `GEMINI_API_SECRET`.
+- `coinbase`: `live` only, with `COINBASE_API_KEY` and `COINBASE_PRIVATE_KEY`.
+  Paper orders against live Coinbase prices go to the in-memory simulator.
+  Reconciling them against a real Coinbase account would halt every start and
+  replace the paper baseline, so the service refuses that combination.
+
+A missing credential or a mode mismatch stops the service before it accepts
+requests. Fills are stored under the local order they belong to, even though
+provider adapters label them with the venue's own order ID.
+
+Migration `0004` backfills one baseline from pre-batch snapshot rows. A position
+closed after its last legacy snapshot is carried into that baseline, so the
+first recovery after the upgrade may halt on a divergence. Reconciliation then
+saves the broker's state, and the next start reconciles after an operator
+re-arms.
 
 ## Nightly encrypted off-box backup
 
@@ -128,8 +143,10 @@ rclone copyto remote:trader/trader-20260923T021700Z.manifest.age /secure/operato
 sh deploy/restore-verify-postgres.sh   /secure/operator/trader-20260923T021700Z.dump.age   /secure/operator/trader-20260923T021700Z.manifest.age
 ```
 
-The script restores the dump and then compares the migration version and every
-table's row count with the manifest. It succeeds only when it prints
+The script restores the dump and then compares the migration version and the
+row count of every table named in the backup's own manifest. Older backups made
+with a shorter table list therefore stay verifiable. The manifest must still
+cover the core state tables, and malformed entries are rejected. It succeeds only when it prints
 `verified <table>=<rows>` lines followed by `restore_verified=1`. Any
 difference prints the mismatched lines and exits non-zero. Record the date,
 reviewed commit, artifact names, scratch database identifier, the `verified`

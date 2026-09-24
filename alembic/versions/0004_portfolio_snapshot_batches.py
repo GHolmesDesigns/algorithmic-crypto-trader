@@ -38,6 +38,14 @@ def _backfill_legacy_snapshots() -> None:
     batch identifier. Reconstruct one complete baseline per source by keeping
     the newest row for each symbol/asset. This is intentionally a one-time
     migration backfill; new writes always create an explicit batch.
+
+    Legacy rows do not record which symbols a snapshot omitted, so a position
+    closed after its last legacy snapshot is carried into the baseline. The
+    first startup recovery then reports a divergence and halts; reconciliation
+    saves the broker's state as the new baseline, and later starts reconcile
+    after the operator re-arms. Databases already at 0004 before this backfill
+    was added keep their unbatched legacy rows and start from the next
+    reconciliation snapshot.
     """
 
     bind = op.get_bind()

@@ -1,9 +1,11 @@
 #!/bin/sh
 
 # Restores an encrypted custom-format dump into a pre-created scratch database,
-# then verifies the migration version and the row count of every durable state
-# table against the encrypted manifest written at backup time. The script never
-# prints connection strings, decrypted rows, or the identity contents.
+# then verifies the migration version and the row count of every table named in
+# the encrypted manifest written at backup time. Checking the manifest's own
+# tables keeps older backups verifiable after the backup table list grows; the
+# core state tables must always be present. The script never prints connection
+# strings, decrypted rows, or the identity contents.
 set -eu
 umask 077
 
@@ -13,8 +15,8 @@ manifest_path=${2:?$usage}
 : "${AGE_IDENTITY_FILE:?AGE_IDENTITY_FILE must be configured}"
 : "${SCRATCH_DATABASE_URL:?SCRATCH_DATABASE_URL must be configured}"
 
-# Keep this list identical to backup-postgres.sh.
-tables='signals orders fills system_events audit_notes market_candles portfolio_snapshots positions_snapshot balances_snapshot equity_curve discrepancies'
+# Every manifest must cover these; backup-postgres.sh lists a superset.
+required_tables='signals orders fills portfolio_snapshots positions_snapshot balances_snapshot equity_curve discrepancies'
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/trader-restore.XXXXXX")
 cleanup() {
@@ -31,6 +33,17 @@ age --decrypt --identity "$AGE_IDENTITY_FILE" --output "$plain_path" "$backup_pa
 age --decrypt --identity "$AGE_IDENTITY_FILE" --output "$expected" "$manifest_path"
 test -s "$plain_path"
 test -s "$expected"
+# Names become SQL identifiers below, so accept only simple lowercase names.
+if grep -qvE '^[a-z_]+=[A-Za-z0-9_]+$' "$expected"; then
+  echo "backup manifest is malformed" >&2
+  exit 1
+fi
+grep -q '^alembic_version=' "$expected" || { echo "backup manifest lacks alembic_version" >&2; exit 1; }
+for table in $required_tables; do
+  grep -q "^$table=" "$expected" || { echo "backup manifest lacks required table $table" >&2; exit 1; }
+done
+tables=$(sed -n 's/^\([a-z_]*\)=.*/\1/p' "$expected" | grep -vx alembic_version)
+
 pg_restore --clean --if-exists --exit-on-error --no-owner --dbname="$SCRATCH_DATABASE_URL" "$plain_path"
 
 query="SELECT 'alembic_version=' || version_num FROM alembic_version"

@@ -157,15 +157,19 @@ def test_backup_unit_gives_rclone_readable_config_under_hardening() -> None:
     assert "ExecStart=/opt/algorithmic-crypto-trader/deploy/backup-postgres.sh" in unit
 
 
-def test_backup_and_restore_scripts_check_the_same_tables() -> None:
-    pattern = re.compile(r"^tables='([^']+)'", re.MULTILINE)
-    backup_tables = pattern.search((ROOT / "deploy" / "backup-postgres.sh").read_text())
-    restore_tables = pattern.search((ROOT / "deploy" / "restore-verify-postgres.sh").read_text())
+def test_backup_covers_every_table_the_restore_requires() -> None:
+    backup_tables = re.search(
+        r"^tables='([^']+)'", (ROOT / "deploy" / "backup-postgres.sh").read_text(), re.MULTILINE
+    )
+    required = re.search(
+        r"^required_tables='([^']+)'",
+        (ROOT / "deploy" / "restore-verify-postgres.sh").read_text(),
+        re.MULTILINE,
+    )
 
-    assert backup_tables is not None and restore_tables is not None
-    assert backup_tables.group(1) == restore_tables.group(1)
-    assert "portfolio_snapshots" in backup_tables.group(1).split()
-    for table in ("system_events", "audit_notes", "market_candles"):
+    assert backup_tables is not None and required is not None
+    assert set(required.group(1).split()) <= set(backup_tables.group(1).split())
+    for table in ("portfolio_snapshots", "system_events", "audit_notes", "market_candles"):
         assert table in backup_tables.group(1).split()
     for script in ("backup-postgres.sh", "restore-verify-postgres.sh"):
         assert "set -x" not in (ROOT / "deploy" / script).read_text()
@@ -218,8 +222,8 @@ def test_backup_refuses_to_run_without_encryption_recipient(tmp_path) -> None:
     assert not (tmp_path / "calls.log").exists()
 
 
-def encrypted_artifacts(tmp_path: Path) -> tuple[Path, Path]:
-    result, backup_dir = backup(tmp_path)
+def encrypted_artifacts(tmp_path: Path, manifest: list[str]) -> tuple[Path, Path]:
+    result, backup_dir = backup(tmp_path, FAKE_MANIFEST="\n".join(manifest))
     assert result.returncode == 0, result.stderr
     (tmp_path / "calls.log").unlink()
     dump = next(backup_dir.glob("*.dump.age"))
@@ -227,8 +231,10 @@ def encrypted_artifacts(tmp_path: Path) -> tuple[Path, Path]:
     return dump, manifest
 
 
-def restore(tmp_path: Path, restored: list[str]) -> subprocess.CompletedProcess[str]:
-    dump, manifest = encrypted_artifacts(tmp_path)
+def restore(
+    tmp_path: Path, restored: list[str], manifest_lines: list[str] = MANIFEST
+) -> subprocess.CompletedProcess[str]:
+    dump, manifest = encrypted_artifacts(tmp_path, manifest_lines)
     restore_dir = tmp_path / "restore"
     restore_dir.mkdir()
     env = stub_env(
@@ -469,3 +475,47 @@ def test_restart_rehearsal_is_manual_uses_no_secrets_and_proves_fail_closed_rest
     assert "grep -qx 'kill_switch=halted'" in script
     assert "grep -qx 'restore_verified=1'" in script
     assert job["steps"][-1]["if"] == "always()"
+
+
+LEGACY_MANIFEST = [
+    line
+    for line in MANIFEST
+    if line.split("=")[0] not in {"system_events", "audit_notes", "market_candles"}
+]
+
+
+@needs_sh
+def test_restore_verifies_older_backups_against_their_own_table_list(tmp_path) -> None:
+    result = restore(tmp_path, LEGACY_MANIFEST, LEGACY_MANIFEST)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == "restore_verified=1"
+    psql_call = next(
+        line
+        for line in (tmp_path / "restore" / "calls.log").read_text().splitlines()
+        if line.startswith("psql")
+    )
+    assert "FROM orders" in psql_call
+    assert "market_candles" not in psql_call
+
+
+@needs_sh
+@pytest.mark.parametrize(
+    ("manifest", "error"),
+    [
+        (
+            [line for line in MANIFEST if not line.startswith("orders=")],
+            "lacks required table orders",
+        ),
+        ([line for line in MANIFEST if not line.startswith("alembic")], "lacks alembic_version"),
+        ([*MANIFEST, "orders;drop table fills=1"], "malformed"),
+    ],
+    ids=["missing-required-table", "missing-migration", "unsafe-table-name"],
+)
+def test_restore_refuses_incomplete_or_malformed_manifests(tmp_path, manifest, error) -> None:
+    result = restore(tmp_path, manifest, manifest)
+
+    assert result.returncode != 0
+    assert error in result.stderr
+    assert "restore_verified" not in result.stdout
+    assert "pg_restore" not in (tmp_path / "restore" / "calls.log").read_text()

@@ -1,3 +1,4 @@
+import asyncio
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -7,7 +8,10 @@ from app.recovery import recover_on_startup
 from brokers.simulated import FaultPlan, SimulatedBroker, SimulatedFault, SubmissionTimeoutError
 from core.guards import CredentialScope, StartupSettings
 from core.models import (
+    Balance,
+    Fill,
     KillSwitchState,
+    Order,
     OrderRequest,
     OrderSide,
     OrderStatus,
@@ -365,3 +369,159 @@ def test_latest_snapshot_batch_includes_an_empty_position_set(tmp_path) -> None:
     with session_factory() as session:
         assert isinstance(session.scalar(select(PositionSnapshotRecord.batch_id)), UUID)
     engine.dispose()
+
+
+class ProviderIdBroker:
+    """A venue that labels orders and fills with its own IDs, like Coinbase and Gemini."""
+
+    def __init__(self, request: OrderRequest, filled: Decimal) -> None:
+        self.request = request
+        self.filled = filled
+        self.provider_order_id = uuid4()
+
+    async def get_order(self, client_order_id: str) -> Order | None:
+        if client_order_id != str(self.request.client_order_id):
+            return None
+        return Order(
+            order_id=self.provider_order_id,
+            request=self.request,
+            status=OrderStatus.PARTIALLY_FILLED,
+            filled_quantity=self.filled,
+        )
+
+    async def get_fills(self, client_order_id: str) -> tuple[Fill, ...]:
+        return (
+            Fill(
+                fill_id="venue-fill-1",
+                order_id=self.provider_order_id,
+                symbol="BTC-USD",
+                side=OrderSide.BUY,
+                quantity=self.filled,
+                price=Decimal("60000"),
+                fee=Decimal("0"),
+                fee_asset="USD",
+                occurred_at=utc_now(),
+            ),
+        )
+
+    async def get_positions(self) -> tuple[Position, ...]:
+        return (
+            Position(
+                symbol="BTC-USD",
+                quantity=self.filled,
+                average_price=Decimal("60000"),
+                as_of=utc_now(),
+            ),
+        )
+
+    async def get_balances(self) -> tuple[Balance, ...]:
+        return (Balance(asset="USD", available=Decimal("99700"), as_of=utc_now()),)
+
+
+@pytest.mark.asyncio
+async def test_provider_order_ids_do_not_orphan_fills_across_restarts(tmp_path) -> None:
+    engine, session_factory = database(tmp_path)
+    request = reserve_pending(session_factory)
+    broker = ProviderIdBroker(request, Decimal("0.005"))
+    SqlAlchemyPortfolioStore(session_factory).save_snapshot(
+        PortfolioState(
+            positions=await broker.get_positions(), balances=await broker.get_balances()
+        ),
+        source="broker",
+    )
+
+    # First start resolves the pending order; the second start reconciles the
+    # partially filled order and its fill against the venue.
+    for _ in range(2):
+        switch = KillSwitch()
+        result = await recover_on_startup(
+            kill_switch=switch,
+            order_store=SqlAlchemyOrderStore(session_factory),
+            portfolio_store=RecordingPortfolioStore(session_factory),
+            broker=broker,
+        )
+        assert result.status == "reconciled", result.detail
+        assert switch.state is KillSwitchState.RUNNING
+
+    with session_factory() as session:
+        assert session.scalar(select(FillRecord.order_id)) == request.client_order_id
+    (open_order,) = SqlAlchemyOrderStore(session_factory).open_orders()
+    assert open_order.filled_quantity == Decimal("0.005")
+    engine.dispose()
+
+
+class LoopBoundBroker:
+    """Fails like an httpx client when used from a second event loop."""
+
+    def __init__(self) -> None:
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.closed = False
+
+    def _check_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self.loop is None:
+            self.loop = loop
+        elif loop is not self.loop:
+            raise RuntimeError("Event loop is closed")
+
+    async def get_order(self, client_order_id: str) -> Order | None:
+        self._check_loop()
+        return None
+
+    async def get_fills(self, client_order_id: str) -> tuple[Fill, ...]:
+        self._check_loop()
+        return ()
+
+    async def get_positions(self) -> tuple[Position, ...]:
+        self._check_loop()
+        return ()
+
+    async def get_balances(self) -> tuple[Balance, ...]:
+        self._check_loop()
+        return (Balance(asset="USD", available=Decimal("1000"), as_of=utc_now()),)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_main_runs_recovery_on_the_server_event_loop(tmp_path, monkeypatch) -> None:
+    import uvicorn
+    from app import main as app_main
+
+    engine, session_factory = database(tmp_path)
+    SqlAlchemyPortfolioStore(session_factory).save_snapshot(
+        PortfolioState(
+            balances=(Balance(asset="USD", available=Decimal("1000"), as_of=utc_now()),)
+        ),
+        source="broker",
+    )
+    engine.dispose()
+    broker = LoopBoundBroker()
+    for name, value in {
+        "TRADING_MODE": "paper",
+        "CREDENTIAL_SCOPE": "none",
+        "DATABASE_URL": f"sqlite+pysqlite:///{tmp_path / 'trader.db'}",
+        "APP_ENV": "test",
+        "KILL_SWITCH_FILE": str(tmp_path / "kill-switch.json"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(app_main, "configure_logging", lambda level: None)
+    monkeypatch.setattr(app_main, "build_startup_broker", lambda settings: broker)
+    served: dict[str, object] = {}
+
+    def serve_like_uvicorn(application, **options) -> None:
+        async def serve() -> None:
+            async with application.router.lifespan_context(application):
+                state = application.state.operator_state
+                served["recovery"] = state.startup_recovery.status
+                served["connectivity"] = (await state.refresh()).connectivity_status
+
+        served["lifespan"] = options.get("lifespan")
+        asyncio.run(serve())
+
+    monkeypatch.setattr(uvicorn, "run", serve_like_uvicorn)
+
+    app_main.main()
+
+    assert served == {"lifespan": "on", "recovery": "reconciled", "connectivity": "healthy"}
+    assert broker.closed

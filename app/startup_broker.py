@@ -12,11 +12,15 @@ from core.models import TradingMode
 
 
 def build_startup_broker(settings: StartupSettings) -> BrokerInterface | None:
-    """Construct a provider adapter only when the operator selected one.
+    """Construct the adapter that holds this mode's orders, if one is selected.
 
-    An empty provider keeps backtest/replay and paper deployments without
-    credentials deterministic. Once a provider is selected, missing credentials
-    or a live/sandbox mismatch fail before the application accepts requests.
+    Recovery reconciles persisted orders and portfolio state against this broker,
+    so it must be the venue that actually received the orders: Coinbase in
+    `live`, Gemini Sandbox in `paper`. Paper orders against live Coinbase prices
+    go to the in-memory simulator, so reconciling them against a real Coinbase
+    account would halt every start and overwrite the paper baseline. An empty
+    provider keeps credential-free deployments deterministic. Any mismatch or
+    missing credential fails before the application accepts requests.
     """
 
     provider = os.environ.get("BROKER_PROVIDER", "").strip().lower()
@@ -27,13 +31,18 @@ def build_startup_broker(settings: StartupSettings) -> BrokerInterface | None:
             "CREDENTIAL_SCOPE must be view or trade when BROKER_PROVIDER is selected"
         )
     if provider == "coinbase":
+        if settings.trading_mode is not TradingMode.LIVE:
+            raise StartupGuardError(
+                "BROKER_PROVIDER=coinbase is only valid in live mode; paper orders go to the "
+                "simulator or gemini-sandbox"
+            )
         return CoinbaseBroker(
             api_key=_required("COINBASE_API_KEY"),
             private_key=_required("COINBASE_PRIVATE_KEY"),
         )
     if provider in {"gemini", "gemini-sandbox"}:
-        if settings.trading_mode is TradingMode.LIVE:
-            raise StartupGuardError("Gemini Sandbox cannot be used for live mode")
+        if settings.trading_mode is not TradingMode.PAPER:
+            raise StartupGuardError("BROKER_PROVIDER=gemini-sandbox is only valid in paper mode")
         return GeminiBroker(
             api_key=_required("GEMINI_API_KEY"),
             api_secret=_required("GEMINI_API_SECRET"),
