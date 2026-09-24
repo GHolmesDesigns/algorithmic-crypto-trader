@@ -122,11 +122,14 @@ class ExecutionEngine:
         return tuple(recovered)
 
     async def _record(self, order: Order) -> Order:
-        self.store.update(order)
         fills = await self.broker.get_fills(str(order.request.client_order_id))
         linked = _linked_to_local_order(order, fills)
         if linked:
             self.store.add_fills(linked)
+        # Keep the durable order recoverable until every authoritative fill has
+        # been read and persisted. If either step fails, the existing
+        # PENDING_SUBMIT/UNKNOWN row remains eligible for restart recovery.
+        self.store.update(order)
         if self.on_recorded is not None:
             self.on_recorded(order, linked)
         return order

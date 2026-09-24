@@ -11,6 +11,7 @@ from core.models import (
     Fill,
     OrderRequest,
     OrderSide,
+    OrderStatus,
     OrderType,
     RiskApproval,
     Signal,
@@ -107,12 +108,60 @@ class EmptyStore(InMemoryOrderStore):
         return None
 
 
+class FailFirstFillStore(InMemoryOrderStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_fill_write = True
+
+    def add_fills(self, fills: tuple[Fill, ...]) -> None:
+        if self.fail_next_fill_write:
+            self.fail_next_fill_write = False
+            raise PersistenceUnavailable("fill persistence is unavailable")
+        super().add_fills(fills)
+
+
 @pytest.mark.asyncio
 async def test_recover_pending_skips_an_order_that_cannot_be_read_back() -> None:
     store = EmptyStore()
     request = order_request()
     store.reserve(request, approve(request))
     assert await ExecutionEngine(SimulatedBroker(), store).recover_pending() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["provider-read", "fill-write"])
+async def test_fill_failures_leave_terminal_orders_pending_for_recovery(failure) -> None:
+    broker = SimulatedBroker()
+    request = order_request()
+    store = FailFirstFillStore() if failure == "fill-write" else InMemoryOrderStore()
+    engine = ExecutionEngine(broker, store)
+    get_fills = broker.get_fills
+
+    if failure == "provider-read":
+        calls = 0
+
+        async def fail_once(client_order_id: str):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ConnectionError("fill lookup failed")
+            return await get_fills(client_order_id)
+
+        broker.get_fills = fail_once  # type: ignore[method-assign]
+
+    with pytest.raises((ConnectionError, PersistenceUnavailable)):
+        await engine.submit(request, approve(request))
+
+    client_order_id = str(request.client_order_id)
+    pending = store.get(client_order_id)
+    assert pending is not None and pending.status is OrderStatus.PENDING_SUBMIT
+    assert store.pending() == (pending,)
+
+    assert [item.status for item in await engine.recover_pending()] == [OrderStatus.FILLED]
+    recovered = store.get(client_order_id)
+    assert recovered is not None and recovered.status is OrderStatus.FILLED
+    assert len(store.fills) == 1
+    assert {item.order_id for item in store.fills.values()} == {request.client_order_id}
 
 
 def outage():

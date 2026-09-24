@@ -8,6 +8,7 @@ capture from the Advanced Trade sandbox should replace them without test changes
 
 from __future__ import annotations
 
+import asyncio
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -332,20 +333,29 @@ async def test_documented_order_rejections_are_rejected_not_retried(status, body
     assert len(posts) == 1
 
 
-async def resting_limit_order(handler_extra):
+async def resting_limit_order(handler_extra, *, status_after_cancel: str | None = None):
     request = order_request(order_type=OrderType.LIMIT, limit_price=Decimal("50000"))
     client_id = str(request.client_order_id)
     order_id = "11111111-1111-4111-8111-111111111111"
 
+    historical_reads = 0
+
     async def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal historical_reads
         path = req.url.path.removeprefix(PREFIX)
         if req.method == "POST" and path == "/orders":
             return httpx.Response(
                 200, json=fixture("create_order_success.json", client_order_id=client_id)
             )
         if req.method == "GET" and path == f"/orders/historical/{order_id}":
+            historical_reads += 1
             open_order = fixture("get_order_filled.json", client_order_id=client_id)["order"]
             open_order.update(status="OPEN", filled_size="0", order_type="LIMIT")
+            if status_after_cancel is not None and historical_reads > 1:
+                open_order.update(
+                    status=status_after_cancel,
+                    filled_size="0.01" if status_after_cancel == "FILLED" else "0",
+                )
             return httpx.Response(200, json={"order": open_order})
         if path == "/orders/historical/batch":
             return httpx.Response(200, json={"orders": [], "has_next": False, "cursor": ""})
@@ -372,6 +382,24 @@ async def test_sandbox_cancel_failure_leaves_the_order_open() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_status", "expected"),
+    [("OPEN", OrderStatus.OPEN), ("FILLED", OrderStatus.FILLED)],
+)
+async def test_successful_cancel_uses_authoritative_order_state(provider_status, expected) -> None:
+    async def extra(req, path):
+        assert path == "/orders/batch_cancel"
+        return httpx.Response(200, json={"results": [{"success": True}]})
+
+    broker, client_id = await resting_limit_order(extra, status_after_cancel=provider_status)
+    order = await broker.cancel_order(client_id)
+
+    assert order.status is expected
+    assert (await broker.get_order(client_id)).status is expected
+    await broker.close()
+
+
+@pytest.mark.asyncio
 async def test_sandbox_edit_failure_leaves_the_order_unchanged() -> None:
     async def extra(req, path):
         assert path == "/orders/edit"
@@ -382,6 +410,67 @@ async def test_sandbox_edit_failure_leaves_the_order_unchanged() -> None:
         await broker.edit_order(client_id, quantity=Decimal("0.02"), limit_price=Decimal("49000"))
     order = await broker.get_order(client_id)
     assert order.status is OrderStatus.OPEN and order.request.quantity == Decimal("0.01")
+    await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_edit_refreshes_the_cached_request_terms() -> None:
+    async def extra(req, path):
+        assert path == "/orders/edit"
+        return httpx.Response(200, json={"success": True, "errors": []})
+
+    broker, client_id = await resting_limit_order(extra)
+    order = await broker.edit_order(
+        client_id, quantity=Decimal("0.02"), limit_price=Decimal("49000")
+    )
+
+    assert order.request.quantity == Decimal("0.02")
+    assert order.request.limit_price == Decimal("49000")
+    assert str(order.request.client_order_id) == client_id
+    await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_websocket_jwt_omits_the_rest_uri_claim() -> None:
+    pem, public_key = ec_key_pair()
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+            self.closed = False
+
+        async def send(self, message: str) -> None:
+            self.messages.append(message)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    websocket = WebSocket()
+
+    async def connect(url: str):
+        assert url.startswith("wss://")
+        return websocket
+
+    async def unused_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected REST request: {request.method} {request.url}")
+
+    broker = broker_for(unused_handler, api_key=KEY_NAME, private_key=pem, auth_token=None)
+    stop = asyncio.Event()
+    stop.set()
+    events = broker.authenticated_order_events(stop=stop, connect=connect)
+    with pytest.raises(StopAsyncIteration):
+        await anext(events)
+
+    message = json.loads(websocket.messages[0])
+    claims = jwt.decode(
+        message["jwt"], public_key, algorithms=["ES256"], options={"verify_aud": False}
+    )
+    header = jwt.get_unverified_header(message["jwt"])
+    assert message["channel"] == "user"
+    assert "uri" not in claims
+    assert claims["sub"] == KEY_NAME and claims["iss"] == "cdp"
+    assert header["kid"] == KEY_NAME and len(header["nonce"]) == 32
+    assert websocket.closed is True
     await broker.close()
 
 

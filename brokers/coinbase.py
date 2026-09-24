@@ -67,12 +67,12 @@ ORDER_SEARCH_PAGES = 10
 
 
 class CoinbaseJWTProvider:
-    """Short-lived, per-request JWTs with one explicit invalidation path on expiry.
+    """Short-lived REST and WebSocket JWTs with explicit invalidation.
 
     Coinbase binds each JWT to one request through its ``uri`` claim, written as
     ``"GET api.coinbase.com/api/v3/brokerage/accounts"``, so tokens are cached per
-    method and path. The header carries the key name as ``kid`` and a random
-    ``nonce``.
+    method and path. WebSocket JWTs intentionally omit ``uri``. Both token types
+    carry the key name as ``kid`` and a random ``nonce`` in the header.
     """
 
     def __init__(
@@ -103,6 +103,32 @@ class CoinbaseJWTProvider:
     def token(self, method: str, path: str, *, force_refresh: bool = False) -> str:
         """Return a JWT for ``method`` on the full request ``path`` (``/api/v3/...``)."""
 
+        return self._issue(
+            method=method,
+            path=path,
+            uri=f"{method.upper()} {self.host}{path}",
+            force_refresh=force_refresh,
+        )
+
+    def websocket_token(self, *, force_refresh: bool = False) -> str:
+        """Return a JWT for a WebSocket subscription, which has no ``uri`` claim."""
+
+        return self._issue(
+            method="WS",
+            path="",
+            uri=None,
+            force_refresh=force_refresh,
+        )
+
+    def _issue(
+        self,
+        *,
+        method: str,
+        path: str,
+        uri: str | None,
+        force_refresh: bool,
+    ) -> str:
+
         now = time.time()
         key = (method.upper(), path)
         cached = self._cached.get(key)
@@ -117,14 +143,16 @@ class CoinbaseJWTProvider:
             except ImportError as exc:  # pragma: no cover - exercised only without optional deps
                 raise RuntimeError("PyJWT is required for Coinbase private requests") from exc
             issued = int(now)
+            claims: dict[str, str | int] = {
+                "sub": self.api_key,
+                "iss": "cdp",
+                "nbf": issued,
+                "exp": issued + self.ttl_seconds,
+            }
+            if uri is not None:
+                claims["uri"] = uri
             token = jwt.encode(
-                {
-                    "sub": self.api_key,
-                    "iss": "cdp",
-                    "nbf": issued,
-                    "exp": issued + self.ttl_seconds,
-                    "uri": f"{method.upper()} {self.host}{path}",
-                },
+                claims,
                 self.private_key,
                 algorithm="ES256",
                 headers={"kid": self.api_key, "nonce": secrets.token_hex(16)},
@@ -445,11 +473,11 @@ class CoinbaseBroker(BrokerInterface):
         if not any(row.get("success") is True for row in results):
             reason = next((row.get("failure_reason") for row in results), None)
             raise ProviderHTTPError(409, f"cancel failed: {reason or 'no result'}")
-        canceled = current.model_copy(
-            update={"status": OrderStatus.CANCELED, "updated_at": utc_now()}
-        )
-        self._orders[client_order_id] = canceled
-        return canceled
+        # A successful response only acknowledges the cancel request. The order
+        # can still be OPEN/CANCEL_QUEUED or win the race and fill, so read the
+        # authoritative state instead of manufacturing a terminal cache entry.
+        refreshed = await self.get_order(client_order_id)
+        return refreshed or current
 
     async def edit_order(
         self,
@@ -482,6 +510,9 @@ class CoinbaseBroker(BrokerInterface):
             # Edit Order returns only success and errors; a failed edit leaves the order as is.
             if not isinstance(payload, Mapping) or payload.get("success") is not True:
                 raise ProviderHTTPError(409, f"edit failed: {_edit_errors(payload)}")
+            self._requests[client_order_id] = current.request.model_copy(
+                update={"quantity": quantity, "limit_price": limit_price}
+            )
             self._orders.pop(client_order_id, None)
             updated = await self.get_order(client_order_id)
             if updated is None:
@@ -541,7 +572,7 @@ class CoinbaseBroker(BrokerInterface):
             connect = websockets.connect
         websocket = await connect(COINBASE_WS_URL)
         try:
-            token = self._token("GET", "/users/self/verify")
+            token = self._websocket_token()
             await websocket.send(
                 json.dumps(
                     {
@@ -597,6 +628,12 @@ class CoinbaseBroker(BrokerInterface):
             return self._auth_token
         assert self._jwt is not None
         return self._jwt.token(method, f"{self._path_prefix}{path}", force_refresh=force)
+
+    def _websocket_token(self) -> str:
+        if self._auth_token is not None:
+            return self._auth_token
+        assert self._jwt is not None
+        return self._jwt.websocket_token()
 
     def _invalidate_token(self) -> None:
         if self._jwt is not None:
