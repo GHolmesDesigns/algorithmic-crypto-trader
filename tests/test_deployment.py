@@ -175,6 +175,18 @@ def test_backup_covers_every_table_the_restore_requires() -> None:
         assert "set -x" not in (ROOT / "deploy" / script).read_text()
 
 
+def test_drill_counts_every_backed_up_table() -> None:
+    backup_tables = re.search(
+        r"^tables='([^']+)'", (ROOT / "deploy" / "backup-postgres.sh").read_text(), re.MULTILINE
+    )
+    drill_tables = re.findall(
+        r"count\(\*\) FROM (\w+);?$", (ROOT / "deploy" / "drill.sh").read_text(), re.MULTILINE
+    )
+
+    assert backup_tables is not None
+    assert set(drill_tables) == set(backup_tables.group(1).split())
+
+
 @needs_sh
 def test_backup_dumps_inside_db_container_and_ships_only_encrypted_artifacts(tmp_path) -> None:
     result, backup_dir = backup(tmp_path)
