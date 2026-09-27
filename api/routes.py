@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from api.dashboard import build_dashboard
 from api.operator import OperatorState
 
 router = APIRouter()
@@ -69,28 +70,29 @@ async def operator_login_submit(request: Request) -> Response:
 
 @router.get("/operator", response_class=HTMLResponse)
 async def operator_dashboard(request: Request) -> Response:
-    auth = _authorize(request)
-    state = _operator_state(request)
-    await state.refresh()
-    response = templates.TemplateResponse(
-        request=request,
-        name="operator.html",
-        context={"snapshot": state.to_dict(), "auth_role": auth.role},
-    )
-    if auth.from_token:
-        _set_session_cookie(response, auth.role)
-    return response
+    return await _render_dashboard(request, "operator.html")
 
 
 @router.get("/operator/fragment", response_class=HTMLResponse)
 async def operator_fragment(request: Request) -> Response:
+    return await _render_dashboard(request, "operator_fragment.html")
+
+
+async def _render_dashboard(request: Request, template: str) -> Response:
+    """Render the same ``/operator/state`` payload the JSON route returns."""
+
     auth = _authorize(request)
     state = _operator_state(request)
     await state.refresh()
+    snapshot = state.to_dict()
     response = templates.TemplateResponse(
         request=request,
-        name="operator_fragment.html",
-        context={"snapshot": state.to_dict(), "auth_role": auth.role},
+        name=template,
+        context={
+            "snapshot": snapshot,
+            "auth_role": auth.role,
+            "view": build_dashboard(snapshot, role=auth.role),
+        },
     )
     if auth.from_token:
         _set_session_cookie(response, auth.role)

@@ -1,61 +1,370 @@
-<section id="operator-state" aria-live="polite">
-  <p>Application: <strong>{{ snapshot.application.status }}</strong></p>
-  <p>Trading mode: <strong>{{ snapshot.trading.mode }}</strong></p>
-  <p>Strategy version: <strong>{{ snapshot.trading.strategy_version }}</strong></p>
-  <p>Broker connectivity: <strong>{{ snapshot.connectivity.status }}</strong> — {{ snapshot.connectivity.detail }}</p>
-  <p>Risk state: <strong>{{ snapshot.risk.kill_switch }}</strong></p>
-  <p>Startup recovery: <strong>{{ snapshot.recovery.status }}</strong> — {{ snapshot.recovery.detail }}</p>
-  <p>Paper runtime: <strong>{{ snapshot.runtime.status }}</strong> — {{ snapshot.runtime.detail }}</p>
-  <p>Last strategy cycle: <strong>{{ snapshot.runtime.last_cycle_status or "not run" }}</strong>{% if snapshot.runtime.last_cycle_at %} at {{ snapshot.runtime.last_cycle_at }}{% endif %}</p>
-  <p>Portfolio: <strong>{{ snapshot.portfolio.status }}</strong> — {{ snapshot.portfolio.detail }}</p>
-  <p>P/L: <strong>{{ snapshot.portfolio.pnl.status }}</strong> — {{ snapshot.portfolio.pnl.detail }}</p>
-  <h2>Balances</h2>
-  <ul>
-    {% for balance in snapshot.portfolio.balances %}
-      <li>{{ balance.asset }}: available {{ balance.available }}, hold {{ balance.hold }}</li>
-    {% else %}
-      <li>No current balances available.</li>
-    {% endfor %}
-  </ul>
-  <h2>Positions</h2>
-  <ul>
-    {% for position in snapshot.portfolio.positions %}
-      <li>{{ position.symbol }}: quantity {{ position.quantity }}, average {{ position.average_price }}</li>
-    {% else %}
-      <li>No current positions available.</li>
-    {% endfor %}
-  </ul>
-  <h2>Orders, fills, and signals</h2>
-  <p>Orders: {{ snapshot.orders|length }}; fills: {{ snapshot.fills|length }}; signals: {{ snapshot.signals|length }}</p>
-  <ul>
-    {% for order in snapshot.orders %}<li>Order {{ order.order_id }}: {{ order.status }}</li>{% endfor %}
-    {% for fill in snapshot.fills %}<li>Fill {{ fill.fill_id }}: {{ fill.symbol }} {{ fill.quantity }} @ {{ fill.price }}</li>{% endfor %}
-    {% for signal in snapshot.signals %}<li>Signal {{ signal.signal_id }}: {{ signal.side }} {{ signal.symbol }}</li>{% endfor %}
-  </ul>
-  <h2>Strategies</h2>
-  <ul>
-    {% for strategy in snapshot.strategies %}
-      <li>{{ strategy.name }} ({{ strategy.version }}): {{ strategy.status }} — {{ strategy.detail }}</li>
-    {% else %}
-      <li>No strategy heartbeat registered.</li>
-    {% endfor %}
-  </ul>
-  <h2>Controls</h2>
-  {% if snapshot.risk.kill_switch == "halted" %}
-    <p><strong>Halted:</strong> administrator re-arm required. PAUSE cannot lower a halt.</p>
-  {% else %}
-    <form method="post" action="/operator/pause"><button type="submit">PAUSE</button></form>
-  {% endif %}
-  <form method="post" action="/operator/emergency-stop"><button type="submit">EMERGENCY STOP</button></form>
-  {% if auth_role == "admin" %}
-    <form method="post" action="/operator/rearm"><button type="submit">RE-ARM</button></form>
-  {% endif %}
-  {% if snapshot.errors %}
-    <h2>Errors</h2>
-    <ul>{% for error in snapshot.errors %}<li>{{ error.condition }}: {{ error.message }}</li>{% endfor %}</ul>
-  {% endif %}
-  {% if snapshot.alerts %}
-    <h2>Alerts</h2>
-    <ul>{% for alert in snapshot.alerts %}<li>{{ alert.severity }} {{ alert.condition }}: {{ alert.message }}</li>{% endfor %}</ul>
-  {% endif %}
-</section>
+{%- import "_operator_macros.html" as ui -%}
+{%- set header = view.header -%}
+{%- set safety = view.safety -%}
+{%- set portfolio = view.portfolio -%}
+{%- set activity = view.activity -%}
+<div id="operator-state" class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">ACT</span>
+      <div>
+        <p class="brand-name">Algorithmic Crypto Trader</p>
+        <h1>Operator dashboard</h1>
+      </div>
+    </div>
+    <dl class="context">
+      <div>
+        <dt>Mode</dt>
+        <dd><span class="mode tone-{{ header.mode_tone }}"><span class="mark" aria-hidden="true">◆</span> {{ header.mode }}</span></dd>
+      </div>
+      <div>
+        <dt>Credential scope</dt>
+        <dd class="mono">{{ header.credential_scope }}</dd>
+      </div>
+      <div>
+        <dt>Signed in as</dt>
+        <dd>{{ header.role }}</dd>
+      </div>
+      <div>
+        <dt>Snapshot</dt>
+        <dd>{{ ui.stamp(header.updated) }}</dd>
+      </div>
+    </dl>
+    <a class="button button-quiet refresh" href="/operator">Refresh</a>
+  </header>
+
+  <nav class="sections" aria-label="Dashboard sections">
+    <ul>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#portfolio">Portfolio</a></li>
+      <li><a href="#activity">Activity</a></li>
+      <li><a href="#alerts">Alerts &amp; errors</a></li>
+      <li><a href="#safety">Risk &amp; safety</a></li>
+      <li><a href="#health">System health</a></li>
+    </ul>
+  </nav>
+
+  <section class="safety tone-{{ safety.status.tone }}" aria-labelledby="safety-heading">
+    <div class="safety-state">
+      <div class="safety-line">
+        <h2 id="safety-heading" class="safety-heading"><span class="eyebrow">Kill switch</span> {{ ui.pill(safety.status, "pill-large") }}</h2>
+        <p class="safety-summary" aria-live="polite"><span class="visually-hidden">Kill switch {{ safety.status.word }}. </span>{{ safety.summary }}</p>
+      </div>
+      {%- if not safety.running %}
+      <div class="safety-cause">
+        <h3 class="eyebrow">Cause</h3>
+        {%- if safety.causes %}
+        <ul>
+          {%- for cause in safety.causes %}
+          <li>{{ cause }}</li>
+          {%- endfor %}
+        </ul>
+        {%- else %}
+        <p>Not recorded. The kill switch stores only its state: an operator control or the kill-switch file or environment flag may have set it. Check Alerts &amp; errors and the application log.</p>
+        {%- endif %}
+      </div>
+      {%- endif %}
+      <p class="next-step"><strong>Next safe step:</strong> {{ safety.next_step }}</p>
+    </div>
+    <div class="controls" role="group" aria-label="Kill-switch controls">
+      {%- if safety.halted %}
+      <p class="controls-note">PAUSE hidden: administrator re-arm required.<span class="wide-only"> PAUSE cannot lower a halt.</span></p>
+      {%- else %}
+      <form method="post" action="/operator/pause"><button class="button button-pause" type="submit">PAUSE</button></form>
+      {%- endif %}
+      <form method="post" action="/operator/emergency-stop"><button class="button button-stop" type="submit">EMERGENCY STOP</button></form>
+    </div>
+  </section>
+
+  <main id="main" tabindex="-1">
+    <section id="overview" class="block" aria-labelledby="overview-heading">
+      <div class="block-head">
+        <h2 id="overview-heading">Overview</h2>
+        <p class="block-note">Authenticated state at the snapshot time. <code>/health</code> only proves that the web process responds.</p>
+      </div>
+      <ul class="cards">
+        {%- for card in view.cards %}
+        <li class="card tone-{{ card.status.tone }}">
+          <h3 class="card-label"><a href="#{{ card.anchor }}">{{ card.label }}</a></h3>
+          <p class="card-status">{{ ui.pill(card.status, "pill-large") }}</p>
+          <p class="card-detail">{{ card.detail }}</p>
+          <p class="card-fresh">{{ card.fresh_label }}{% if card.fresh %} {{ ui.stamp(card.fresh) }}{% endif %}</p>
+        </li>
+        {%- endfor %}
+      </ul>
+      <p class="legend"><span class="eyebrow">Key</span>
+        {%- for item in view.legend %} {{ ui.pill(item) }}{% endfor %}
+      </p>
+    </section>
+
+    <section id="portfolio" class="block" aria-labelledby="portfolio-heading">
+      <div class="block-head">
+        <h2 id="portfolio-heading">Portfolio</h2>
+        <p class="block-note">{{ ui.pill(portfolio.status) }} {{ portfolio.detail }}.{% if portfolio.current %} Current means the broker was read at the snapshot time. It says nothing about whether the values are right.{% endif %}</p>
+      </div>
+      {%- if portfolio.last_known %}
+      <p class="notice tone-warn"><span class="mark" aria-hidden="true">▲</span> Last-known values, kept for diagnosis only. They are not current and may not match the broker.</p>
+      {%- endif %}
+      <div class="split">
+        <div class="panel">
+          <h3 id="balances-heading">Balances</h3>
+          {%- if portfolio.balances %}
+          <div class="table-wrap" role="region" aria-labelledby="balances-heading" tabindex="0">
+            <table class="data{% if portfolio.last_known %} last-known{% endif %}">
+              <thead>
+                <tr><th scope="col">Asset</th><th scope="col" class="num">Available</th><th scope="col" class="num">Hold</th><th scope="col">As of</th></tr>
+              </thead>
+              <tbody>
+                {%- for row in portfolio.balances %}
+                <tr><th scope="row">{{ row.asset }}</th><td class="num">{{ row.available }}</td><td class="num">{{ row.hold }}</td><td>{{ ui.stamp(row.as_of) }}</td></tr>
+                {%- endfor %}
+              </tbody>
+            </table>
+          </div>
+          {%- elif portfolio.current %}
+          <p class="empty"><span class="count">0</span> balances reported by the broker.</p>
+          {%- else %}
+          <p class="empty">{{ ui.absent(portfolio.empty_reason) }}. This is not a zero balance.</p>
+          {%- endif %}
+        </div>
+        <div class="panel">
+          <h3 id="positions-heading">Positions</h3>
+          {%- if portfolio.positions %}
+          <div class="table-wrap" role="region" aria-labelledby="positions-heading" tabindex="0">
+            <table class="data{% if portfolio.last_known %} last-known{% endif %}">
+              <thead>
+                <tr><th scope="col">Symbol</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Average price</th><th scope="col">As of</th></tr>
+              </thead>
+              <tbody>
+                {%- for row in portfolio.positions %}
+                <tr><th scope="row">{{ row.symbol }}</th><td class="num">{{ row.quantity }}</td><td class="num">{{ ui.fact(row.average_price) }}</td><td>{{ ui.stamp(row.as_of) }}</td></tr>
+                {%- endfor %}
+              </tbody>
+            </table>
+          </div>
+          {%- elif portfolio.current %}
+          <p class="empty"><span class="count">0</span> positions reported by the broker.</p>
+          {%- else %}
+          <p class="empty">{{ ui.absent(portfolio.empty_reason) }}. This is not a zero position.</p>
+          {%- endif %}
+          <p class="pnl"><strong>P/L</strong> {{ ui.pill(portfolio.pnl) }} {{ portfolio.pnl_detail }}. No figure is shown until a trustworthy valuation exists, and unavailable is not zero.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="activity" class="block" aria-labelledby="activity-heading">
+      <div class="block-head">
+        <h2 id="activity-heading">Activity</h2>
+        <p class="block-note">Records this process holds since it started. Risk decisions and full history are not on this page.</p>
+      </div>
+      <dl class="lineage">
+        <div><dt>Signals</dt><dd><span class="count">{{ activity.counts.signals }}</span></dd></div>
+        <div><dt>Risk decisions</dt><dd>{{ ui.absent("not shown here") }}</dd></div>
+        <div><dt>Orders</dt><dd><span class="count">{{ activity.counts.orders }}</span></dd></div>
+        <div><dt>Fills</dt><dd><span class="count">{{ activity.counts.fills }}</span></dd></div>
+      </dl>
+      <div class="panel">
+        <h3 id="orders-heading">Recent orders</h3>
+        {%- if activity.orders %}
+        <div class="table-wrap" role="region" aria-labelledby="orders-heading" tabindex="0">
+          <table class="data">
+            <thead>
+              <tr><th scope="col">Client order ID</th><th scope="col">Symbol</th><th scope="col">Side · type</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Filled</th><th scope="col">Status</th><th scope="col">Updated</th></tr>
+            </thead>
+            <tbody>
+              {%- for order in activity.orders %}
+              <tr>
+                <td class="mono id">{{ order.client_order_id }}</td><td class="sym">{{ order.symbol }}</td><td>{{ order.side }} · {{ order.order_type }}</td><td class="num">{{ order.quantity }}</td><td class="num">{{ order.filled }}</td>
+                <td>{{ ui.pill(order.status) }}{% if order.status.word == "unknown" %}<span class="rule">Look it up by client order ID. Never resubmit it.</span>{% endif %}</td>
+                <td>{{ ui.stamp(order.updated) }}</td>
+              </tr>
+              {%- endfor %}
+            </tbody>
+          </table>
+        </div>
+        {{ ui.more(activity.counts.orders, activity.limit, "orders") }}
+        {%- else %}
+        <p class="empty"><span class="count">0</span> orders recorded by this process.</p>
+        {%- endif %}
+      </div>
+      <div class="panel">
+        <h3 id="fills-heading">Recent fills</h3>
+        {%- if activity.fills %}
+        <div class="table-wrap" role="region" aria-labelledby="fills-heading" tabindex="0">
+          <table class="data">
+            <thead>
+              <tr><th scope="col">Fill ID</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Price</th><th scope="col" class="num">Fee</th><th scope="col">Time</th></tr>
+            </thead>
+            <tbody>
+              {%- for fill in activity.fills %}
+              <tr><td class="mono id">{{ fill.fill_id }}</td><td class="sym">{{ fill.symbol }}</td><td>{{ fill.side }}</td><td class="num">{{ fill.quantity }}</td><td class="num">{{ fill.price }}</td><td class="num">{{ fill.fee }} {{ fill.fee_asset }}</td><td>{{ ui.stamp(fill.occurred) }}</td></tr>
+              {%- endfor %}
+            </tbody>
+          </table>
+        </div>
+        {{ ui.more(activity.counts.fills, activity.limit, "fills") }}
+        {%- else %}
+        <p class="empty"><span class="count">0</span> fills recorded by this process.</p>
+        {%- endif %}
+      </div>
+      <div class="panel">
+        <h3 id="signals-heading">Recent signals</h3>
+        {%- if activity.signals %}
+        <div class="table-wrap" role="region" aria-labelledby="signals-heading" tabindex="0">
+          <table class="data">
+            <thead>
+              <tr><th scope="col">Signal ID</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col" class="num">Quantity</th><th scope="col">Strategy version</th><th scope="col">Created</th></tr>
+            </thead>
+            <tbody>
+              {%- for signal in activity.signals %}
+              <tr><td class="mono id">{{ signal.signal_id }}</td><td class="sym">{{ signal.symbol }}</td><td>{{ signal.side }}</td><td class="num">{{ signal.quantity }}</td><td class="mono">{{ signal.strategy_version }}</td><td>{{ ui.stamp(signal.created) }}</td></tr>
+              {%- endfor %}
+            </tbody>
+          </table>
+        </div>
+        {{ ui.more(activity.counts.signals, activity.limit, "signals") }}
+        {%- else %}
+        <p class="empty"><span class="count">0</span> signals recorded by this process.</p>
+        {%- endif %}
+      </div>
+    </section>
+
+    <section id="alerts" class="block" aria-labelledby="alerts-heading">
+      <div class="block-head">
+        <h2 id="alerts-heading">Alerts &amp; errors</h2>
+        <p class="block-note">Newest first, since this process started.</p>
+      </div>
+      <div class="split split-wide">
+        <div class="panel">
+          <h3>Alerts</h3>
+          {%- if view.alerts.rows %}
+          <ol class="events">
+            {%- for alert in view.alerts.rows %}
+            <li class="event">
+              <p class="event-head">{{ ui.pill(alert.severity) }} <span class="mono">{{ alert.condition }}</span></p>
+              <p>{{ alert.message }}</p>
+              <p class="event-meta">{{ ui.stamp(alert.created) }}</p>
+              <p class="event-meta">Delivery:
+                {%- for delivery in alert.deliveries %} {{ delivery.destination }} {{ ui.pill(delivery.status) }}{% if not loop.last %};{% endif %}{% endfor %}
+                {%- if alert.undelivered %} {{ ui.absent(alert.undelivered) }}{% endif %}
+              </p>
+            </li>
+            {%- endfor %}
+          </ol>
+          {{ ui.more(view.alerts.total, view.alerts.limit, "alerts") }}
+          {%- else %}
+          <p class="empty"><span class="count">0</span> alerts since this process started.</p>
+          {%- endif %}
+        </div>
+        <div class="panel">
+          <h3>Alert destinations</h3>
+          <dl class="facts">
+            {%- for destination in view.destinations %}
+            <div><dt>{{ destination.label }}</dt><dd>{{ ui.pill(destination.status) }}</dd></div>
+            {%- endfor %}
+          </dl>
+          <p class="note">Only whether each destination is configured is shown. Recipients, topic addresses, and tokens never appear here.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Errors</h3>
+        {%- if view.errors.rows %}
+        <ol class="events">
+          {%- for error in view.errors.rows %}
+          <li class="event">
+            <p class="event-head"><span class="mono">{{ error.condition }}</span></p>
+            <p>{{ error.message }}</p>
+            <p class="event-meta">{{ ui.stamp(error.created) }}</p>
+          </li>
+          {%- endfor %}
+        </ol>
+        {{ ui.more(view.errors.total, view.errors.limit, "errors") }}
+        {%- else %}
+        <p class="empty"><span class="count">0</span> errors since this process started.</p>
+        {%- endif %}
+      </div>
+    </section>
+
+    <section id="safety" class="block" aria-labelledby="risk-heading">
+      <div class="block-head">
+        <h2 id="risk-heading">Risk &amp; safety</h2>
+        <p class="block-note">Every order still passes the ordered risk gates. Gate history is not on this page.</p>
+      </div>
+      <div class="split">
+        <div class="panel">
+          <h3 id="states-heading">Kill-switch states</h3>
+          <div class="table-wrap" role="region" aria-labelledby="states-heading" tabindex="0">
+            <table class="data states">
+              <thead>
+                <tr><th scope="col">State</th><th scope="col">Meaning</th></tr>
+              </thead>
+              <tbody>
+                {%- for state in view.kill_switch_states %}
+                <tr{% if state.current %} class="current"{% endif %}><th scope="row">{{ ui.pill(state.status) }}{% if state.current %} <span class="current-tag">current</span>{% endif %}</th><td>{{ state.meaning }}</td></tr>
+                {%- endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Re-arm</h3>
+          <p>Re-arm sets the kill switch to running. It repairs nothing. Only an administrator re-arms, after every item on this checklist:</p>
+          <ol class="checklist">
+            <li>The original cause is identified and documented.</li>
+            <li>The approved mode and credential scope are confirmed.</li>
+            <li>Every pending or unknown order is resolved by looking it up with its client order ID, never by resubmitting it.</li>
+            <li>Broker-authoritative balances, positions, orders, and fills are confirmed.</li>
+            <li>Startup recovery and reconciliation are clean.</li>
+            <li>Required market data and risk inputs are current.</li>
+            <li>The incident owner has approved, when the procedure requires it.</li>
+          </ol>
+          {%- if not header.is_admin %}
+          <p class="note">Your operator role cannot re-arm. Ask an administrator.</p>
+          {%- elif safety.running %}
+          <p class="note">Nothing to re-arm: the kill switch is running.</p>
+          {%- else %}
+          <form method="post" action="/operator/rearm"><button class="button button-rearm" type="submit">RE-ARM</button></form>
+          {%- endif %}
+        </div>
+      </div>
+    </section>
+
+    <section id="health" class="block" aria-labelledby="health-heading">
+      <div class="block-head">
+        <h2 id="health-heading">System health</h2>
+        <p class="block-note">Ages are measured when this page loaded. Select Refresh for a new snapshot.</p>
+      </div>
+      <div class="facts-grid">
+        {%- for group in view.health %}
+        <div class="panel">
+          <h3>{{ group.title }}</h3>
+          <dl class="facts">
+            {%- for item in group.facts %}
+            <div><dt>{{ item.label }}</dt><dd>{{ ui.fact(item) }}</dd></div>
+            {%- endfor %}
+          </dl>
+        </div>
+        {%- endfor %}
+      </div>
+      <div class="panel">
+        <h3 id="heartbeats-heading">Strategy heartbeats</h3>
+        {%- if view.strategies %}
+        <div class="table-wrap" role="region" aria-labelledby="heartbeats-heading" tabindex="0">
+          <table class="data">
+            <thead>
+              <tr><th scope="col">Strategy</th><th scope="col">Version</th><th scope="col">Status</th><th scope="col">Detail</th><th scope="col">Last seen</th></tr>
+            </thead>
+            <tbody>
+              {%- for strategy in view.strategies %}
+              <tr><th scope="row">{{ strategy.name }}</th><td class="mono">{{ strategy.version }}</td><td>{{ ui.pill(strategy.status) }}</td><td>{{ strategy.detail }}</td><td>{{ ui.stamp(strategy.last_seen) }}</td></tr>
+              {%- endfor %}
+            </tbody>
+          </table>
+        </div>
+        {%- else %}
+        <p class="empty">{{ ui.absent("No strategy heartbeat is registered.") }}</p>
+        {%- endif %}
+      </div>
+    </section>
+  </main>
+</div>
