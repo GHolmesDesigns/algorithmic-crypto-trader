@@ -8,7 +8,7 @@ into a hidden prompt. Claude records each result in this file afterwards.
 | Check | What it proves | Who runs it | Status |
 | --- | --- | --- | --- |
 | 1. Gemini Sandbox lifecycle and trading loop | Orders placed through our Gemini code behave as expected on Gemini's test exchange, and one pass of the trading loop completes there | Owner | **Passed 2026-09-27**, except the partial fill: the Sandbox's best offer stayed above the script's size cap. Findings fixed in #33, #35, and #37. It can be run again any time to try the partial fill. |
-| 2. Coinbase read-only reconciliation | Our Coinbase code reads your real account correctly and reconciles cleanly | Owner | Not yet run |
+| 2. Coinbase read-only reconciliation | Our Coinbase code reads your real account correctly and reconciles cleanly | Owner | **Passed 2026-09-27** |
 | 3. Coinbase sandbox capture | Our Coinbase code reads Coinbase's real response formats | Claude, with the owner's approval | Done 2026-09-24 |
 
 ## What the scripts can and cannot do
@@ -87,6 +87,7 @@ What the steps check (any refusal also names Gemini's own reason code, such as `
 | 2026-09-27 13:12 UTC | 1. Gemini Sandbox | Owner | `362adeb` | **NEEDS REVIEW.** New Sandbox account. The capped market order filled (1 fill); a resting limit was found by our own order ID through a restarted adapter and cancelled; a too-small order was refused (`InvalidQuantity`). The partial fill was skipped because the best offer was then larger than the 0.01 BTC cap. The trading loop was refused at `trade_notional` because the account's BCH and ZEC had no buyers on the Sandbox and could not be priced. Nothing was left open; 16 of 80 requests. Addressed in #37. |
 | 2026-09-27 13:43 UTC | 1. Gemini Sandbox | Owner | `362adeb` | **Older code, same result as 13:12.** #37 had merged a minute earlier, but the project folder had not yet downloaded it. |
 | 2026-09-27 13:45 UTC | 1. Gemini Sandbox | Owner | `26f2eba` | **PASS except the partial fill.** The capped market order filled, and its trade was read back (1 fill). A resting limit was found by our own order ID through a restarted adapter and cancelled, and a too-small order was refused (`InvalidQuantity`). One trading-loop pass submitted a buy that filled, with the order linked to its signal, strategy version, approved risk decision, and fills; BCH-USD and ZEC-USD were left out because the Sandbox cannot price them. The partial fill was skipped: on all 5 reads the best offer was larger than the 0.01 BTC cap. Nothing was left open; 30 of 80 requests. |
+| 2026-09-27 14:33 UTC | 2. Coinbase read-only | Owner | `7302b7a` | **PASS.** Coinbase confirmed the key can view but can neither trade nor transfer. The account was read twice (49 assets, 48 coin holdings), and the second read matched the first with 0 differences; 3 of 85 requests, one account page per read. The key was ECDSA, and Coinbase accepted it, which settles the open question on key types. |
 
 What the Gemini attempts showed, and what #33 and #35 changed:
 
