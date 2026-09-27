@@ -14,6 +14,7 @@ from api.history import SqlAlchemyHistory
 from api.history_routes import router as history_router
 from api.operator import OperatorState
 from api.routes import router
+from api.trends import SqlAlchemyTrends
 from core.guards import (
     StartupGuardError,
     StartupSettings,
@@ -138,14 +139,17 @@ def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
 
 
 def attach_history(application: FastAPI) -> Callable[[], None]:
-    """Serve bounded, read-only history from the database; return a close callback.
+    """Serve bounded, read-only history and trends from the database; return a close callback.
 
-    Without it, the history routes answer 503: not available, never an empty history.
+    Without it, the history and trends routes answer 503: not available, never an
+    empty history or a chart of zeros.
     """
 
     settings: StartupSettings = application.state.startup_settings
     engine = create_database_engine(settings.database_url, settings.trading_mode)
-    application.state.history = SqlAlchemyHistory(create_session_factory(engine))
+    session_factory = create_session_factory(engine)
+    application.state.history = SqlAlchemyHistory(session_factory)
+    application.state.trends = SqlAlchemyTrends(session_factory)
     return engine.dispose
 
 

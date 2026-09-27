@@ -119,3 +119,49 @@ window on, the lineage joins (`orders.signal_id`, `orders.risk_approval_id`,
 created_at)`. Its upgrade and downgrade are tested, and a test checks that every
 history query searches an index. The restart rehearsal reads a lineage back
 after the app and Docker restarts.
+
+## Trends
+
+Issue #62. `/operator/history/trends` counts persisted rows per time bucket over
+one window, as JSON or, when the request accepts `text/html`, as a page of
+server-drawn SVG charts. It is authenticated, GET-only, and linked from the
+history navigation and the dashboard's System health block.
+
+| Chart | Source | Counts |
+| --- | --- | --- |
+| Reconciliation runs | `portfolio_snapshots` where `source = 'broker'`, by `recorded_at` | Completed reconciliations, at startup and on schedule. Each saves the broker's state once. A run that could not read the broker saves nothing and is not counted; the dashboard counts those since the process started. |
+| Discrepancies by type | `discrepancies`, by `created_at` | One series per entity type (`order`, `fill`, `position`, `balance`), plus any type this build does not recognise. |
+| Risk refusals by gate | `risk_decisions` where `approved` is false, by `decided_at` | One series per ordered gate, in `risk.engine.RISK_GATES` order, then `risk_inputs`, then any unrecognised or missing gate. |
+| Uptime and freshness | none | **Not started.** Heartbeats, market-data state, and broker check times live only in the running process. Persisted candles cannot stand in: backfilled and live candles share one source name, and a backfilled candle's receipt time says when a gap was filled. |
+| Equity and day P/L | none | **Not started.** Reconciliation saves no equity, and P/L stays unavailable until cost basis is known (#30) and a P/L producer exists. Rows already in `equity_curve` are not charted. |
+
+**Bounds.** `window` is `24h` (default, 24 hourly bars), `7d` (28 six-hour bars),
+or `30d` (30 daily bars). Bars align to UTC hours or days, and the last bar is the
+current one, still in progress. `trends_query` refuses any window longer than 30
+days or 30 bars, whatever the table offers. Any other window, a repeated window,
+or any other parameter gets `422` before anything is read.
+
+**Aggregation.** The database counts: each chart reads one indexed time range
+(`ix_portfolio_snapshots_source_recorded_at`, `ix_discrepancies_created_at`,
+`ix_risk_decisions_decided_at`) and returns one row per bucket and series. The
+bucket is a `CASE` over the edges, computed in a subquery, because PostgreSQL
+with server-side parameters cannot match a `GROUP BY` expression to the select
+list's. Bucket `i` covers `edges[i]` up to, not including, `edges[i + 1]`, so a
+row on an edge is counted once, in the later bucket. No schema change was needed.
+
+**Zero, unavailable, not started.** A window that holds no rows reads "0 …
+recorded in this window" and draws no axis. A read that fails, or a process
+without the history database, answers `503` and each chart says "Not available",
+never zero. A chart without a producer says "Not started" and why, on both the
+`200` and `503` pages, and never draws an axis.
+
+**Presentation.** Every series is drawn in one neutral ink (`--chart-ink`); green
+and red stay reserved for system health. Each chart's SVG has `role="img"` and a
+summary, and a table with the same counts follows it. In the discrepancy and
+refusal tables, each period links to its records in the history list, whose
+`until` stops one microsecond before the next bucket. There is no JavaScript and
+no external resource.
+
+**Safety.** Read-only. `SqlAlchemyTrends` holds a session factory and nothing
+that reaches a broker. Only the time column and the series key leave the
+database; payloads, reasons, and amounts do not.

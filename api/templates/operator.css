@@ -40,6 +40,8 @@
   --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
   --rail-width: 13.5rem;
   --bar-height: 7rem;
+  /* Chart series: one neutral ink, never a health colour. */
+  --chart-ink: #4b5650;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -71,6 +73,7 @@
     --rail-bg: #0d120f;
     --rail-line: #29332f;
     --rail-active: #232d29;
+    --chart-ink: #b2bcb5;
   }
 }
 
@@ -1165,6 +1168,180 @@ time,
   gap: 0.75rem;
 }
 
+/* Trends: server-drawn bars in one neutral ink. Green and red stay with system health. */
+
+.window-field {
+  max-width: 24rem;
+}
+
+.chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+}
+
+.source {
+  font-size: 0.875rem;
+}
+
+.notice-body {
+  font-weight: 400;
+}
+
+.chart {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.chart-plot {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.25rem 0.5rem;
+}
+
+.chart-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 2ch;
+  color: var(--text-2);
+  font: 400 0.75rem/1 var(--f-mono);
+  text-align: right;
+}
+
+.chart-svg,
+.spark {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.chart-svg {
+  height: 9rem;
+}
+
+.spark {
+  height: 2.25rem;
+}
+
+.chart-ticks {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--text-2);
+  font: 400 0.75rem/1.3 var(--f-mono);
+  white-space: nowrap;
+}
+
+.bar {
+  fill: var(--chart-ink);
+}
+
+.bar-open {
+  fill: var(--line);
+  stroke: var(--chart-ink);
+  stroke-dasharray: 3 2;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.slot-open {
+  fill: var(--surface-2);
+}
+
+.grid,
+.baseline {
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.grid {
+  stroke: var(--line-soft);
+}
+
+.baseline {
+  stroke: var(--line);
+}
+
+.multiples {
+  display: grid;
+  padding: 0;
+  list-style: none;
+}
+
+.multiple {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.25rem 0.75rem;
+  align-items: center;
+  padding: 0.375rem 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.multiple:first-child,
+.multiple-axis {
+  border-top: 0;
+}
+
+.multiple .spark,
+.multiple .chart-ticks {
+  grid-column: 1 / -1;
+}
+
+.multiple-axis {
+  padding-top: 0;
+}
+
+.multiple-axis > span {
+  display: none;
+}
+
+.multiple-label {
+  min-width: 0;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.multiple-total {
+  text-align: right;
+}
+
+@media (min-width: 45em) {
+  .multiple {
+    grid-template-columns: minmax(0, 16rem) 3.5rem minmax(0, 1fr);
+  }
+
+  .multiple .spark,
+  .multiple .chart-ticks {
+    grid-column: auto;
+  }
+
+  .multiple-axis > span {
+    display: block;
+  }
+}
+
+/* A grid item may shrink below its table, which then scrolls inside its region. */
+.chart-table,
+.zero-list {
+  min-width: 0;
+}
+
+.chart-table > summary,
+.zero-list > summary {
+  display: list-item;
+  min-height: 2.75rem;
+  padding: 0.625rem 0;
+  font-size: 0.875rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 /* Motion and forced colours */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -1188,5 +1365,20 @@ time,
   .mode,
   .button {
     border: 2px solid CanvasText;
+  }
+
+  .bar {
+    fill: CanvasText;
+  }
+
+  .bar-open,
+  .slot-open {
+    fill: Canvas;
+    stroke: CanvasText;
+  }
+
+  .grid,
+  .baseline {
+    stroke: GrayText;
   }
 }

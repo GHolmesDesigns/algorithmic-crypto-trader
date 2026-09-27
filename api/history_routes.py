@@ -1,6 +1,7 @@
 """Authenticated, read-only history routes: JSON for scripts, HTML for browsers.
 
-Every route is a GET that reads persisted rows through ``SqlAlchemyHistory``.
+Every route is a GET that reads persisted rows through ``SqlAlchemyHistory``, or
+counts them per time bucket through ``SqlAlchemyTrends``.
 None can submit, cancel, or retry an order. A request asking for more than one
 bounded page or window is refused with 422 before anything is read. A history
 that cannot be read answers 503, which is never shown as an empty history.
@@ -28,9 +29,12 @@ from api.history import (
 )
 from api.history_view import PATHS, build_history_view, build_lineage_view
 from api.routes import _authorize, _operator_state, _page, _wants_html, templates
+from api.trends import SqlAlchemyTrends, not_started, parse_trends_query
+from api.trends_view import build_trends_view
 
 router = APIRouter()
 
+_TEMPLATES = {"lineage": "operator_lineage.html", "trends": "operator_trends.html"}
 _NOT_CONFIGURED = "the history database is not configured in this process"
 _UNREADABLE = "the history database could not be read"
 
@@ -100,6 +104,48 @@ def risk_history(request: Request) -> Response:
     return _respond(request, role, "risk", form, payload, query)
 
 
+@router.get(PATHS["trends"])
+def trends(request: Request) -> Response:
+    """Counts per time bucket over one bounded window, and the charts with no producer yet."""
+
+    role = _authorize(request)
+    form = dict(request.query_params)
+    try:
+        query = parse_trends_query(request.query_params.multi_items())
+    except HistoryQueryRefused as refused:
+        if not _wants_html(request):
+            return JSONResponse(
+                {"detail": {"status": "refused", "errors": list(refused.errors)}}, 422
+            )
+        return _render(request, role, build_trends_view(form=form, errors=refused.errors), 422)
+    try:
+        charts = _trends(request).read(query)
+    except HistoryUnavailable as exc:
+        reason = _NOT_CONFIGURED if str(exc) == _NOT_CONFIGURED else _UNREADABLE
+        if not _wants_html(request):
+            return JSONResponse({"detail": {"status": "unavailable", "reason": reason}}, 503)
+        view = build_trends_view(
+            form=form, query=query, not_started=not_started(), unavailable=reason
+        )
+        return _render(request, role, view, 503)
+    if not _wants_html(request):
+        return JSONResponse(
+            {
+                "kind": "trends",
+                "status": "available",
+                "query": query.to_dict(),
+                "charts": charts,
+            }
+        )
+    view = build_trends_view(
+        form=form,
+        query=query,
+        charts=[chart for chart in charts if chart["status"] == "available"],
+        not_started=[chart for chart in charts if chart["status"] == "not_started"],
+    )
+    return _render(request, role, view, 200)
+
+
 @router.get(PATHS["orders"] + "/{client_order_id}")
 def order_lineage(request: Request, client_order_id: str) -> Response:
     """One order's signal, risk decision, and fills, rebuilt from persisted rows."""
@@ -154,6 +200,13 @@ def _history(request: Request) -> SqlAlchemyHistory:
     if history is None:
         raise HistoryUnavailable(_NOT_CONFIGURED)
     return history
+
+
+def _trends(request: Request) -> SqlAlchemyTrends:
+    trends = getattr(request.app.state, "trends", None)
+    if trends is None:
+        raise HistoryUnavailable(_NOT_CONFIGURED)
+    return trends
 
 
 def _respond(
@@ -217,7 +270,7 @@ def _lineage_response(
 
 
 def _render(request: Request, role: str, view: dict[str, Any], status_code: int) -> Response:
-    template = "operator_lineage.html" if view["kind"] == "lineage" else "operator_history.html"
+    template = _TEMPLATES.get(view["kind"], "operator_history.html")
     return templates.TemplateResponse(
         request=request,
         name=template,

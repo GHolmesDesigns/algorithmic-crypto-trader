@@ -39,6 +39,7 @@ NAV = (
     ("risk", "risk", "Risk & safety"),
     ("discrepancies", "discrepancies", "Discrepancies"),
     ("events", "events", "System events"),
+    ("trends", "trends", "Trends"),
 )
 PATHS = {kind: f"{HISTORY_PATH}/{slug}" for kind, slug, _ in NAV}
 PAGES: dict[str, tuple[str, str, str]] = {
