@@ -302,6 +302,37 @@ Read the states the same way as the history:
 A gap in **Reconciliation runs** is a period without a completed run. Check
 **Alerts & errors** and the application log for that time.
 
+## Research and replay
+
+The **Research and replay** page is an authenticated workspace for engineers
+and operators reviewing approved historical data. It is read-only: a run never
+contacts a broker, places an order, changes the trading mode, or pauses the
+system. Open it from the dashboard or go to `/operator/research`.
+
+Choose an approved dataset and a versioned reference strategy, then choose a
+**Backtest** or a **Replay through the simulator**. You can set initial cash,
+quantity, maker and taker fees, spread, slippage, fee asset, and walk-forward
+training, test, step, and sealed-holdout bars. The page identifies the dataset
+window, interval, approval note, and content digest before you run it.
+
+Runs are bounded background jobs, so a long research run does not block the
+dashboard, trading loop, or safety controls. The server allows at most 5,000
+candles, 24 walk-forward windows, and two active jobs. Refresh the run page to
+see whether it is queued, running, complete, or failed.
+
+The completed report shows equity, return, drawdown and duration, exposure,
+trade count, return distribution, yearly and regime breakdowns, strategy
+version and hash, and the exact cost assumptions. Replay adds signals, fills,
+risk refusals, and the difference from the backtest result. Use **Compare
+selected runs** to compare up to five completed runs by strategy version,
+dataset, run type, final equity, return, drawdown, exposure, and trade count.
+
+Use **Export redacted report** for a JSON record that is safe to retain in the
+private research log. It contains no provider response, credential, recipient,
+or infrastructure identifier. Every page and export carries the warning:
+**Past results are not a promise of profit.** A historical result is a record
+of the selected window and assumptions, not a profitability promise.
+
 ## Routine operating check
 
 At the beginning of a monitoring period:
@@ -674,6 +705,11 @@ provider, credential, live confirmation, or reconciliation interval.
 | `GET /operator/history/discrepancies` | Operator | Reconciliation differences by field name. Filter: `entity_type`. |
 | `GET /operator/history/events` | Operator | System events. Filter: `event_type`. |
 | `GET /operator/history/trends` | Operator | Counts per time bucket: reconciliation runs, discrepancies by type, and refusals by gate, plus the charts not started yet. Parameter: `window`. |
+| `GET /operator/research` | Operator | Approved dataset catalog, bounded run form, recent jobs, and comparison links. |
+| `POST /operator/research/runs` | Operator | Queue a backtest or simulator replay. No provider writes or mode changes. |
+| `GET /operator/research/runs/{run_id}` | Operator | Read one bounded research job and its report. |
+| `GET /operator/research/compare?run=...` | Operator | Compare up to five completed versioned runs. |
+| `GET /operator/research/runs/{run_id}/export` | Operator | Download a completed redacted JSON report. |
 
 For programmatic access, send the token in the `x-operator-token` header. The
 server refuses any request with a `token` query parameter (`400`). Cookie

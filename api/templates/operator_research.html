@@ -1,0 +1,83 @@
+{%- extends "_operator_page.html" -%}
+{%- import "_operator_macros.html" as ui -%}
+{% block title %}{{ view.title }}{% endblock %}
+{% block page_name %}Research{% endblock %}
+{% block page_class %} page-wide{% endblock %}
+{% block content %}
+        {% include "_research_nav.html" %}
+        <section class="block" aria-labelledby="research-heading">
+          <div class="block-head">
+            <h1 id="research-heading">{{ view.title }}</h1>
+            <p class="block-note">{{ view.intro }}</p>
+          </div>
+          <p class="notice tone-neutral" role="note"><span class="mark" aria-hidden="true">◐</span> This workspace is read-only. Runs use approved candle fixtures and the existing backtest or simulator; they never contact a broker or change trading mode.</p>
+          {%- if view.errors %}
+          <div class="notice tone-warn" role="alert">
+            <p><span class="mark" aria-hidden="true">▲</span> The run was not started.</p>
+            <ul>{% for error in view.errors %}<li>{{ error }}</li>{% endfor %}</ul>
+          </div>
+          {%- endif %}
+          <section class="panel" aria-labelledby="run-heading">
+            <div class="block-head">
+              <h2 id="run-heading">Start a bounded run</h2>
+              <p class="block-note">The server caps each dataset at {{ view.limits.candles }} candles, {{ view.limits.windows }} walk-forward windows, and {{ view.limits.active_jobs }} active jobs.</p>
+            </div>
+            <form method="post" action="/operator/research/runs">
+              <div class="split">
+                <div>
+                  <div class="field"><label for="dataset_id">Approved dataset</label><select id="dataset_id" name="dataset_id" required>{% for dataset in view.catalog %}<option value="{{ dataset.id }}">{{ dataset.name }} — {{ dataset.candle_count }} candles</option>{% endfor %}</select></div>
+                  <div class="field"><label for="strategy_version">Strategy version</label><select id="strategy_version" name="strategy_version" required>{% for strategy in view.strategies %}<option value="{{ strategy.version }}">{{ strategy.version }} — {{ strategy.name }}</option>{% endfor %}</select></div>
+                  <div class="field"><label for="run_type">Run type</label><select id="run_type" name="run_type"><option value="backtest">Backtest</option><option value="replay">Replay through the simulator</option></select></div>
+                  <div class="field"><label for="initial_cash">Initial cash (USD)</label><input id="initial_cash" name="initial_cash" value="100000" inputmode="decimal"></div>
+                  <div class="field"><label for="quantity">Order quantity</label><input id="quantity" name="quantity" value="1" inputmode="decimal"></div>
+                </div>
+                <div>
+                  <div class="field"><label for="maker_fee_rate">Maker fee rate</label><input id="maker_fee_rate" name="maker_fee_rate" value="0" inputmode="decimal"></div>
+                  <div class="field"><label for="taker_fee_rate">Taker fee rate</label><input id="taker_fee_rate" name="taker_fee_rate" value="0" inputmode="decimal"></div>
+                  <div class="field"><label for="spread_bps">Spread (basis points)</label><input id="spread_bps" name="spread_bps" value="0" inputmode="decimal"></div>
+                  <div class="field"><label for="slippage_bps">Slippage (basis points)</label><input id="slippage_bps" name="slippage_bps" value="0" inputmode="decimal"></div>
+                  <div class="field"><label for="fee_asset">Fee asset</label><input id="fee_asset" name="fee_asset" value="USD"></div>
+                </div>
+              </div>
+              <fieldset>
+                <legend>Walk-forward windows</legend>
+                <div class="split">
+                  <div class="field"><label for="train_bars">Training bars</label><input id="train_bars" name="train_bars" value="16" inputmode="numeric"></div>
+                  <div class="field"><label for="test_bars">Test bars</label><input id="test_bars" name="test_bars" value="16" inputmode="numeric"></div>
+                  <div class="field"><label for="step_bars">Step bars (optional)</label><input id="step_bars" name="step_bars" inputmode="numeric"></div>
+                  <div class="field"><label for="holdout_bars">Sealed holdout bars</label><input id="holdout_bars" name="holdout_bars" value="0" inputmode="numeric"></div>
+                </div>
+              </fieldset>
+              <div class="actions"><button class="button button-rearm" type="submit">Queue research run</button></div>
+            </form>
+          </section>
+          <section class="panel" aria-labelledby="datasets-heading">
+            <h2 id="datasets-heading">Approved datasets</h2>
+            <div class="table-wrap" role="region" aria-labelledby="datasets-heading" tabindex="0">
+              <table class="data"><thead><tr><th scope="col">Dataset</th><th scope="col">Window</th><th scope="col">Approval</th><th scope="col">Digest</th></tr></thead><tbody>
+              {% for dataset in view.catalog %}<tr><th scope="row">{{ dataset.name }}<br><span class="note">{{ dataset.description }}</span></th><td>{{ dataset.symbol }} · {{ dataset.interval }}<br>{{ dataset.candle_count }} bars</td><td>{{ dataset.approval }}<br>{{ dataset.approved_at }}</td><td class="mono">{{ dataset.digest[:12] }}…</td></tr>{% endfor %}
+              </tbody></table>
+            </div>
+          </section>
+          {%- if view.job %}
+          {% set job = view.job %}
+          <section class="panel" aria-labelledby="run-result-heading">
+            <div class="block-head"><h2 id="run-result-heading">Run {{ job.run_id }}</h2><p class="block-note">Status: <strong>{{ job.status }}</strong>. Refresh this page to check a queued or running job.</p></div>
+            {% if job.error %}<p class="notice tone-crit" role="alert"><span class="mark" aria-hidden="true">■</span> {{ job.error }}</p>{% endif %}
+            {% if job.result %}
+            {% set result = job.result %}{% set report = result.report %}
+            <p class="notice tone-neutral" role="note"><span class="mark" aria-hidden="true">◐</span> {{ result.disclaimer }} The report is a record of the selected past window and assumptions.</p>
+            <dl class="facts"><div><dt>Dataset</dt><dd>{{ result.dataset.name }} · {{ result.dataset.window_start }} to {{ result.dataset.window_end }}</dd></div><div><dt>Strategy version</dt><dd class="mono">{{ report.strategy_version }}</dd></div><div><dt>Final equity</dt><dd>{{ report.final_equity }} {{ report.cost_assumptions.fee_asset }}</dd></div><div><dt>Total return</dt><dd>{{ report.total_return_pct }}</dd></div><div><dt>Max drawdown</dt><dd>{{ report.max_drawdown }}</dd></div><div><dt>Exposure</dt><dd>{{ report.exposure }}</dd></div><div><dt>Trades</dt><dd>{{ report.trade_count }}</dd></div><div><dt>Strategy hash</dt><dd class="mono">{{ report.strategy_version_hash }}</dd></div></dl>
+            <h3>Breakdowns</h3><div class="split"><div><h4>By year</h4><ul>{% for key, item in report.per_year.items() %}<li>{{ key }}: {{ item.return_pct }} return, {{ item.trade_count }} trades</li>{% else %}<li>None recorded.</li>{% endfor %}</ul></div><div><h4>By regime</h4><ul>{% for key, item in report.per_regime.items() %}<li>{{ key }}: {{ item.return_pct }} return, {{ item.trade_count }} trades</li>{% else %}<li>None recorded.</li>{% endfor %}</ul></div></div>
+            {% if result.replay %}<h3>Replay parity</h3><dl class="facts"><div><dt>Signals</dt><dd>{{ result.replay.signal_count }}</dd></div><div><dt>Fills</dt><dd>{{ result.replay.fill_count }}</dd></div><div><dt>Risk refusals</dt><dd>{{ result.replay.refusal_count }}</dd></div><div><dt>Replay final equity</dt><dd>{{ result.replay.final_equity }}</dd></div><div><dt>Replay minus backtest</dt><dd>{{ result.replay.parity_delta }}</dd></div></dl>{% endif %}
+            <p class="actions"><a class="button button-quiet" href="/operator/research/runs/{{ job.run_id }}/export">Export redacted report</a></p>
+            {% endif %}
+          </section>
+          {%- endif %}
+          <section class="panel" aria-labelledby="runs-heading">
+            <div class="block-head"><h2 id="runs-heading">Recent runs</h2><p class="block-note">Select completed runs to compare versioned strategies on the same or different approved datasets.</p></div>
+            {% if view.jobs %}<form method="get" action="/operator/research/compare"><div class="table-wrap" role="region" aria-labelledby="runs-heading" tabindex="0"><table class="data"><thead><tr><th scope="col">Compare</th><th scope="col">Run</th><th scope="col">Strategy</th><th scope="col">Dataset</th><th scope="col">Type</th><th scope="col">Status</th></tr></thead><tbody>{% for item in view.jobs %}<tr><td><input type="checkbox" name="run" value="{{ item.run_id }}"{% if item.run_id in view.selected %} checked{% endif %}{% if item.status != 'complete' %} disabled{% endif %}></td><th scope="row"><a href="/operator/research/runs/{{ item.run_id }}" class="mono">{{ item.run_id }}</a></th><td class="mono">{{ item.strategy_version }}</td><td>{{ item.dataset_id }}</td><td>{{ item.run_type }}</td><td>{{ item.status }}</td></tr>{% endfor %}</tbody></table></div><div class="actions"><button class="button button-quiet" type="submit">Compare selected runs</button></div></form>{% else %}<p class="empty">No runs recorded in this process.</p>{% endif %}
+            {% if view.compare %}<h3>Comparison</h3><div class="table-wrap" role="region" aria-label="Strategy comparison" tabindex="0"><table class="data"><thead><tr><th scope="col">Strategy</th><th scope="col">Dataset</th><th scope="col">Run type</th><th scope="col">Final equity</th><th scope="col">Return</th><th scope="col">Drawdown</th><th scope="col">Trades</th></tr></thead><tbody>{% for item in view.compare %}<tr><th scope="row" class="mono">{{ item.strategy_version }}</th><td>{{ item.dataset_id }}</td><td>{{ item.run_type }}</td><td>{{ item.final_equity }}</td><td>{{ item.total_return_pct }}</td><td>{{ item.max_drawdown }}</td><td>{{ item.trade_count }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+          </section>
+        </section>
+{% endblock %}

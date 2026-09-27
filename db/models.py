@@ -21,6 +21,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+AUDIT_JSON = JSON().with_variant(JSONB, "postgresql")
+
 
 class Base(DeclarativeBase):
     pass
@@ -179,7 +181,9 @@ class DiscrepancyRecord(Base):
     discrepancy_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
     entity_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    local_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    broker_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # Keep PostgreSQL JSONB while allowing the SQLite test and local harness to
+    # create the same logical schema without a PostgreSQL compiler.
+    local_payload: Mapped[dict[str, Any]] = mapped_column(AUDIT_JSON, nullable=False)
+    broker_payload: Mapped[dict[str, Any]] = mapped_column(AUDIT_JSON, nullable=False)
     safety_action: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

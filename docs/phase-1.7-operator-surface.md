@@ -165,3 +165,46 @@ no external resource.
 **Safety.** Read-only. `SqlAlchemyTrends` holds a session factory and nothing
 that reaches a broker. Only the time column and the series key leave the
 database; payloads, reasons, and amounts do not.
+
+## Research and replay workspace
+
+Issue #64. `/operator/research` is an authenticated, server-rendered workspace
+for bounded historical research. It exposes only repository-approved,
+deterministic candle fixtures and two versioned reference strategies. A dataset
+record includes its symbol, interval, window, approval note, and content digest.
+The catalog is not a provider download surface and does not accept uploads.
+
+The run form configures backtest or replay mode, initial cash, quantity, maker
+and taker fees, spread, slippage, fee asset, and walk-forward training, test,
+step, and sealed-holdout bars. A backtest uses `strategy.backtest.Backtester`;
+a replay uses `app.replay.ReplayRunner` with `SimulatedBroker` and the same
+cost assumptions. Neither path receives an application broker, database
+session, credential, or network client.
+
+Jobs are queued in memory and run in worker threads. The server caps each
+dataset at 5,000 candles, each request at 24 walk-forward windows, and the
+workspace at two active jobs and 24 retained jobs. A job never runs on the
+trading loop, and a process restart intentionally forgets these research
+records. The report includes the backtest's mandatory metadata, equity,
+drawdown, exposure, distribution, trade count, yearly and regime breakdowns,
+strategy version and hash, plus replay fills/refusals and parity when selected.
+
+Every page and export says **Past results are not a promise of profit**. The
+export is a whitelist-based JSON record: it contains the selected report and
+assumptions, but no candle payload dump, provider response, credential,
+recipient, or infrastructure identifier. Comparison accepts up to five
+completed run IDs and compares strategy version, dataset, run type, final
+equity, return, drawdown, exposure, and trade count.
+
+| Route | Capability |
+| --- | --- |
+| `/operator/research` | Approved dataset catalog, run form, recent jobs, and comparison links. |
+| `POST /operator/research/runs` | Queue one bounded backtest or simulator replay; JSON returns `202` with the job record. |
+| `/operator/research/runs/{run_id}` | Read one queued, running, failed, or completed run. |
+| `/operator/research/compare?run=...` | Compare up to five completed versioned runs. |
+| `/operator/research/runs/{run_id}/export` | Download one completed, redacted JSON report. |
+
+All research routes are authenticated. Invalid datasets, oversized windows,
+too many walk-forward windows, and a full active queue are refused before the
+job is started. Research is read-only with respect to providers and trading
+controls.
