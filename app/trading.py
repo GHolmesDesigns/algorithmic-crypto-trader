@@ -293,6 +293,10 @@ class BrokerRiskInputs:
     (``observe`` covers loops without a signal). With ``loss_state_path`` the
     day's opening equity and the peak survive a restart; an unreadable or
     unwritable state file leaves both measures unknown, so buys are refused.
+
+    Equity counts the quote asset's held dollars as well as its free ones: a
+    resting buy reserves dollars without losing them. The cash reserve counts
+    only the free dollars, because held ones cannot be spent.
     """
 
     def __init__(
@@ -326,7 +330,8 @@ class BrokerRiskInputs:
         balances = await self.broker.get_balances()
         positions = await self.broker.get_positions()
         _, exposure = await self._exposure(positions, state.symbol, _last_close(state))
-        self._loss_measures(self.clock(), self._cash(balances), exposure)
+        _, total_cash = self._cash(balances)
+        self._loss_measures(self.clock(), total_cash, exposure)
 
     async def risk_inputs(
         self, signal: Signal, state: MarketState, context: CycleContext
@@ -354,8 +359,8 @@ class BrokerRiskInputs:
         reference = _last_close(state)
         volatility = (last_bar.high - last_bar.low) / last_bar.close if last_bar else None
         held, exposure = await self._exposure(positions, signal.symbol, reference)
-        cash = self._cash(balances)
-        daily_loss, drawdown = self._loss_measures(now, cash, exposure)
+        cash, total_cash = self._cash(balances)
+        daily_loss, drawdown = self._loss_measures(now, total_cash, exposure)
         last_order = context.last_order_at
         return RiskInputs(
             kill_switch=context.kill_switch,
@@ -383,10 +388,13 @@ class BrokerRiskInputs:
     def _window_open(self, now: datetime) -> bool:
         return self.trading_window(now) if self.trading_window is not None else True
 
-    def _cash(self, balances: tuple[Balance, ...]) -> Decimal:
-        return next(
-            (item.available for item in balances if item.asset == self.quote_asset), Decimal("0")
-        )
+    def _cash(self, balances: tuple[Balance, ...]) -> tuple[Decimal, Decimal]:
+        """Quote-asset dollars free to spend, and in total with those a resting buy holds."""
+
+        cash = next((item for item in balances if item.asset == self.quote_asset), None)
+        if cash is None:
+            return Decimal("0"), Decimal("0")
+        return cash.available, cash.available + cash.hold
 
     async def _exposure(
         self, positions: tuple[Position, ...], symbol: str, reference: Decimal | None
