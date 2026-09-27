@@ -184,6 +184,47 @@ async def test_websocket_reconnects_gap_fills_and_records_raw_stream(tmp_path) -
     assert transport.closed
 
 
+@pytest.mark.asyncio
+async def test_ticker_uses_the_live_envelope_timestamp() -> None:
+    quotes: list[Quote] = []
+
+    async def on_quote(quote: Quote) -> None:
+        quotes.append(quote)
+
+    ingestor = CoinbaseWebSocketIngestor(("BTC-USD",), on_quote=on_quote)
+    received_at = NOW + timedelta(seconds=2)
+    await ingestor._handle_payload(
+        {
+            "channel": "ticker",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "events": [
+                {
+                    "type": "snapshot",
+                    "tickers": [
+                        {
+                            "product_id": "BTC-USD",
+                            "best_bid": "99.50",
+                            "best_ask": "100.50",
+                        }
+                    ],
+                }
+            ],
+        },
+        received_at,
+    )
+
+    assert quotes == [
+        Quote(
+            symbol="BTC-USD",
+            bid=Decimal("99.50"),
+            ask=Decimal("100.50"),
+            as_of=NOW + timedelta(seconds=1),
+            source="coinbase-advanced-trade",
+            received_at=received_at,
+        )
+    ]
+
+
 def test_stream_fails_closed_without_fresh_quote() -> None:
     ingestor = CoinbaseWebSocketIngestor(("BTC-USD",), heartbeat_timeout_seconds=1)
     with pytest.raises(StaleMarketData):
