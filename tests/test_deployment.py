@@ -142,6 +142,10 @@ def test_vps_compose_requires_runtime_secrets_and_persists_state() -> None:
     assert "BROKER_PROVIDER" in compose
     assert "COINBASE_PRIVATE_KEY" in compose
     assert "KILL_SWITCH_FILE: /var/lib/trader/kill-switch.json" in compose
+    assert "LOSS_STATE_FILE: /var/lib/trader/loss-limits.json" in compose
+    assert "PAPER_RUNTIME_ENABLED: ${PAPER_RUNTIME_ENABLED:-1}" in compose
+    assert "ALERT_NTFY_TOPIC_URL" in compose
+    assert "ALERT_SMTP_PASSWORD" in compose
     assert "kill-switch-data" in base_compose
     assert "postgres-data" in base_compose
     assert "restart: unless-stopped" in base_compose

@@ -34,7 +34,16 @@ CREDENTIAL_SCOPE=none
 BROKER_PROVIDER=
 OPERATOR_TOKEN=REPLACE_WITH_RANDOM_OPERATOR_TOKEN
 OPERATOR_ADMIN_TOKEN=REPLACE_WITH_RANDOM_ADMIN_TOKEN
+PAPER_RUNTIME_ENABLED=0
 ```
+
+Leave the runtime disabled while `BROKER_PROVIDER` is empty. For the approved
+Gemini Sandbox paper deployment, configure the Sandbox broker, change
+`PAPER_RUNTIME_ENABLED=1`, and select at least one alert path in the same
+protected `.env`. The full non-secret defaults and ntfy/SMTP contracts are in
+[Paper runtime and operator alerts](phase-1.9-paper-runtime-alerts.md). Alert
+tokens, SMTP passwords, topic URLs, and recipient addresses are secrets or
+private operator data and must not be copied into deployment output.
 
 Start and check the deployment:
 
