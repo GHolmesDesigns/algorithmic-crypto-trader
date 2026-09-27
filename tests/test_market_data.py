@@ -88,7 +88,7 @@ def test_in_memory_store_is_idempotent() -> None:
 @pytest.mark.asyncio
 async def test_coinbase_rest_client_normalizes_public_candles() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/products/BTC-USD/candles")
+        assert request.url.path.endswith("/market/products/BTC-USD/candles")
         return httpx.Response(
             200,
             json={
