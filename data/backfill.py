@@ -43,6 +43,7 @@ class HistoricalCandleBackfiller:
         end: datetime,
         *,
         granularity: str = "ONE_MINUTE",
+        refresh_existing: bool = False,
     ) -> int:
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("backfill bounds must be timezone-aware")
@@ -50,9 +51,10 @@ class HistoricalCandleBackfiller:
             return 0
         interval = timedelta(seconds=GRANULARITY_SECONDS[granularity])
         cursor = start.astimezone(UTC)
-        latest = self.store.latest_opened_at(product_id, granularity)
-        if latest is not None:
-            cursor = max(cursor, latest + interval)
+        if not refresh_existing:
+            latest = self.store.latest_opened_at(product_id, granularity)
+            if latest is not None:
+                cursor = max(cursor, latest + interval)
         written = 0
         page_span = interval * MAX_CANDLES_PER_REQUEST
         while cursor < end:
