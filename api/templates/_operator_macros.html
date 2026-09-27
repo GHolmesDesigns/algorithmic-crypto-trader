@@ -1,0 +1,34 @@
+{#- Shared pieces of the operator dashboard. Marks are decorative: the word carries the meaning. -#}
+{% macro pill(status, extra="") -%}
+<span class="pill tone-{{ status.tone }}{% if extra %} {{ extra }}{% endif %}"><span class="mark" aria-hidden="true">{{ status.mark }}</span> {{ status.word }}</span>
+{%- endmacro %}
+
+{% macro absent(text) -%}
+<span class="absent"><span class="mark" aria-hidden="true">○</span> {{ text }}</span>
+{%- endmacro %}
+
+{% macro stamp(value) -%}
+{%- if value.iso -%}
+<time datetime="{{ value.iso }}">{{ value.text }}</time>{% if value.age %} <span class="age">({{ value.age }})</span>{% endif %}
+{%- else -%}
+{{ absent(value.text) }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro fact(item) -%}
+{%- if item.kind == "count" -%}
+<span class="count">{{ item.text }}</span>
+{%- elif item.kind == "status" -%}
+{{ pill(item.status) }}
+{%- elif item.kind == "stamp" -%}
+{{ stamp(item.stamp) }}
+{%- elif item.kind == "absent" -%}
+{{ absent(item.text) }}
+{%- else -%}
+{{ item.text }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro more(total, limit, noun) -%}
+{%- if total > limit %}<p class="note">Showing the newest {{ limit }} of {{ total }} {{ noun }}.</p>{% endif -%}
+{%- endmacro %}

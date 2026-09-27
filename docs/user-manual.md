@@ -133,30 +133,86 @@ deployment uses the configured persistent volume.
 4. Select **Sign in**.
 
 The browser receives a protected session cookie that lasts up to eight hours.
-Refresh the current standalone dashboard page manually: the template declares
-a 15-second HTMX refresh, but the current page does not load the HTMX library.
-There is currently no sign-out button, so close the browser session on a shared
-device. Never use the `?token=` query parameter even though the server accepts
+The dashboard does not refresh itself: select **Refresh** in its header for a
+new snapshot. There is currently no sign-out button, so close the browser
+session on a shared device. Never use the `?token=` query parameter even though the server accepts
 it for compatibility: URLs are often recorded in history and logs.
 
 ## Read the dashboard
+
+The dashboard is one server-rendered page. It works without JavaScript and loads
+no outside scripts, fonts, or stylesheets. It shows everything that the
+authenticated `/operator/state` returns:
+
+- **Header:** trading mode, credential scope, the role the server granted you
+  (**Operator** or **Administrator**), the snapshot time, and **Refresh**. When
+  only `OPERATOR_TOKEN` is configured, that token has the administrator role.
+- **Section links:** Overview, Portfolio, Activity, Alerts & errors, Risk &
+  safety, and System health. A wide screen shows them in a left rail; a phone
+  shows a row that scrolls sideways.
+- **Safety bar:** the kill-switch state, its cause, the next safe step, and the
+  **PAUSE** and **EMERGENCY STOP** controls. It stays at the top of the window
+  while you scroll. On a phone, the two controls stay fixed at the bottom of the
+  screen.
+
+Times are shown in UTC with their age when the page loaded. Select **Refresh**
+for newer values.
+
+### Status marks
+
+Every status pairs a colour with a word and a mark. Read the word: the colour
+and mark only help you scan.
+
+| Mark | Meaning |
+| --- | --- |
+| ● | OK. |
+| ▲ | Warning. |
+| ■ | Critical. |
+| ○ | Unknown or unavailable. |
+| ◐ | Neutral: information that is not a health verdict, such as an open order or current portfolio data. |
+
+The mode badge uses ◆ and turns red for `live`.
+
+The page keeps these cases apart:
+
+- A number, including `0`, is a real recorded count or value.
+- **○ unavailable** means the source could not be read. It is never a zero.
+- **○ unknown**, **not recorded**, and **never** mean the system cannot say yet.
+- **▲ last known** marks values kept from an earlier successful broker read.
+  They sit in a dashed table and are for diagnosis only.
+- **◐ current** portfolio data means the broker was read at the snapshot time.
+  It is about freshness, not correctness.
+
+### The cause of a pause or halt
+
+The kill switch stores only its state, not why it changed. The safety bar lists
+each cause it can find in the current state: a halted startup recovery, a
+diverged or unavailable scheduled reconciliation, or a failed or halted paper
+runtime. Otherwise it says the cause is not recorded. An operator control and
+the kill-switch file or environment flag leave no cause on the page, so check
+**Alerts & errors** and the application log.
+
+### What to check
 
 Review these items from top to bottom:
 
 | Dashboard item | Healthy or expected | Stop and investigate when |
 | --- | --- | --- |
-| Application | `healthy` when broker refresh succeeds; liveness is separately available at `/health`. | The page cannot load or the service repeatedly restarts. |
+| Application | `healthy` when the broker refresh succeeds; liveness is separately available at `/health`. | The page cannot load or the service repeatedly restarts. |
 | Trading mode | Matches the owner-approved mode. | It differs from the approved mode or unexpectedly says `live`. |
-| Strategy version | Matches the reviewed release. | It changed unexpectedly or an enabled strategy reports an unknown version. |
-| Broker connectivity | `healthy — broker state refreshed`, or `not_configured` for an intentionally credential-free deployment. The JSON state includes the check time, but the current HTML page does not render it. | `unavailable`, especially if positions or orders could exist. |
-| Risk state | The expected kill-switch state. | It changes without an understood operator action or incident. |
-| Startup recovery | `reconciled`, or `no_broker` when intentionally running without a broker and with no pending orders. | `halted`, or the detail mentions a pending order, missing baseline, unavailable broker, or divergence. |
-| Portfolio | `current — broker-authoritative snapshot` when a broker is configured. | `unavailable` when broker state is required. Last-known values are diagnostic only. |
-| P/L | May be `unavailable` in the current release. | Do not infer profitability or safety from a missing value. |
-| Balances and positions | Plausible and consistent with the approved environment. | A value is unexpected, duplicated, missing, or clearly belongs to another environment. |
-| Orders, fills, and signals | Counts and recent activity match expectations. | An order is unknown, pending unexpectedly, duplicated, or lacks an expected fill. |
-| Strategies | An enabled paper strategy reports a recent healthy heartbeat and runtime cycle result. | Heartbeat is absent, stale, unhealthy, or unexpectedly changes version. |
-| Errors and alerts | Empty, or a previously reviewed condition. | Any new critical alert, broker error, reconciliation divergence, or repeated error. |
+| Strategy version | Matches the reviewed release (**System health**). | It changed unexpectedly or an enabled strategy reports an unknown version. |
+| Broker | `healthy` with a recent check time, or `not_configured` for an intentionally credential-free deployment. | `unavailable`, especially if positions or orders could exist. |
+| Kill switch | The expected state in the safety bar. | It changes without an understood operator action or incident. |
+| Startup recovery | `reconciled`, or `no_broker` when intentionally running without a broker and with no pending orders. **System health** shows its counts and completion time. | `halted`, or the detail mentions a pending order, missing baseline, unavailable broker, or divergence. |
+| Reconciliation | `clean`, with a recent last run and no differences. `not_scheduled` without a broker. | `diverged` or `unavailable`, or the last run is old. |
+| Paper runtime | `running` with a recent last cycle, or `disabled` when it is intentionally off. | `degraded`, `failed`, `halted`, or `stopped`, or `not_started` when it should run. |
+| Portfolio data | **◐ current** when a broker is configured. | **▲ last known** or **○ unavailable** when broker state is required. |
+| P/L | May be **○ unavailable** in the current release. It is never shown as `0`. | Do not infer profitability or safety from a missing value. |
+| Balances and positions | Plausible and consistent with the approved environment. An average price the venue did not report shows **○ not known**. | A value is unexpected, duplicated, missing, or clearly belongs to another environment. |
+| Orders, fills, and signals | Counts and recent activity match expectations. | An order is `unknown` (look it up by client order ID and never resubmit it), pending unexpectedly, duplicated, or lacks an expected fill. |
+| Strategy heartbeats | An enabled paper strategy reports a recent healthy heartbeat and cycle result. | A heartbeat is absent, stale, unhealthy, or unexpectedly changes version. |
+| Alerts and errors | Empty, or a previously reviewed condition. Each alert shows whether each destination was sent or failed. | Any new critical alert, failed delivery, broker error, reconciliation divergence, or repeated error. |
+| Alert destinations | Phone push and email show **configured** where the deployment expects them. The page never shows recipients, topic addresses, or tokens. | A destination you rely on shows **not configured**: alerts then reach nobody. |
 
 `/health` proves only that the web process responds. It does not prove that the
 broker, strategy, market data, database, reconciliation, or trading path is
@@ -169,14 +225,11 @@ At the beginning of a monitoring period:
 1. Sign in and confirm the expected trading mode.
 2. Confirm the kill-switch state.
 3. Read the full startup-recovery status and detail.
-4. Confirm broker connectivity. Ask an engineer to verify the authenticated
-   JSON refresh time when that evidence is required; the current HTML page does
-   not display it.
+4. Confirm broker connectivity and its check time.
 5. Confirm balances and positions are plausible for this environment.
 6. Review orders, fills, signals, strategy heartbeats, alerts, and errors.
-7. When a broker is configured, ask an engineer or approved monitoring tool to
-   confirm the `reconciliation` object in authenticated `/operator/state`; the
-   current HTML page does not render it.
+7. When a broker is configured, confirm that scheduled reconciliation is
+   `clean` and that its last run is recent.
 8. Record only the approved, redacted result in the private operations log.
 
 Do not mark the system healthy solely because `/health` returns a success.
@@ -212,7 +265,8 @@ again while halted changes nothing.
 ### Re-arm
 
 Only an administrator can see and use **RE-ARM** when a separate administrator
-token is configured. Re-arming changes the kill switch to `running`; it does
+token is configured. It appears under **Risk & safety** while the system is
+paused or halted. Re-arming changes the kill switch to `running`; it does
 not repair a broker, database, data feed, strategy, or unresolved order. It is
 the only control that lowers the kill switch.
 
@@ -481,7 +535,7 @@ provider, credential, live confirmation, or reconciliation interval.
 | `GET /operator/login` | None | Browser login form. |
 | `POST /operator/login` | Token in form body | Establishes an HttpOnly, SameSite=Strict session lasting up to eight hours. |
 | `GET /operator` | Operator | Server-rendered dashboard. |
-| `GET /operator/fragment` | Operator | Dashboard fragment used for the 15-second refresh. |
+| `GET /operator/fragment` | Operator | The dashboard body without the page shell or styles. The page does not refresh itself. |
 | `GET /operator/state` | Operator | Full operator snapshot as JSON. |
 | `GET /operator/kill-switch` | Operator | Current kill-switch state. |
 | `POST /operator/pause` | Operator | Persist `paused` from `running`. Never lowers `halted`; returns the unchanged state instead. |

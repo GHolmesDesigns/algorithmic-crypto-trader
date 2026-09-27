@@ -18,8 +18,8 @@ optional `BrokerInterface` and alert sinks from the application boundary.
 
 ## State and degraded behavior
 
-`GET /operator` renders the dashboard, and `GET /operator/fragment` provides
-the HTMX refresh fragment. `GET /operator/state` returns the same state as JSON.
+`GET /operator` renders the dashboard, and `GET /operator/fragment` returns its
+body without the page shell. The page does not refresh itself. `GET /operator/state` returns the same state as JSON.
 The view includes trading mode, strategy version, application and broker
 connectivity, strategy heartbeats, kill-switch state, balances, positions, P/L
 availability, orders, fills, signals, alerts, and errors.

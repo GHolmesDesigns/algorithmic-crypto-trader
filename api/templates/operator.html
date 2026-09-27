@@ -3,14 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Trading operator surface</title>
+    <meta name="color-scheme" content="light dark">
+    <meta name="referrer" content="no-referrer">
+    <title>{{ view.safety.status.word }} · {{ view.header.mode }} · Operator dashboard</title>
+    <style>
+{% include "operator.css" %}
+    </style>
   </head>
   <body>
-    <main>
-      <h1>Trading operator surface</h1>
-      <div id="operator-state" hx-get="/operator/fragment" hx-trigger="every 15s" hx-swap="outerHTML">
-        {% include "operator_fragment.html" %}
-      </div>
-    </main>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    {% include "operator_fragment.html" %}
   </body>
 </html>
