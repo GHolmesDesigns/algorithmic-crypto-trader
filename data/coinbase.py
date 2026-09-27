@@ -104,7 +104,7 @@ class CoinbaseRESTClient:
         await self._rate_limiter.acquire()
         try:
             response = await self._client.get(
-                f"{self._base_url}/products/{product_id}/candles",
+                f"{self._base_url}/market/products/{product_id}/candles",
                 params={
                     "start": int(start.timestamp()),
                     "end": int(end.timestamp()),

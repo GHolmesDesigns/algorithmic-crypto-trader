@@ -98,7 +98,7 @@ class ScriptedSocket:
 
 def rest_candles(requests: list[tuple[datetime, datetime]]):
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v3/brokerage/products/BTC-USD/candles"
+        assert request.url.path == "/api/v3/brokerage/market/products/BTC-USD/candles"
         assert request.url.params["granularity"] == "FIVE_MINUTE"
         start = datetime.fromtimestamp(int(request.url.params["start"]), tz=UTC)
         end = datetime.fromtimestamp(int(request.url.params["end"]), tz=UTC)
