@@ -113,34 +113,46 @@ async def kill_switch_status(request: Request) -> dict[str, str]:
 
 @router.post("/operator/pause")
 async def pause(request: Request) -> Response:
-    return await _set_kill_switch(request, KillSwitchState.PAUSED, "operator pause")
+    return await _tighten_kill_switch(request, KillSwitchState.PAUSED, "operator pause")
 
 
 @router.post("/operator/emergency-stop")
 async def emergency_stop(request: Request) -> Response:
-    return await _set_kill_switch(request, KillSwitchState.HALTED, "operator emergency stop")
+    return await _tighten_kill_switch(request, KillSwitchState.HALTED, "operator emergency stop")
 
 
 @router.post("/operator/rearm")
 async def rearm(request: Request) -> Response:
     auth = _authorize(request, required_role="admin")
     state = _operator_state(request)
+    changed = state.kill_switch.state is not KillSwitchState.RUNNING
     state.kill_switch.set_state(KillSwitchState.RUNNING, reason="manual re-arm")
-    return _control_response(request, state.kill_switch.state, auth)
+    return _control_response(request, state.kill_switch.state, auth, changed=changed)
 
 
-async def _set_kill_switch(request: Request, target: KillSwitchState, reason: str) -> Response:
+async def _tighten_kill_switch(request: Request, target: KillSwitchState, reason: str) -> Response:
+    """Operators can only raise severity; a stop never lowers a halt to a pause."""
+
     auth = _authorize(request, required_role="operator")
     state = _operator_state(request)
-    state.kill_switch.set_state(target, reason=reason)
-    return _control_response(request, state.kill_switch.state, auth)
+    changed = state.kill_switch.tighten(target, reason=reason)
+    return _control_response(request, state.kill_switch.state, auth, changed=changed)
 
 
-def _control_response(request: Request, state: KillSwitchState, auth: AuthContext) -> Response:
+def _control_response(
+    request: Request, state: KillSwitchState, auth: AuthContext, *, changed: bool
+) -> Response:
     if "text/html" in request.headers.get("accept", ""):
+        heading = "Operator control applied" if changed else f"Already {escape(state.value)}"
+        note = ""
+        if not changed and state is KillSwitchState.HALTED:
+            note = (
+                "<p>Nothing changed. Leaving halted requires an administrator re-arm "
+                "after the re-arm checklist.</p>"
+            )
         body = (
-            "<html><body><h1>Operator control applied</h1>"
-            f"<p>Kill switch: <strong>{escape(state.value)}</strong></p>"
+            f"<html><body><h1>{heading}</h1>"
+            f"<p>Kill switch: <strong>{escape(state.value)}</strong></p>{note}"
             '<p><a href="/operator">Return to dashboard</a></p></body></html>'
         )
         response: Response = HTMLResponse(body)

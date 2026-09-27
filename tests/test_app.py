@@ -3,7 +3,11 @@ import pytest
 from api.alerts import Alert, AlertRouter
 from app.main import create_app
 from core.guards import CredentialScope, StartupSettings
-from core.models import Balance, Position, TradingMode, utc_now
+from core.models import Balance, KillSwitchState, Position, TradingMode, utc_now
+from risk.kill_switch import KillSwitch
+
+OPERATOR = {"x-operator-token": "operator-secret"}
+ADMIN = {"x-operator-token": "admin-secret"}
 
 
 class UnavailableBroker:
@@ -171,3 +175,120 @@ async def test_admin_authorization_and_alert_fanout(monkeypatch):
         assert state.json()["alert_destinations"] == ["phone_push", "email"]
         assert [item.condition for item in phone.alerts] == ["broker_unavailable"]
         assert [item.condition for item in email.alerts] == ["broker_unavailable"]
+
+
+def _control_app(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPERATOR_TOKEN", "operator-secret")
+    monkeypatch.setenv("OPERATOR_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("KILL_SWITCH_FILE", str(tmp_path / "kill-switch.json"))
+    settings = StartupSettings(
+        TradingMode.BACKTEST, CredentialScope.NONE, "", "postgresql://unused", "INFO"
+    )
+    return create_app(settings)
+
+
+def _transitions(application):
+    return [(event["from"], event["to"]) for event in application.state.kill_switch.audit_events]
+
+
+@pytest.mark.asyncio
+async def test_operator_pause_cannot_lower_a_halt_with_a_token(monkeypatch, tmp_path):
+    application = _control_app(monkeypatch, tmp_path)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        stop = await client.post("/operator/emergency-stop", headers=OPERATOR)
+        assert stop.json() == {"state": "halted"}
+        pause = await client.post("/operator/pause", headers=OPERATOR)
+        assert pause.status_code == 200
+        assert pause.json() == {"state": "halted"}
+        again = await client.post("/operator/emergency-stop", headers=OPERATOR)
+        assert again.json() == {"state": "halted"}
+        page = await client.post("/operator/pause", headers={**OPERATOR, "accept": "text/html"})
+        assert "Already halted" in page.text
+        assert "administrator re-arm" in page.text
+        status = await client.get("/operator/kill-switch", headers=OPERATOR)
+        assert status.json() == {"state": "halted"}
+    assert KillSwitch(tmp_path / "kill-switch.json").state is KillSwitchState.HALTED
+    assert _transitions(application) == [("running", "halted")]
+
+
+@pytest.mark.asyncio
+async def test_operator_pause_cannot_lower_a_halt_with_a_session(monkeypatch, tmp_path):
+    application = _control_app(monkeypatch, tmp_path)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        login = await client.post(
+            "/operator/login",
+            data={"token": "operator-secret"},
+            headers={"accept": "text/html"},
+            follow_redirects=False,
+        )
+        assert login.status_code == 303
+        assert (await client.post("/operator/emergency-stop")).json() == {"state": "halted"}
+        page = await client.post("/operator/pause", headers={"accept": "text/html"})
+        assert page.status_code == 200
+        assert "Already halted" in page.text
+        assert "administrator re-arm" in page.text
+        assert (await client.post("/operator/pause")).json() == {"state": "halted"}
+        assert (await client.post("/operator/rearm")).status_code == 403
+    assert KillSwitch(tmp_path / "kill-switch.json").state is KillSwitchState.HALTED
+    assert _transitions(application) == [("running", "halted")]
+
+
+@pytest.mark.asyncio
+async def test_operator_stops_only_ever_tighten(monkeypatch, tmp_path):
+    application = _control_app(monkeypatch, tmp_path)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.post("/operator/pause", headers=OPERATOR)).json() == {
+            "state": "paused"
+        }
+        page = await client.post("/operator/pause", headers={**OPERATOR, "accept": "text/html"})
+        assert "Already paused" in page.text
+        assert "administrator re-arm" not in page.text
+        status = await client.get("/operator/kill-switch", headers=OPERATOR)
+        assert status.json() == {"state": "paused"}
+        stop = await client.post("/operator/emergency-stop", headers=OPERATOR)
+        assert stop.json() == {"state": "halted"}
+    assert _transitions(application) == [("running", "paused"), ("paused", "halted")]
+
+
+@pytest.mark.asyncio
+async def test_only_an_administrator_rearm_lowers_the_switch(monkeypatch, tmp_path):
+    application = _control_app(monkeypatch, tmp_path)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for stop in ("/operator/emergency-stop", "/operator/pause"):
+            await client.post(stop, headers=OPERATOR)
+            assert (await client.post("/operator/rearm", headers=OPERATOR)).status_code == 403
+            rearm = await client.post("/operator/rearm", headers={**ADMIN, "accept": "text/html"})
+            assert "Operator control applied" in rearm.text
+            status = await client.get("/operator/kill-switch", headers=ADMIN)
+            assert status.json() == {"state": "running"}
+        repeat = await client.post("/operator/rearm", headers={**ADMIN, "accept": "text/html"})
+        assert "Already running" in repeat.text
+    assert KillSwitch(tmp_path / "kill-switch.json").state is KillSwitchState.RUNNING
+    assert _transitions(application) == [
+        ("running", "halted"),
+        ("halted", "running"),
+        ("running", "paused"),
+        ("paused", "running"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_hides_pause_while_halted(monkeypatch, tmp_path):
+    application = _control_app(monkeypatch, tmp_path)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        running = (await client.get("/operator/fragment", headers=OPERATOR)).text
+        assert 'action="/operator/pause"' in running
+        await client.post("/operator/emergency-stop", headers=OPERATOR)
+        halted = (await client.get("/operator/fragment", headers=OPERATOR)).text
+        assert 'action="/operator/pause"' not in halted
+        assert 'action="/operator/emergency-stop"' in halted
+        assert "administrator re-arm required" in halted
+        assert 'action="/operator/rearm"' not in halted
+        admin_view = (await client.get("/operator", headers=ADMIN)).text
+        assert 'action="/operator/pause"' not in admin_view
+        assert 'action="/operator/rearm"' in admin_view

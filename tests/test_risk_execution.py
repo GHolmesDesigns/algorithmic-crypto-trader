@@ -378,6 +378,50 @@ def test_external_flags_escalate_but_never_rearm(tmp_path) -> None:
         KillSwitch().set_state(KillSwitchState.RUNNING, automatic=True)
 
 
+def test_only_a_manual_rearm_can_lower_a_halt(tmp_path) -> None:
+    path = tmp_path / "kill-switch.json"
+    switch = KillSwitch(path)
+    switch.trip("startup recovery: divergence")
+    for automatic in (False, True):
+        with pytest.raises(PermissionError, match="only a manual re-arm"):
+            switch.set_state(KillSwitchState.PAUSED, automatic=automatic, reason="pause")
+    assert switch.state is KillSwitchState.HALTED
+    assert KillSwitch(path).state is KillSwitchState.HALTED
+    assert switch.audit_events[-1]["reason"] == "startup recovery: divergence"
+    switch.set_state(KillSwitchState.RUNNING, reason="manual re-arm")
+    assert KillSwitch(path).state is KillSwitchState.RUNNING
+
+
+def test_tighten_raises_severity_and_never_lowers_it(tmp_path) -> None:
+    path = tmp_path / "kill-switch.json"
+    switch = KillSwitch(path)
+    assert switch.tighten(KillSwitchState.RUNNING, reason="stop") is False
+    assert switch.tighten(KillSwitchState.PAUSED, reason="operator pause") is True
+    assert switch.tighten(KillSwitchState.PAUSED, reason="operator pause") is False
+    assert switch.tighten(KillSwitchState.HALTED, reason="operator emergency stop") is True
+    assert switch.tighten(KillSwitchState.PAUSED, reason="operator pause") is False
+    assert switch.state is KillSwitchState.HALTED
+    assert KillSwitch(path).state is KillSwitchState.HALTED
+    assert [(event["from"], event["to"]) for event in switch.audit_events] == [
+        ("running", "paused"),
+        ("paused", "halted"),
+    ]
+
+
+def test_an_unchanged_state_records_no_transition_but_restores_a_lost_file(tmp_path) -> None:
+    path = tmp_path / "kill-switch.json"
+    switch = KillSwitch(path)
+    switch.trip("first cause")
+    path.unlink()
+    switch.trip("second cause")
+    assert len(switch.audit_events) == 1
+    assert KillSwitch(path).state is KillSwitchState.HALTED
+    path.unlink()
+    assert switch.tighten(KillSwitchState.PAUSED, reason="operator pause") is False
+    assert len(switch.audit_events) == 1
+    assert KillSwitch(path).state is KillSwitchState.HALTED
+
+
 def test_an_unreadable_flag_file_halts(tmp_path) -> None:
     flag = tmp_path / "flag-directory"
     flag.mkdir()  # exists, but reading it as a file fails
