@@ -177,6 +177,20 @@ async def test_missing_live_quote_refuses_processing_and_alerts_once(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_start_refreshes_the_bounded_history_window(tmp_path) -> None:
+    instance, _cycle, _sink = runtime(tmp_path, quote=None)
+
+    await instance.start()
+    try:
+        assert len(instance.backfiller.calls) == 1
+        _args, kwargs = instance.backfiller.calls[0]
+        assert kwargs["granularity"] == "FIVE_MINUTE"
+        assert kwargs["refresh_existing"] is True
+    finally:
+        await instance.stop()
+
+
+@pytest.mark.asyncio
 async def test_unexpected_cycle_error_halts_for_broker_review(tmp_path) -> None:
     latest = candle(8)
     quote = Quote(

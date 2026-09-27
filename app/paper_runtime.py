@@ -49,6 +49,7 @@ class BackfillRunner(Protocol):
         end: datetime,
         *,
         granularity: str = "ONE_MINUTE",
+        refresh_existing: bool = False,
     ) -> int: ...
 
 
@@ -158,7 +159,13 @@ class PaperRuntime:
         end = _bucket_start(utc_now())
         start = end - INTERVAL * self.config.history_bars
         for symbol in self.config.symbols:
-            await self.backfiller.run(symbol, start, end, granularity=WEBSOCKET_CANDLE_INTERVAL)
+            await self.backfiller.run(
+                symbol,
+                start,
+                end,
+                granularity=WEBSOCKET_CANDLE_INTERVAL,
+                refresh_existing=True,
+            )
             latest = self.store.latest_opened_at(symbol, WEBSOCKET_CANDLE_INTERVAL)
             if latest is None:
                 raise StartupGuardError(f"no closed market history is available for {symbol}")

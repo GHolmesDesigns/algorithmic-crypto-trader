@@ -136,6 +136,36 @@ async def test_backfill_resumes_from_latest_and_writes_once() -> None:
     assert len(client.calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_backfill_can_refresh_a_bounded_existing_window_and_repair_a_gap() -> None:
+    class FakeClient:
+        calls: list[tuple[datetime, datetime]] = []
+
+        async def get_candles(self, product_id: str, start: datetime, end: datetime, **_: object):
+            self.calls.append((start, end))
+            return tuple(make_candle(index) for index in range(3))
+
+    store = InMemoryCandleStore()
+    store.upsert_many((make_candle(0), make_candle(2)))
+    client = FakeClient()
+    backfiller = HistoricalCandleBackfiller(client, store)
+    end = NOW + timedelta(minutes=3)
+
+    assert (
+        await backfiller.run(
+            "BTC-USD",
+            NOW,
+            end,
+            refresh_existing=True,
+        )
+        == 1
+    )
+    assert tuple(candle.opened_at for candle in store.read("BTC-USD", "ONE_MINUTE")) == tuple(
+        NOW + timedelta(minutes=index) for index in range(3)
+    )
+    assert client.calls == [(NOW, end)]
+
+
 class FakeTransport:
     def __init__(self, messages: list[str]) -> None:
         self.messages = iter(messages)
