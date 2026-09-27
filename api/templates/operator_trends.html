@@ -1,0 +1,167 @@
+{%- extends "_operator_page.html" -%}
+{#- Trends: server-drawn SVG bars in one neutral ink, each with a summary and a table. No script. -#}
+{%- import "_operator_macros.html" as ui -%}
+{%- import "_history_macros.html" as hx -%}
+{% block title %}{{ view.title }}{% endblock %}
+{% block page_name %}History{% endblock %}
+{% block page_class %} page-wide{% endblock %}
+
+{% macro ticks(chart) -%}
+<div class="chart-ticks" aria-hidden="true">{% for tick in chart.ticks %}<span>{{ tick }}</span>{% endfor %}</div>
+{%- endmacro %}
+
+{% macro bars(chart, row, klass) -%}
+<svg class="{{ klass }}" viewBox="0 0 {{ chart.width }} 100" preserveAspectRatio="none" role="img" aria-label="{{ row.summary }}" focusable="false">
+                  <rect class="slot-open" x="{{ chart.open_x }}" y="0" width="10" height="100"/>
+                  {%- if klass == "chart-svg" %}
+                  <line class="grid" x1="0" x2="{{ chart.width }}" y1="0" y2="0"/>
+                  {%- if chart.mid %}
+                  <line class="grid" x1="0" x2="{{ chart.width }}" y1="50" y2="50"/>
+                  {%- endif %}
+                  {%- endif %}
+                  {%- for bar in row.bars %}
+                  <rect class="bar{% if bar.open %} bar-open{% endif %}" x="{{ bar.x }}" y="{{ bar.y }}" width="{{ bar.width }}" height="{{ bar.height }}"/>
+                  {%- endfor %}
+                  <line class="baseline" x1="0" x2="{{ chart.width }}" y1="100" y2="100"/>
+                </svg>
+{%- endmacro %}
+
+{% macro table(chart) -%}
+            <details class="chart-table">
+              <summary>Table: {{ chart.table.caption }}</summary>
+              <div class="table-wrap" role="region" aria-label="{{ chart.table.caption }}" tabindex="0">
+                <table class="data">
+                  <caption class="visually-hidden">{{ chart.table.caption }}</caption>
+                  <thead>
+                    <tr><th scope="col">{{ chart.table.first }}</th>{% for column in chart.table.columns %}<th scope="col" class="num">{{ column }}</th>{% endfor %}</tr>
+                  </thead>
+                  <tbody>
+                    {%- for row in chart.table.rows %}
+                    <tr>
+                      <th scope="row">{% if row.href %}<a href="{{ row.href }}">{{ row.label }}</a>{% else %}{{ row.label }}{% endif %}{% if row.in_progress %} <span class="age">in progress</span>{% endif %}</th>
+                      {%- for count in row.counts %}
+                      <td class="num">{{ count }}</td>
+                      {%- endfor %}
+                    </tr>
+                    {%- endfor %}
+                  </tbody>
+                  <tfoot>
+                    <tr><th scope="row">Window total</th>{% for count in chart.table.totals %}<td class="num"><span class="count">{{ count }}</span></td>{% endfor %}</tr>
+                  </tfoot>
+                </table>
+              </div>
+            </details>
+{%- endmacro %}
+
+{% macro chart(chart, bucket) -%}
+          <section class="panel chart-panel" id="{{ chart.id }}" aria-labelledby="{{ chart.id }}-heading">
+            <div class="chart-head">
+              <h2 id="{{ chart.id }}-heading">{{ chart.title }}</h2>
+              {%- if chart.state == "drawn" %}
+              <p><span class="count">{{ chart.total }}</span> {{ chart.total_unit }} in this window</p>
+              {%- endif %}
+            </div>
+            {%- if chart.state == "not_started" %}
+            <p class="source">Source: none yet.</p>
+            <div class="notice tone-neutral" role="status">
+              <p><span class="mark" aria-hidden="true">◐</span> Not started: no producer records this yet.</p>
+              <p class="notice-body">{{ chart.reason }}</p>
+              <p class="notice-body">No chart is drawn, so no empty axis can be read as zero.</p>
+            </div>
+            {%- elif chart.state == "unavailable" %}
+            <div class="notice tone-unknown" role="status">
+              <p><span class="mark" aria-hidden="true">○</span> Not available: {{ chart.reason }}.</p>
+              <p class="notice-body">Nothing could be read, so no chart is drawn and this is not a count of zero.</p>
+            </div>
+            {%- else %}
+            <p class="source">Source: <code>{{ chart.source.table }}</code>{% if chart.source.where %} where <code>{{ chart.source.where }}</code>{% endif %}, counted by <code>{{ chart.source.time }}</code>.</p>
+            <p class="note">{{ chart.note }}</p>
+            {%- if chart.state == "zero" %}
+            <p class="empty"><span class="count">0</span> {{ chart.unit }} recorded in this window.</p>
+            {%- elif chart.multiples %}
+            <figure class="chart">
+              <ol class="multiples">
+                {%- for row in chart.rows %}
+                <li class="multiple">
+                  <p class="multiple-label">{{ row.label }}{% if row.key and row.key not in row.label %} <span class="mono age">{{ row.key }}</span>{% endif %}</p>
+                  <p class="multiple-total"><span class="count">{{ row.total }}</span></p>
+                  {{ bars(chart, row, "spark") }}
+                </li>
+                {%- endfor %}
+              </ol>
+              <div class="multiple multiple-axis" aria-hidden="true"><span></span><span></span>{{ ticks(chart) }}</div>
+              <figcaption class="note">Each bar is one {{ bucket }}, in UTC. Every row shares one scale: a full-height bar is {{ chart.scale }} per {{ bucket }}.</figcaption>
+            </figure>
+            {%- if chart.zero_labels %}
+            {%- if chart.zero_labels | length > 4 %}
+            <details class="zero-list">
+              <summary><span class="count">0</span> {{ chart.unit }} at the other {{ chart.zero_labels | length }} {{ chart.kinds }}</summary>
+              <p class="note">{{ chart.zero_labels | join("; ") }}.</p>
+            </details>
+            {%- else %}
+            <p class="note"><span class="count">0</span> {{ chart.unit }} recorded for {{ chart.zero_labels | join(", ") }}.</p>
+            {%- endif %}
+            {%- endif %}
+            {{ table(chart) }}
+            {%- else %}
+            {%- set row = chart.rows[0] %}
+            <figure class="chart">
+              <div class="chart-plot">
+                <div class="chart-axis" aria-hidden="true"><span>{{ chart.scale }}</span>{% if chart.mid %}<span>{{ chart.mid }}</span>{% endif %}<span>0</span></div>
+                {{ bars(chart, row, "chart-svg") }}
+                <span></span>
+                {{ ticks(chart) }}
+              </div>
+              <figcaption class="note">Each bar is one {{ bucket }}, in UTC. The shaded slot at the right is the current {{ bucket }}, still in progress.</figcaption>
+            </figure>
+            {{ table(chart) }}
+            {%- endif %}
+            {%- if chart.detail_href %}
+            <p><a href="{{ chart.detail_href }}">Every one of these {{ chart.unit }} in this window, in detail</a></p>
+            {%- endif %}
+            {%- endif %}
+          </section>
+{%- endmacro %}
+
+{% block content %}
+        {% include "_history_nav.html" %}
+        <section class="block" aria-labelledby="trends-heading">
+          <div class="block-head">
+            <h1 id="trends-heading">{{ view.title }}</h1>
+            <p class="block-note">{{ view.intro }}</p>
+          </div>
+          <form class="panel" method="get" action="{{ view.path }}" aria-labelledby="window-heading">
+            <h2 id="window-heading">Window</h2>
+            <div class="field window-field">
+                <label for="trends-window">Time window</label>
+                <select id="trends-window" name="window">
+                  {%- for option in view.windows %}
+                  <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+                  {%- endfor %}
+                </select>
+            </div>
+            <div class="actions">
+              <button class="button button-rearm" type="submit">Show trends</button>
+            </div>
+            <p class="note">Times are UTC. A window covers at most {{ view.limits.days }} days in at most {{ view.limits.bars }} bars; the server refuses anything wider.</p>
+          </form>
+          {{ hx.problems(view) }}
+          {%- if view.window %}
+          <p class="note">{{ view.window.label }}: {{ ui.stamp(view.window.since) }} to {{ ui.stamp(view.window.until) }}. The current {{ view.bucket }} began {{ ui.stamp(view.window.current) }} and is still in progress. Counted at {{ ui.stamp(view.window.as_of) }}.</p>
+          {%- endif %}
+          {%- for item in view.charts %}
+          {{ chart(item, view.bucket) }}
+          {%- endfor %}
+          {%- if view.charts %}
+          <section class="panel" aria-labelledby="reading-heading">
+            <h2 id="reading-heading">Reading these charts</h2>
+            <ul class="causes">
+              <li>Bars are drawn in one neutral ink. Green and red stay reserved for system health, so a tall bar is a count, not a verdict.</li>
+              <li>A count of zero is written as <span class="count">0</span>. A chart that could not be read says <strong>Not available</strong>, and a chart with no producer says <strong>Not started</strong> and why. Neither draws an axis.</li>
+              <li>Every chart has a table with the same counts. In the discrepancy and refusal tables, each period links to its records.</li>
+              <li>These counts come from the database and survive restarts. The dashboard's reconciliation counters cover only the running process.</li>
+            </ul>
+          </section>
+          {%- endif %}
+        </section>
+{% endblock %}

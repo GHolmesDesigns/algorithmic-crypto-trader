@@ -24,6 +24,11 @@
 > - **#61 merged:** bounded, read-only history under `/operator/history/*`, as JSON and HTML. Orders expand into their lineage (signal, risk decision, order, fills); signals, risk decisions, discrepancies, and system events are filterable; **Risk & safety** shows the latest refusal, refusals by the 17 ordered gates, and kill-switch history.
 >   - Every list caps its window at 31 days and its page at 100 rows, and refuses anything wider.
 >   - "0 recorded" and "not available" render differently. This supersedes the §5.10 and §8.2 statements that persisted records lack browser read APIs, and the §8.4 statement that gate views need new read models.
+> - **#62 merged:** **Trends** at `/operator/history/trends`, as JSON and HTML. It shows reconciliation runs, discrepancies by type, and risk refusals by gate over 24 hours, 7 days, or 30 days, counted by the database from persisted rows.
+>   - Charts are server-drawn SVG in one neutral ink, each naming its source table and followed by a table of the same counts. There is no JavaScript and no CDN.
+>   - The window is capped at 30 days and 30 bars on the server.
+>   - Uptime and freshness, and equity and day P/L, render as **Not started** with the reason: no persisted producer exists, and P/L waits on #30.
+>   - This delivers the §9.3 "reconciliation/discrepancy trend" and "risk-rejection histogram". The "uptime and freshness trends" and "equity and day-P/L chart" still need producers.
 > - **The §10 iterations are now carded:**
 >   - Iteration A → #59 (command center, merged) and #60 (safety controls, sign-out, enforced re-arm review);
 >   - Iteration B → #61 (bounded history) and #62 (trends);

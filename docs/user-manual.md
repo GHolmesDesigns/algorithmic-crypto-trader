@@ -38,9 +38,9 @@ normal service start it:
 4. recovers pending or unknown orders by their persisted client order ID;
 5. reconciles persisted state with the broker, when a broker is configured;
 6. starts scheduled reconciliation when a broker is configured; and
-7. exposes health checks, an authenticated operator dashboard, and bounded,
+7. exposes health checks, an authenticated operator dashboard, bounded,
    read-only history of the persisted signals, risk decisions, orders, fills,
-   discrepancies, and events.
+   discrepancies, and events, and trends that count them over time.
 
 The broker is authoritative during reconciliation. If the database and broker
 disagree, or if required state cannot be read, the system fails closed and
@@ -272,6 +272,36 @@ Read these the same way as the dashboard:
 The history is read-only. Nothing on these pages can submit, cancel, or retry an
 order.
 
+## Read the trends
+
+**Trends** counts the persisted records over time. Open it from the history
+navigation or the dashboard's **System health** section, or go to
+`/operator/history/trends`. Choose **Last 24 hours** (hourly bars), **Last 7
+days** (6-hour bars), or **Last 30 days** (daily bars). Times are UTC, and the
+last bar is the current period, still in progress.
+
+| Chart | What it counts |
+| --- | --- |
+| **Reconciliation runs** | Completed reconciliations, at startup and on schedule. A run that could not read the broker is not counted here; the dashboard counts those since the process started. |
+| **Discrepancies by type** | Differences reconciliation recorded, one row each, split into order, fill, position, and balance. |
+| **Risk refusals by gate** | Refusals under the first gate that stopped them, in the gates' order. Gates with none are listed under **0 refusals at the other … gates**. |
+| **Uptime and freshness** | **Not started.** Nothing saves heartbeats or freshness checks yet, so there is no history to chart. |
+| **Equity and day P/L** | **Not started.** No trustworthy producer records them; P/L waits on known cost basis (#30). |
+
+Each chart names the table it counts. Bars are drawn in one neutral ink: a tall
+bar is a count, not a health verdict. Open **Table** under a chart for the same
+counts as text. In the discrepancy and refusal tables, select a period to list
+its records on the history page.
+
+Read the states the same way as the history:
+
+- **0 … recorded in this window** is a real zero. No axis is drawn.
+- **○ Not available** means the records could not be read. It is not a zero.
+- **◐ Not started** means no producer records this yet. It is not a zero either.
+
+A gap in **Reconciliation runs** is a period without a completed run. Check
+**Alerts & errors** and the application log for that time.
+
 ## Routine operating check
 
 At the beginning of a monitoring period:
@@ -285,7 +315,8 @@ At the beginning of a monitoring period:
    On the history pages, check **Risk & safety** for new refusals and
    **Discrepancies** for new differences.
 7. When a broker is configured, confirm that scheduled reconciliation is
-   `clean` and that its last run is recent.
+   `clean` and that its last run is recent. On **Trends**, confirm that
+   **Reconciliation runs** has no unexplained gap.
 8. Record only the approved, redacted result in the private operations log.
 
 Do not mark the system healthy solely because `/health` returns a success.
@@ -642,6 +673,7 @@ provider, credential, live confirmation, or reconciliation interval.
 | `GET /operator/history/risk` | Operator | Latest refusal, refusals by ordered gate, and kill-switch history. |
 | `GET /operator/history/discrepancies` | Operator | Reconciliation differences by field name. Filter: `entity_type`. |
 | `GET /operator/history/events` | Operator | System events. Filter: `event_type`. |
+| `GET /operator/history/trends` | Operator | Counts per time bucket: reconciliation runs, discrepancies by type, and refusals by gate, plus the charts not started yet. Parameter: `window`. |
 
 For programmatic access, send the token in the `x-operator-token` header. The
 server refuses any request with a `token` query parameter (`400`). Cookie
@@ -697,6 +729,20 @@ read returns `503` with `{"detail": {"status": "unavailable", "reason": "..."}}`
 never an empty list. A lineage for an unknown client order ID returns `404`.
 Responses carry identifiers, statuses, amounts, reasons, and times; provider
 payloads stay in the database.
+
+`/operator/history/trends` takes one parameter, `window`: `24h` (the default,
+24 hourly buckets), `7d` (28 six-hour buckets), or `30d` (30 daily buckets).
+Buckets align to UTC, and the last one is still in progress. Any other window,
+or any other parameter, returns `422` and nothing is read. Each available chart
+names its source and returns per-bucket counts; a chart with no producer returns
+`"status": "not_started"` and its reason, never an empty series.
+
+```json
+{"kind": "trends", "status": "available", "query": {"window": "24h", "since": "...", "until": "...", "as_of": "...", "bucket_seconds": 3600, "buckets": 24, "max_days": 30, "in_progress_from": "..."}, "charts": [{"key": "reconciliation_runs", "status": "available", "source": {"table": "portfolio_snapshots", "where": "source = 'broker'", "time": "recorded_at"}, "series": [{"key": "completed", "counts": [12, 12, "..."], "total": 265}], "totals": ["..."], "total": 265}, {"key": "equity_pnl", "status": "not_started", "reason": "...", "blocked_by": ["#30"]}]}
+```
+
+A trends read that fails returns `503` with the same `unavailable` detail as the
+history, never a chart of zeros.
 
 FastAPI also exposes its generated API documentation by default. A production
 reverse proxy should apply the deployment's access policy to `/docs`,
