@@ -5,21 +5,25 @@
 - **Audience:** the agent responsible for completing the product UI design
 - **Scope:** design and information architecture, not authorization to enable live trading or add provider writes
 
-> **Status since this report (2026-09-27, `main` at `ebafbff`).** The report below is kept as prepared. Where it conflicts with this note, this note wins.
+> **Status since this report (2026-09-27, `main` at `e9763b7`).** The report below is kept as prepared. Where it conflicts with this note, this note wins.
 >
 > - **#54 merged.** In `paper` mode, a configured broker plus `PAPER_RUNTIME_ENABLED=1` (`0` by default, `1` in the VPS override) now starts the Coinbase market-data runtime and drives the trading cycle.
 >   - Operator state gains a `runtime` block with seven statuses: `not_started`, `running`, `degraded`, `failed`, `halted`, `stopped`, `disabled`.
 >   - ntfy phone-push and SMTP email sinks are built from the environment.
 >   - This supersedes the "not started by default" and "no concrete sinks" statements in §5.3, §5.7, and §5.9, and the "Draft" status in §9.1 and §16.
 > - **#56 and #58 merged:** fixes to Coinbase market data, with no change to the operator state.
+> - **#55 / PR #57 merged.** An operator PAUSE no longer lowers a halt, and only the administrator re-arm lowers the kill switch. The `POST /operator/pause` and `POST /operator/emergency-stop` rows in §5.9 now leave a stricter state unchanged.
+> - **#59 / PR #67 merged:** the styled, accessible command center, built from `/operator/state` with local CSS and no JavaScript. It supersedes the §4 audit of the unstyled page.
+>   - All merged fields are rendered, including the seven runtime statuses.
+>   - Refresh is a working link; the dead HTMX attributes are gone.
+>   - PAUSE is hidden while halted, and RE-ARM moved to Risk & safety.
 > - **The §10 iterations are now carded:**
->   - Iteration A → #59 (command center) and #60 (safety controls, sign-out, enforced re-arm review);
+>   - Iteration A → #59 (command center, merged) and #60 (safety controls, sign-out, enforced re-arm review);
 >   - Iteration B → #61 (bounded history) and #62 (trends);
 >   - Iteration C → #64;
 >   - Iteration D → #63.
 >
 >   Delivery 5 (controlled-live support) stays with #13 until it is separately authorized.
-> - **In review, #55 / PR #57:** an operator PAUSE no longer lowers a halt, the dashboard hides PAUSE while halted, and only the administrator re-arm lowers the kill switch. Once it merges, it changes the `POST /operator/pause` and `POST /operator/emergency-stop` rows in §5.9.
 
 ## 1. How to read this report
 
