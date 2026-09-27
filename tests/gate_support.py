@@ -283,11 +283,14 @@ class FakeGeminiSandbox(FakeVenue):
         path = payload["request"]
         self.requests.append((path, str(payload.get("client_order_id", ""))))
         if path == "/v1/balances":
+            # Documented Get Available Balances rows; market orders leave nothing on hold.
             rows = [
                 {
+                    "type": "exchange",
                     "currency": asset,
+                    "amount": str(amount),
                     "available": str(amount),
-                    "available_for_withdrawal": str(amount),
+                    "availableForWithdrawal": str(amount),
                 }
                 for asset, amount in self.balances.items()
                 if amount

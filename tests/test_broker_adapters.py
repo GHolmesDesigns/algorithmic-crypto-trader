@@ -9,7 +9,7 @@ import httpx
 import pytest
 from brokers.coinbase import CoinbaseBroker
 from brokers.gemini import GeminiBroker
-from brokers.http import AmbiguousSubmissionError
+from brokers.http import AmbiguousSubmissionError, ProviderHTTPError
 from core.models import OrderRequest, OrderSide, OrderStatus, OrderType, RiskApproval
 from core.resilience import TokenBucketRateLimiter
 
@@ -153,6 +153,133 @@ async def test_gemini_adapter_satisfies_contract_using_only_sandbox_paths() -> N
 def test_gemini_rejects_every_non_sandbox_host() -> None:
     with pytest.raises(ValueError, match="sandbox"):
         GeminiBroker(base_url="https://api.gemini.com")
+
+
+def gemini_balance(currency: str, amount: str, available: str) -> dict[str, str]:
+    """One row in Gemini's documented Get Available Balances shape (checked 2026-09-27)."""
+
+    return {
+        "type": "exchange",
+        "currency": currency,
+        "amount": amount,
+        "available": available,
+        "availableForWithdrawal": available,
+        "_timestamp": "2024-03-16T00:00:00.000000Z",
+    }
+
+
+def gemini_with_balances(rows: list[dict[str, str]]) -> GeminiBroker:
+    async def handler(request_: httpx.Request) -> httpx.Response:
+        payload = json.loads(base64.b64decode(request_.headers["x-gemini-payload"]))
+        assert payload["request"] == "/v1/balances"
+        return httpx.Response(200, json=rows, request=request_)
+
+    return GeminiBroker(
+        api_key="sandbox-key",
+        api_secret="sandbox-secret",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        rate_limiter=limiter(),
+    )
+
+
+# Gemini's documented example, plus a coin whose whole balance a resting sell reserves.
+GEMINI_BALANCES = [
+    gemini_balance("BTC", "5.0", "4.5"),
+    gemini_balance("USD", "15000.00", "5000.00"),
+    gemini_balance("ETH", "10.0", "10.0"),
+    gemini_balance("SOL", "2", "0"),
+]
+
+
+@pytest.mark.asyncio
+async def test_gemini_hold_is_the_total_less_what_is_available_to_trade() -> None:
+    broker = gemini_with_balances(GEMINI_BALANCES)
+    try:
+        balances = await broker.get_balances()
+    finally:
+        await broker.close()
+
+    assert [(item.asset, item.available, item.hold) for item in balances] == [
+        ("BTC", Decimal("4.5"), Decimal("0.5")),
+        ("ETH", Decimal("10.0"), Decimal("0")),
+        ("SOL", Decimal("0"), Decimal("2")),
+        ("USD", Decimal("5000.00"), Decimal("10000.00")),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_coin_held_by_a_resting_sell_still_counts_as_a_gemini_position() -> None:
+    broker = gemini_with_balances(GEMINI_BALANCES)
+    try:
+        positions = await broker.get_positions()
+    finally:
+        await broker.close()
+
+    assert {item.symbol: item.quantity for item in positions} == {
+        "BTC-USD": Decimal("5.0"),
+        "ETH-USD": Decimal("10.0"),
+        "SOL-USD": Decimal("2"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_gemini_balance_row_without_its_total_is_refused() -> None:
+    row = gemini_balance("BTC", "1", "1")
+    del row["amount"]
+    broker = gemini_with_balances([row])
+    try:
+        with pytest.raises(ProviderHTTPError) as error:
+            await broker.get_balances()
+        with pytest.raises(ProviderHTTPError):
+            await broker.get_positions()
+    finally:
+        await broker.close()
+
+    assert error.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_a_coin_held_by_a_resting_sell_still_counts_as_a_coinbase_position() -> None:
+    def account(currency: str, available: str, hold: str) -> dict[str, object]:
+        return {
+            "currency": currency,
+            "available_balance": {"value": available, "currency": currency},
+            "hold": {"value": hold, "currency": currency},
+        }
+
+    async def handler(request_: httpx.Request) -> httpx.Response:
+        assert request_.url.path.endswith("/accounts")
+        accounts = [
+            account("BTC", "0.3", "0.2"),
+            account("ETH", "0", "1"),
+            account("USD", "100", "50"),
+        ]
+        return httpx.Response(
+            200,
+            json={"accounts": accounts, "has_next": False, "cursor": "", "size": len(accounts)},
+            request=request_,
+        )
+
+    broker = CoinbaseBroker(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        auth_token="test-token",
+        rate_limiter=limiter(),
+    )
+    try:
+        balances = await broker.get_balances()
+        positions = await broker.get_positions()
+    finally:
+        await broker.close()
+
+    assert [(item.asset, item.available, item.hold) for item in balances] == [
+        ("BTC", Decimal("0.3"), Decimal("0.2")),
+        ("ETH", Decimal("0"), Decimal("1")),
+        ("USD", Decimal("100"), Decimal("50")),
+    ]
+    assert {item.symbol: item.quantity for item in positions} == {
+        "BTC-USD": Decimal("0.5"),
+        "ETH-USD": Decimal("1"),
+    }
 
 
 @pytest.mark.asyncio

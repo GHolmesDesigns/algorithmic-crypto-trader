@@ -104,13 +104,19 @@ async def test_captured_accounts_parse_into_balances_and_positions() -> None:
 
     accounts = response_of("list_accounts")["accounts"]
     expected = {
-        row["currency"]: Decimal(row["available_balance"]["value"])
+        row["currency"]: (
+            Decimal(row["available_balance"]["value"]),
+            Decimal(row["hold"]["value"]),
+        )
         for row in accounts
         if Decimal(row["available_balance"]["value"]) or Decimal(row["hold"]["value"])
     }
-    assert {item.asset: item.available for item in balances} == expected
-    assert {item.symbol for item in positions} == {
-        f"{asset}-USD" for asset, amount in expected.items() if asset != "USD" and amount
+    assert {item.asset: (item.available, item.hold) for item in balances} == expected
+    # A position is the coin's total: what is available plus what orders hold.
+    assert {item.symbol: item.quantity for item in positions} == {
+        f"{asset}-USD": available + hold
+        for asset, (available, hold) in expected.items()
+        if asset != "USD"
     }
 
 

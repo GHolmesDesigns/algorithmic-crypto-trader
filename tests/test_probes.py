@@ -208,16 +208,20 @@ class FakeGeminiSandbox:
         self.seen_keys.add(request.headers["x-gemini-apikey"])
         payload = json.loads(base64.b64decode(request.headers["x-gemini-payload"]))
         if path == "/v1/balances":
+            held = {"BTC": "10", "ETH": "20", "USD": self.usd}
+            held.update((coin, "5") for coin in self.unpriced)
+            # Documented Get Available Balances rows, with nothing on hold.
             return httpx.Response(
                 200,
                 json=[
-                    {"currency": "BTC", "amount": "10", "available": "10"},
-                    {"currency": "ETH", "amount": "20", "available": "20"},
-                    {"currency": "USD", "amount": self.usd, "available": self.usd},
-                    *(
-                        {"currency": coin, "amount": "5", "available": "5"}
-                        for coin in self.unpriced
-                    ),
+                    {
+                        "type": "exchange",
+                        "currency": currency,
+                        "amount": amount,
+                        "available": amount,
+                        "availableForWithdrawal": amount,
+                    }
+                    for currency, amount in held.items()
                 ],
             )
         if path == "/v1/order/new":
