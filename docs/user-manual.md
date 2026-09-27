@@ -1,8 +1,8 @@
 # Algorithmic Crypto Trader user manual
 
 - **Manual version:** Draft 1
-- **Applies to:** application version `0.1.0` at repository commit `05721e8`
-- **Last reviewed:** 2026-09-24
+- **Applies to:** application version `0.1.0` at repository commit `b101344`
+- **Last reviewed:** 2026-09-27
 
 > **Safety notice**
 >
@@ -50,9 +50,12 @@ product:
   heartbeat as unknown until those producers are wired into the runtime.
 - Phone-push and email alerts are delivered only when alert sinks are explicitly
   injected. The default application entry point does not configure those sinks.
-- Real Gemini adapter lifecycle verification, Coinbase read-only reconciliation,
-  the 72-hour market-data run, and the seven-day unattended reconciliation soak
-  still require the documented owner-run evidence.
+- Owner-run provider evidence is only partly complete. On 2026-09-27 the Gemini
+  Sandbox check passed except for a partial fill, and Coinbase read-only
+  reconciliation passed. Still required: the adapter contract suite against the
+  real venues, the 72-hour market-data run, and the seven-day unattended
+  reconciliation soak. See [owner-run exchange checks](owner-run-exchange-checks.md)
+  and the [Phase 1 gate ledger](phase-1-gate-acceptance.md).
 - Coinbase order placement remains a later, explicitly authorized phase. Do not
   interpret the presence of the adapter or live-mode guards as permission to use
   them.
@@ -241,6 +244,13 @@ If any item is unknown, leave the system paused or halted.
 3. Have an engineer review the discrepancy event and the adopted broker state.
 4. Do not edit the database to make the alert disappear.
 
+A divergence is expected when something the app did not place touches the
+account it watches: a manual trade, or the owner-run Gemini Sandbox check. An
+order that is only waiting on the exchange counts too, because the exchange
+sets funds aside for it. Confirm the activity was expected, wait until nothing
+is left open and a later reconciliation is clean, then follow the re-arm
+checklist. See [orders the app did not place](phase-1.5-risk-execution-portfolio-reconciliation.md#orders-the-app-did-not-place).
+
 ### An order is pending or unknown
 
 1. Select **EMERGENCY STOP** if the system is not already halted.
@@ -301,6 +311,7 @@ validation, exact-head remote CI, and owner-run provider evidence.
 | `app/` | Composition root, startup recovery, broker selection, trading loop, and replay runner. |
 | `db/`, `alembic/` | SQLAlchemy persistence and schema migrations. |
 | `deploy/` | Docker/VPS startup, drills, encrypted backup, and restore verification. |
+| `probes/` | Owner-run exchange checks: the Gemini Sandbox lifecycle, Coinbase read-only reconciliation, and the Coinbase sandbox capture. CI tests them only against fixtures. |
 | `tests/` | Unit, contract, integration, failure-path, and controlled process-kill evidence. |
 
 Provider-specific behavior stays in `brokers/`. Do not bend strategy, risk,
@@ -409,6 +420,7 @@ yourself.
 | `CREDENTIAL_SCOPE` | `none` | One of `none`, `view`, or `trade`. `trade` is refused outside `live`. |
 | `LIVE_CONFIRMATION` | empty | Must equal `I_UNDERSTAND_LIVE_TRADING` in `live`; necessary but not sufficient authorization. |
 | `DATABASE_URL` | local PostgreSQL URL | SQLAlchemy URL. Production uses PostgreSQL; SQLite is limited to tests and portable backtest/replay archives. |
+| `APP_ENV` | unset | Only `test` or `archive` changes behavior: either permits a SQLite `DATABASE_URL` outside `backtest` and `replay`, for isolated tests and portable archives. Leave it unset in deployments. |
 | `LOG_LEVEL` | `INFO` | Application log level. Secret-bearing fields are redacted by the logging layer. |
 | `BROKER_PROVIDER` | empty | Empty, `gemini-sandbox`, or `coinbase`, subject to the mode matrix. |
 | `GEMINI_API_KEY` | empty | Required with `BROKER_PROVIDER=gemini-sandbox`. Secret. |
@@ -548,7 +560,7 @@ Run the repository's lightweight required gates from the isolated worktree:
 ```powershell
 ruff format --check .
 ruff check .
-mypy core brokers data strategy risk execution portfolio api app db
+mypy core brokers data strategy risk execution portfolio api app db probes
 pytest --cov=. --cov-report=term-missing --cov-fail-under=80
 git diff --check
 ```
@@ -626,7 +638,9 @@ Never restore a drill backup over the production database.
 - [`README.md`](../README.md) — project status and quick start.
 - [`AGENTS.md`](../AGENTS.md) — mandatory repository and concurrent-work rules.
 - [`docs/foundation.md`](foundation.md) — foundation contracts.
+- [`docs/phase-1.5-risk-execution-portfolio-reconciliation.md`](phase-1.5-risk-execution-portfolio-reconciliation.md) — risk, execution, and reconciliation contracts, including orders the app did not place.
 - [`docs/phase-1.7-operator-surface.md`](phase-1.7-operator-surface.md) — operator authentication and state contract.
+- [`docs/owner-run-exchange-checks.md`](owner-run-exchange-checks.md) — owner-run exchange checks and their recorded results.
 - [`docs/phase-1-gate-acceptance.md`](phase-1-gate-acceptance.md) — acceptance evidence and remaining owner-run gaps.
 - [`docs/phase-1.8-deployment-backups-restore.md`](phase-1.8-deployment-backups-restore.md) — deployment, backup, restore, and restart runbook.
 - [`docs/phase-1.8-vps-drill-checklist.md`](phase-1.8-vps-drill-checklist.md) — controlled infrastructure evidence procedure.
