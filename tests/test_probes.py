@@ -212,6 +212,8 @@ class FakeGeminiSandbox:
             return self.new_order(payload)
         if path == "/v1/order/status":
             order = self.find(payload)
+            if "client_order_id" in payload:  # the Sandbox answers with a list here
+                return httpx.Response(200, json=[self.body(order, trades=True)] if order else [])
             if order is None:
                 return httpx.Response(404, json={"result": "error", "reason": "OrderNotFound"})
             return httpx.Response(200, json=self.body(order, trades=True))
@@ -629,3 +631,28 @@ def test_the_key_file_path_is_asked_for_when_not_given(tmp_path, monkeypatch, ec
     assert coinbase_readonly_reconcile._key_path(["probe"]) == ecdsa_key
     with pytest.raises(ProbeRefused, match="no file"):
         coinbase_readonly_reconcile._key_path(["probe", str(tmp_path / "missing.json")])
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_still_saves_the_result_and_cleans_up(
+    monkeypatch, tmp_path
+) -> None:
+    venue = FakeGeminiSandbox()
+
+    async def broken_loop(run, report) -> None:
+        # Leave an order resting, then fail the way an unforeseen bug would.
+        await run.submit(
+            gemini_sandbox_lifecycle.OrderType.LIMIT, Decimal("0.0001"), Decimal("30000")
+        )
+        raise ValueError("an unforeseen bug")
+
+    monkeypatch.setattr(gemini_sandbox_lifecycle, "_trading_loop", broken_loop)
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, inner=httpx.MockTransport(venue.handler)
+    )
+
+    results = {step["step"]: step for step in report.steps}
+    assert results["stopped"] == {"step": "stopped", "result": "fail", "error": "ValueError"}
+    assert results["cleanup"] == {"step": "cleanup", "result": "pass", "canceled": 1}
+    assert venue.live() == []
+    assert report.write(tmp_path).is_file()

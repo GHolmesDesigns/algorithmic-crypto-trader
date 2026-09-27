@@ -7,7 +7,7 @@ into a hidden prompt. Claude records each result in this file afterwards.
 
 | Check | What it proves | Who runs it | Status |
 | --- | --- | --- | --- |
-| 1. Gemini Sandbox lifecycle and trading loop | Orders placed through our Gemini code behave as expected on Gemini's test exchange, and one pass of the trading loop completes there | Owner | Tried 2026-09-24; findings fixed in #33; to run again |
+| 1. Gemini Sandbox lifecycle and trading loop | Orders placed through our Gemini code behave as expected on Gemini's test exchange, and one pass of the trading loop completes there | Owner | Tried 2026-09-24 and 2026-09-27; findings fixed in #33 and #35; to run again |
 | 2. Coinbase read-only reconciliation | Our Coinbase code reads your real account correctly and reconciles cleanly | Owner | Not yet run |
 | 3. Coinbase sandbox capture | Our Coinbase code reads Coinbase's real response formats | Claude, with the owner's approval | Done 2026-09-24 |
 
@@ -82,12 +82,15 @@ What the steps check (any refusal also names Gemini's own reason code, such as `
 | 2026-09-24 | 3. Coinbase sandbox capture | Claude (agent-run; the owner approved a one-time exception to the owner-run rule because it needs no key or account) | branch `feat/31-owner-run-exchange-probes` | **PASS**: 11 responses captured with 11 of 15 allowed requests, all replayed through the adapter successfully |
 | 2026-09-24 22:12 UTC | 1. Gemini Sandbox | Owner | `2148b26` | **Stopped at the first request (HTTP 400).** No order was placed. The key was replaced with one created for the Primary account. |
 | 2026-09-24 22:19 UTC | 1. Gemini Sandbox | Owner | `2148b26` | **NEEDS REVIEW.** The key authenticated (6 currencies). A market buy by coin quantity was refused (`MissingTotalSpend`), and a limit buy was refused for insufficient funds (HTTP 406). No order was placed or left open; 4 requests. |
+| 2026-09-24 23:26 UTC | 1. Gemini Sandbox | Owner | `ce4a81a` | **NEEDS REVIEW.** The dollar check passed, but the first capped order was refused with Gemini's reason `InsufficientFunds`. The Sandbox website refused a $4 buy and a small sell the same way while showing $96,603 and 1,000 BTC available, so that Sandbox account could not trade at all. The owner opened a new Sandbox account. |
+| 2026-09-27 | 1. Gemini Sandbox | Owner | `ce4a81a` | **Crashed** at the restart-recovery step: looked up by our own order ID, Gemini returns a list of orders, which the adapter did not expect. The cleanup used the same lookup, so one resting test order was left for manual cancellation. Fixed in #35. |
 
-What the Gemini attempts showed, and what #33 changed:
+What the Gemini attempts showed, and what #33 and #35 changed:
 
 - **Market orders:** Gemini's market buy takes a dollar amount, not a coin quantity, and has no price protection. The owner chose (2026-09-24) to send market requests as immediate-or-cancel limit orders capped 1% past the current price instead.
 - **Insufficient funds:** that refusal (HTTP 406) was not recognised as a rejection, so in the trading loop it would have halted trading after five minutes instead of being recorded as rejected. It is now a clean rejection.
 - **The script:** it now names Gemini's reason code for any refusal, and checks the dollar balance before placing anything.
+- **Order lookup by our own ID:** Gemini answers with a list of orders, not the single order its documentation shows. The adapter now picks our order from the list, and stops for review if two venue orders ever share one ID. The check now saves its result and attempts cleanup whatever goes wrong (#35).
 
 What the Coinbase sandbox capture showed:
 

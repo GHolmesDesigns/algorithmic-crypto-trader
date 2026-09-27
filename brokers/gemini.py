@@ -33,6 +33,7 @@ from core.resilience import CircuitBreaker, TokenBucketRateLimiter
 
 from brokers.http import (
     AmbiguousSubmissionError,
+    ProviderError,
     ProviderHTTPClient,
     ProviderHTTPError,
     ProviderOrderRejectedError,
@@ -291,6 +292,9 @@ class GeminiBroker(BrokerInterface):
             if exc.status_code == 404:
                 return None
             raise
+        if isinstance(payload, list):
+            # Queried by client_order_id, the Sandbox answers with a list of orders.
+            payload = _only_order_for(payload, client_order_id)
         if not payload:
             return None
         order = self._order_from_payload(payload, request=request, client_order_id=client_order_id)
@@ -426,6 +430,23 @@ def _require_approval(request: OrderRequest, approval: RiskApproval) -> None:
         raise ValueError("risk approval does not belong to order request")
     if not approval.approved:
         raise PermissionError("risk approval is not approved")
+
+
+def _only_order_for(rows: list[Any], client_order_id: str) -> Mapping[str, Any] | None:
+    """Pick our order from a list response; more than one match is never guessed.
+
+    ``client_order_id`` is this system's idempotency key, so two venue orders sharing
+    it mean a duplicate reached the venue. Recovery must stop for review, not choose.
+    """
+
+    matches = [
+        row
+        for row in rows
+        if isinstance(row, Mapping) and str(row.get("client_order_id")) == client_order_id
+    ]
+    if len(matches) > 1:
+        raise ProviderError(f"{len(matches)} Gemini orders share one client_order_id")
+    return matches[0] if matches else None
 
 
 def _gemini_symbol(symbol: str) -> str:
