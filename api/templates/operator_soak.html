@@ -1,0 +1,166 @@
+{%- extends "_operator_page.html" -%}
+{#- Soak & readiness: a 30-day digest and the #12/#13 criterion tracker. Nothing here says "verified live". -#}
+{%- import "_operator_macros.html" as ui -%}
+{%- import "_history_macros.html" as hx -%}
+{% block title %}{{ view.title }}{% endblock %}
+{% block page_name %}History{% endblock %}
+{% block page_class %} page-wide{% endblock %}
+
+{% macro criterion_table(items, heading_id) -%}
+            <div class="table-wrap" role="region" aria-labelledby="{{ heading_id }}" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr><th scope="col">Criterion</th><th scope="col">Status</th><th scope="col">Evidence</th></tr>
+                </thead>
+                <tbody>
+                  {%- for item in items %}
+                  <tr>
+                    <th scope="row">{{ item.label }}</th>
+                    <td>{{ ui.pill(item.status) }}</td>
+                    <td>
+                      {%- if item.evidence %}
+                      <p>{{ item.evidence.kind_label }} · {{ item.evidence.status }}</p>
+                      <p class="note">{{ item.evidence.note }}</p>
+                      <p class="event-meta">{{ item.evidence.recorded_by }} · {{ ui.stamp(item.evidence.recorded_at) }}</p>
+                      {%- else %}
+                      {{ ui.absent("No evidence recorded.") }}
+                      {%- endif %}
+                    </td>
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+{%- endmacro %}
+
+{% block content %}
+        {% include "_history_nav.html" %}
+        <section class="block" aria-labelledby="soak-heading">
+          <div class="block-head">
+            <h1 id="soak-heading">{{ view.title }}</h1>
+            <p class="block-note">{{ view.intro }}</p>
+          </div>
+          {{ hx.problems(view) }}
+          {%- if view.window %}
+          <p class="note">Window: {{ ui.stamp(view.window.since) }} to {{ ui.stamp(view.window.until) }}, as of {{ ui.stamp(view.window.as_of) }}. The last day is still in progress.</p>
+          {%- endif %}
+          {%- if view.digest_gaps %}
+          <div class="notice tone-neutral" role="status">
+            <p><span class="mark" aria-hidden="true">◐</span> Not recorded for any day yet:</p>
+            <ul class="causes">
+              {%- for gap in view.digest_gaps %}
+              <li><strong>{{ gap.label }}.</strong> {{ gap.reason }}</li>
+              {%- endfor %}
+            </ul>
+            <p class="notice-body">A day with any of these missing shows incomplete, never pass.</p>
+          </div>
+          {%- endif %}
+          {%- if view.days %}
+          <section class="panel" aria-labelledby="digest-heading">
+            <h2 id="digest-heading">Daily digest</h2>
+            <div class="table-wrap" role="region" aria-labelledby="digest-heading" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr>
+                    <th scope="col">Day (UTC)</th>
+                    <th scope="col" class="num">Trades</th>
+                    <th scope="col" class="num">Refusals</th>
+                    <th scope="col" class="num">Reconciliation runs</th>
+                    <th scope="col" class="num">Divergences</th>
+                    <th scope="col" class="num">Kill-switch events</th>
+                    <th scope="col" class="num">Equity</th>
+                    <th scope="col">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {%- for day in view.days %}
+                  <tr>
+                    <th scope="row">{{ day.date }}{% if day.in_progress %} <span class="age">in progress</span>{% endif %}</th>
+                    <td class="num"><span class="count">{{ day.trades }}</span></td>
+                    <td class="num"><span class="count">{{ day.refusals }}</span></td>
+                    <td class="num"><span class="count">{{ day.reconciliation_runs }}</span></td>
+                    <td class="num"><span class="count">{{ day.divergences }}</span></td>
+                    <td class="num"><span class="count">{{ day.kill_switch_events }}</span></td>
+                    <td class="num">{% if day.equity %}{{ day.equity }}{% else %}{{ ui.absent("not recorded") }}{% endif %}</td>
+                    <td>{{ ui.pill(day.status) }}</td>
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            <p class="note">A day's status is incomplete unless every field is recorded, including the fields with no producer above. It is never shown as pass on partial data.</p>
+          </section>
+
+          <section class="panel" aria-labelledby="soak-criteria-heading">
+            <h2 id="soak-criteria-heading">Soak exit criteria (#12)</h2>
+            <p class="note">Incomplete until an administrator records evidence. The latest record for a criterion decides pass or fail.</p>
+            {{ criterion_table(view.criteria.soak, "soak-criteria-heading") }}
+          </section>
+
+          <section class="panel" aria-labelledby="readiness-heading">
+            <h2 id="readiness-heading">Phase 2 readiness gates (#13)</h2>
+            <p class="note">Preconditions for a future, separately authorized Coinbase live activation. Listing them here starts nothing.</p>
+            {{ criterion_table(view.criteria.readiness, "readiness-heading") }}
+          </section>
+
+          {%- if view.can_record_evidence %}
+          <section class="panel" aria-labelledby="evidence-heading">
+            <h2 id="evidence-heading">Record evidence</h2>
+            <p class="note">Administrator only. Point at a dated result already recorded elsewhere (a PR or issue comment, a CI run). Do not include tokens, account identifiers, hostnames, IP addresses, or bucket names; the server removes them before saving.</p>
+            {%- if view.evidence_errors %}
+            <div class="notice tone-crit" role="alert">
+              <p><span class="mark" aria-hidden="true">■</span> Evidence refused. Nothing was saved.</p>
+              <ul class="errors">
+                {%- for error in view.evidence_errors %}
+                <li>{{ error }}</li>
+                {%- endfor %}
+              </ul>
+            </div>
+            {%- endif %}
+            <form method="post" action="{{ view.evidence_path }}">
+              <div class="filter-grid">
+                <div class="field">
+                  <label for="evidence-criterion">Criterion</label>
+                  <select id="evidence-criterion" name="criterion" required>
+                    <option value="">Choose one</option>
+                    {%- for group_label, items in (("Soak exit criteria (#12)", view.criteria.soak), ("Phase 2 readiness gates (#13)", view.criteria.readiness)) %}
+                    <optgroup label="{{ group_label }}">
+                      {%- for item in items %}
+                      <option value="{{ item.key }}"{% if item.key == view.evidence_form.criterion %} selected{% endif %}>{{ item.label }}</option>
+                      {%- endfor %}
+                    </optgroup>
+                    {%- endfor %}
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="evidence-kind">Evidence kind</label>
+                  <select id="evidence-kind" name="kind" required>
+                    <option value="">Choose one</option>
+                    {%- for key, label in view.evidence_kinds %}
+                    <option value="{{ key }}"{% if key == view.evidence_form.kind %} selected{% endif %}>{{ label }}</option>
+                    {%- endfor %}
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="evidence-status">Outcome</label>
+                  <select id="evidence-status" name="status" required>
+                    <option value="">Choose one</option>
+                    {%- for status in view.evidence_statuses %}
+                    <option value="{{ status }}"{% if status == view.evidence_form.status %} selected{% endif %}>{{ status }}</option>
+                    {%- endfor %}
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label for="evidence-note">Reference</label>
+                <textarea id="evidence-note" name="note" rows="3" required maxlength="{{ view.note_limit }}">{{ view.evidence_form.note }}</textarea>
+              </div>
+              <div class="actions">
+                <button class="button button-rearm" type="submit">Record evidence</button>
+              </div>
+            </form>
+          </section>
+          {%- endif %}
+          {%- endif %}
+        </section>
+{% endblock %}
