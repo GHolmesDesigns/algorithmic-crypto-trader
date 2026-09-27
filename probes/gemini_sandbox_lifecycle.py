@@ -12,11 +12,13 @@ Run from the repository root and type the key and secret into the hidden prompts
     python -m probes.gemini_sandbox_lifecycle
 
 The redacted result records statuses, rejection reasons, and counts: no key,
-order identifier, or balance.
+order identifier, or balance. It names any holding the trading-loop step left out
+because the Sandbox could not price it.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
@@ -26,14 +28,18 @@ import httpx
 from app.trading import BrokerRiskInputs, CycleStatus, TradingCycle
 from brokers.gemini import GEMINI_SANDBOX_REST_URL, GeminiBroker
 from brokers.http import ProviderOrderRejectedError
+from brokers.interface import BrokerCapabilities, BrokerInterface
 from core.models import (
+    Balance,
     Candle,
+    Fill,
     MarketState,
     Order,
     OrderRequest,
     OrderSide,
     OrderStatus,
     OrderType,
+    Position,
     Quote,
     RiskApproval,
 )
@@ -45,7 +51,9 @@ from strategy.reference import AlwaysBuyStrategy
 
 from probes.common import (
     BoundedTransport,
+    BudgetExhausted,
     ProbeReport,
+    UnexpectedHost,
     bounded_client,
     prompt_secret,
     run_probe,
@@ -53,12 +61,15 @@ from probes.common import (
 
 SANDBOX_HOST = "api.sandbox.gemini.com"
 SYMBOL = "BTC-USD"
-# About 30 requests plus one quote per Sandbox currency when the loop values holdings.
+# About 35 requests, plus two quotes per Sandbox currency when the loop values holdings.
 REQUEST_BUDGET = 80
 CLEANUP_RESERVE = 10
 PROBE_SIZE = Decimal("0.0001")  # BTC; well above the documented 0.00001 minimum
 UNDERSIZED = Decimal("0.000001")
 PARTIAL_FILL_CAP = Decimal("0.01")
+# The Sandbox's best ask changes from moment to moment, so read it a few times.
+BOOK_READS = 5
+BOOK_PAUSE_SECONDS = 2.0
 CENT = Decimal("0.01")
 BAR = timedelta(minutes=5)
 CONSTRAINTS = ExchangeConstraints(
@@ -134,6 +145,47 @@ class SandboxRun:
         if order.status in LIVE:
             self.resting.append(key)
         return key, order
+
+
+class PricedHoldingsView(BrokerInterface):
+    """The adapter as this check's trading loop sees it, minus holdings it cannot price.
+
+    Sandbox accounts come with coins whose test books can have no buyers, and the
+    trading loop rightly refuses to buy while any holding cannot be priced. Only this
+    owner-run check leaves those positions out, and it names them in its result; the
+    trading bot's own rule is unchanged. Everything else passes straight through.
+    """
+
+    def __init__(self, broker: GeminiBroker, left_out: frozenset[str]) -> None:
+        self.broker = broker
+        self.left_out = left_out
+
+    @property
+    def healthy(self) -> bool:
+        return self.broker.healthy
+
+    @property
+    def capabilities(self) -> BrokerCapabilities:
+        return self.broker.capabilities
+
+    async def get_quote(self, symbol: str) -> Quote:
+        return await self.broker.get_quote(symbol)
+
+    async def get_balances(self) -> tuple[Balance, ...]:
+        return await self.broker.get_balances()
+
+    async def get_positions(self) -> tuple[Position, ...]:
+        positions = await self.broker.get_positions()
+        return tuple(item for item in positions if item.symbol not in self.left_out)
+
+    async def submit_order(self, request: OrderRequest, approval: RiskApproval) -> Order:
+        return await self.broker.submit_order(request, approval)
+
+    async def get_order(self, client_order_id: str) -> Order | None:
+        return await self.broker.get_order(client_order_id)
+
+    async def get_fills(self, client_order_id: str) -> tuple[Fill, ...]:
+        return await self.broker.get_fills(client_order_id)
 
 
 async def lifecycle(
@@ -255,21 +307,32 @@ async def _undersized(run: SandboxRun, report: ProbeReport, quote: Quote) -> Non
 
 
 async def _partial_fill(run: SandboxRun, report: ProbeReport) -> None:
-    response = await run.client.get(
-        f"{GEMINI_SANDBOX_REST_URL}/v1/book/btcusd", params={"limit_bids": 0, "limit_asks": 1}
-    )
-    try:
-        best = response.json()["asks"][0]
-        price, depth = Decimal(str(best["price"])), Decimal(str(best["amount"]))
-    except (ValueError, KeyError, IndexError, TypeError, ArithmeticError):
-        report.step("partial_fill", "skipped", reason="the Sandbox order book had no readable ask")
-        return
-    size = depth + PROBE_SIZE
-    if size > PARTIAL_FILL_CAP:
+    for attempt in range(BOOK_READS):
+        if attempt:
+            await asyncio.sleep(BOOK_PAUSE_SECONDS)
+        # One level per side: a limit of 0 would return Gemini's whole side of the book.
+        response = await run.client.get(
+            f"{GEMINI_SANDBOX_REST_URL}/v1/book/btcusd", params={"limit_bids": 1, "limit_asks": 1}
+        )
+        try:
+            best = response.json()["asks"][0]
+            price, depth = Decimal(str(best["price"])), Decimal(str(best["amount"]))
+        except (ValueError, KeyError, IndexError, TypeError, ArithmeticError):
+            report.step(
+                "partial_fill", "skipped", reason="the Sandbox order book had no readable ask"
+            )
+            return
+        size = depth + PROBE_SIZE
+        if size <= PARTIAL_FILL_CAP:
+            break
+    else:
         report.step(
             "partial_fill",
             "skipped",
-            reason=f"the best ask holds more than the probe's {PARTIAL_FILL_CAP} BTC cap",
+            reason=(
+                f"on {BOOK_READS} reads the best ask held more than the probe's "
+                f"{PARTIAL_FILL_CAP} BTC cap"
+            ),
         )
         return
     # Buying a little more than the best ask holds should fill part and rest the rest.
@@ -307,15 +370,23 @@ async def _trading_loop(run: SandboxRun, report: ProbeReport) -> None:
         candles=tuple(candles),
         observed_at=last.closed_at,
     )
+    left_out = await _unpriced_holdings(run.broker)
+    if left_out:
+        report.notes.append(
+            f"The trading-loop step left out {', '.join(left_out)}: the Sandbox has no buyers "
+            "for them, so they cannot be priced. The trading bot itself still refuses to buy "
+            "while any holding cannot be priced."
+        )
+    broker = PricedHoldingsView(run.broker, frozenset(left_out))
     store = InMemoryOrderStore()
     audit = InMemoryAuditStore(store)
     cycle = TradingCycle(
         strategy=AlwaysBuyStrategy(PROBE_SIZE),
-        execution=ExecutionEngine(run.broker, store),
+        execution=ExecutionEngine(broker, store),
         audit=audit,
         kill_switch=KillSwitch(),
         risk_inputs=BrokerRiskInputs(
-            run.broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0.001")
+            broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0.001")
         ),
         limits=PROBE_LIMITS,
         environ={},
@@ -333,7 +404,30 @@ async def _trading_loop(run: SandboxRun, report: ProbeReport) -> None:
         failed_gate=outcome.decision.failed_gate if outcome.decision else None,
         order_status=outcome.order.status.value if outcome.order else None,
         lineage_gaps=gaps,
+        left_out=left_out,
     )
+
+
+async def _unpriced_holdings(broker: GeminiBroker) -> list[str]:
+    """Held symbols, other than the traded one, that the Sandbox cannot price.
+
+    The rule matches how the trading loop values other holdings: a holding whose
+    quote cannot be read cannot be priced, and a quote without a positive bid cannot
+    be read (Gemini sends an empty bid when a book has no buyers). The probe's own
+    budget and host refusals are never taken for an unpriced holding.
+    """
+
+    unpriced = []
+    for position in await broker.get_positions():
+        if position.symbol == SYMBOL:
+            continue
+        try:
+            await broker.get_quote(position.symbol)
+        except (BudgetExhausted, UnexpectedHost):
+            raise
+        except Exception:
+            unpriced.append(position.symbol)
+    return sorted(unpriced)
 
 
 async def _closed_candles(client: httpx.AsyncClient) -> list[Candle]:
