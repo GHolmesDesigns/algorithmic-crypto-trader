@@ -42,7 +42,8 @@ The [styled user manual](docs/user-manual.html) provides a non-technical operato
 engineering/AI-agent reference. Its [Markdown source](docs/user-manual.md) remains available for
 review and maintenance.
 The authenticated operator surface contract is documented in
-[docs/phase-1.7-operator-surface.md](docs/phase-1.7-operator-surface.md). The Phase 1 acceptance
+[docs/phase-1.7-operator-surface.md](docs/phase-1.7-operator-surface.md), and the design brief for its
+next UI iterations is in [docs/ui-design-handoff.md](docs/ui-design-handoff.md). The Phase 1 acceptance
 evidence, including what still needs owner-run provider verification, is in
 [docs/phase-1-gate-acceptance.md](docs/phase-1-gate-acceptance.md).
 
