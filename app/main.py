@@ -13,6 +13,8 @@ from api.alerts import Alert, AlertRouter, build_alert_router
 from api.history import SqlAlchemyHistory
 from api.history_routes import router as history_router
 from api.operator import OperatorState
+from api.research import ResearchWorkspace
+from api.research_routes import router as research_router
 from api.routes import router
 from api.trends import SqlAlchemyTrends
 from core.guards import (
@@ -62,6 +64,7 @@ def create_app(
     )
     application.router.routes.extend(router.routes)
     application.router.routes.extend(history_router.routes)
+    application.router.routes.extend(research_router.routes)
     switch_path = os.environ.get("KILL_SWITCH_FILE")
     application.state.kill_switch = KillSwitch(Path(switch_path) if switch_path else None)
     application.state.startup_settings = startup_settings
@@ -72,6 +75,7 @@ def create_app(
         alert_router=alert_router,
         strategy_version=os.environ.get("STRATEGY_VERSION", "unknown"),
     )
+    application.state.research = ResearchWorkspace()
     return application
 
 
@@ -100,27 +104,30 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
-            if paper_runtime is not None:
-                await paper_runtime.stop()
+            await application.state.research.close()
         finally:
             try:
-                if stop_reconciliation is not None:
-                    await stop_reconciliation()
+                if paper_runtime is not None:
+                    await paper_runtime.stop()
             finally:
                 try:
-                    await application.state.operator_state.alert_router.close()
+                    if stop_reconciliation is not None:
+                        await stop_reconciliation()
                 finally:
                     try:
-                        close = getattr(broker, "close", None)
-                        if close is not None:
-                            await close()
+                        await application.state.operator_state.alert_router.close()
                     finally:
                         try:
-                            if close_journal is not None:
-                                close_journal()
+                            close = getattr(broker, "close", None)
+                            if close is not None:
+                                await close()
                         finally:
-                            if close_history is not None:
-                                close_history()
+                            try:
+                                if close_journal is not None:
+                                    close_journal()
+                            finally:
+                                if close_history is not None:
+                                    close_history()
 
 
 def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
