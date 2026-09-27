@@ -187,3 +187,24 @@ class DiscrepancyRecord(Base):
     broker_payload: Mapped[dict[str, Any]] = mapped_column(AUDIT_JSON, nullable=False)
     safety_action: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class EvidenceRecord(Base):
+    """An administrator's attestation that one soak or readiness criterion passed or failed.
+
+    Never a mock or a plan: ``note`` is redacted free text pointing at the dated
+    result (a PR or issue comment, a CI run) an administrator has already recorded
+    elsewhere. A criterion with no row here is incomplete, never passing by default.
+    """
+
+    __tablename__ = "evidence_records"
+    __table_args__ = (
+        Index("ix_evidence_records_criterion_recorded_at", "criterion", "recorded_at"),
+    )
+    evidence_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    criterion: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

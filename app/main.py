@@ -16,6 +16,8 @@ from api.operator import OperatorState
 from api.research import ResearchWorkspace
 from api.research_routes import router as research_router
 from api.routes import router
+from api.soak import SqlAlchemySoak
+from api.soak_routes import router as soak_router
 from api.trends import SqlAlchemyTrends
 from core.guards import (
     StartupGuardError,
@@ -65,6 +67,7 @@ def create_app(
     application.router.routes.extend(router.routes)
     application.router.routes.extend(history_router.routes)
     application.router.routes.extend(research_router.routes)
+    application.router.routes.extend(soak_router.routes)
     switch_path = os.environ.get("KILL_SWITCH_FILE")
     application.state.kill_switch = KillSwitch(Path(switch_path) if switch_path else None)
     application.state.startup_settings = startup_settings
@@ -146,10 +149,10 @@ def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
 
 
 def attach_history(application: FastAPI) -> Callable[[], None]:
-    """Serve bounded, read-only history and trends from the database; return a close callback.
+    """Serve bounded, read-only history, trends, and the soak console from the database.
 
-    Without it, the history and trends routes answer 503: not available, never an
-    empty history or a chart of zeros.
+    Returns a close callback. Without it, the history, trends, and soak routes
+    answer 503: not available, never an empty history or a chart of zeros.
     """
 
     settings: StartupSettings = application.state.startup_settings
@@ -157,6 +160,7 @@ def attach_history(application: FastAPI) -> Callable[[], None]:
     session_factory = create_session_factory(engine)
     application.state.history = SqlAlchemyHistory(session_factory)
     application.state.trends = SqlAlchemyTrends(session_factory)
+    application.state.soak = SqlAlchemySoak(session_factory)
     return engine.dispose
 
 
