@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from api.alerts import Alert, AlertRouter, build_alert_router
+from api.history import SqlAlchemyHistory
+from api.history_routes import router as history_router
 from api.operator import OperatorState
 from api.routes import router
 from core.guards import (
@@ -58,6 +60,7 @@ def create_app(
         lifespan=_recovery_lifespan if recover_on_start else None,
     )
     application.router.routes.extend(router.routes)
+    application.router.routes.extend(history_router.routes)
     switch_path = os.environ.get("KILL_SWITCH_FILE")
     application.state.kill_switch = KillSwitch(Path(switch_path) if switch_path else None)
     application.state.startup_settings = startup_settings
@@ -76,12 +79,14 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
     broker = application.state.operator_state.broker
     stop_reconciliation: Callable[[], Awaitable[None]] | None = None
     close_journal: Callable[[], None] | None = None
+    close_history: Callable[[], None] | None = None
     paper_runtime = None
     try:
         # Reject a bad interval before recovery does any work.
         interval = _reconcile_interval() if broker is not None else None
         await assert_live_key_scope(application.state.startup_settings, broker)
         close_journal = attach_kill_switch_journal(application)
+        close_history = attach_history(application)
         recovery = await run_startup_recovery(application)
         logger.info(
             "startup recovery %s: %s (kill switch %s)",
@@ -109,8 +114,12 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
                         if close is not None:
                             await close()
                     finally:
-                        if close_journal is not None:
-                            close_journal()
+                        try:
+                            if close_journal is not None:
+                                close_journal()
+                        finally:
+                            if close_history is not None:
+                                close_history()
 
 
 def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
@@ -125,6 +134,18 @@ def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
     application.state.kill_switch.attach_journal(
         SqlAlchemyKillSwitchJournal(create_session_factory(engine))
     )
+    return engine.dispose
+
+
+def attach_history(application: FastAPI) -> Callable[[], None]:
+    """Serve bounded, read-only history from the database; return a close callback.
+
+    Without it, the history routes answer 503: not available, never an empty history.
+    """
+
+    settings: StartupSettings = application.state.startup_settings
+    engine = create_database_engine(settings.database_url, settings.trading_mode)
+    application.state.history = SqlAlchemyHistory(create_session_factory(engine))
     return engine.dispose
 
 

@@ -72,3 +72,50 @@ when that fails or no journal is attached.
 - The `AlertRouter` fans out an alert to the explicitly injected phone-push and
   email sinks and records per-destination delivery status. Automated tests use
   deterministic recording sinks; no provider writes occur by default.
+
+## Operational history
+
+Issue #61. Authenticated, read-only views of the persisted audit tables. Each
+route is a GET that answers JSON, or HTML when the request accepts `text/html`.
+
+| Route | Shows |
+| --- | --- |
+| `/operator/history/orders` | Orders with their fills; each order expands into its lineage. |
+| `/operator/history/orders/{client_order_id}` | One order's lineage: signal, risk decision, order, fills, and named gaps. |
+| `/operator/history/signals` | Signals with their risk decision and order, and why no order was placed. |
+| `/operator/history/risk-decisions` | Approvals and refusals with the failed gate and reason. |
+| `/operator/history/risk` | The latest refusal, refusals grouped by the 17 ordered gates (`risk.engine.RISK_GATES`), and kill-switch history. |
+| `/operator/history/discrepancies` | Reconciliation differences: entity, key, which fields differ, and the safety action. |
+| `/operator/history/events` | System events; a kill-switch transition shows its known fields. |
+
+Filters cover symbol, order status, time window, strategy version, failed risk
+gate, correlation ID, and client order ID, where each applies. A refusal the
+trading cycle records before the gates (`risk_inputs`) and any gate this build
+does not recognise are counted separately from the 17.
+
+**Bounds.** A window is `1h`, `24h` (default), `7d`, or `31d`, or `since` to
+`until`, and never longer than 31 days. A page is 1 to 100 rows (default 25),
+newest first, continued by a `before` cursor that keeps the first page's
+`until`. Nested fills are capped at 50 per order, with the full count and filled
+quantity reported. A wider window, a larger page, or an unknown, repeated, or
+malformed parameter is refused with `422` before anything is read.
+
+**Absence.** `200` with `"total": 0` means nothing was recorded in the window.
+`503` means the history is not configured in this process or could not be read,
+and the page says it is not a zero. Inside a lineage, a missing signal or risk
+decision reads "not recorded", and gaps reuse `execution.audit.OrderLineage`.
+
+**Safety.** The read model holds a session factory and nothing that reaches a
+broker; no route can submit, cancel, or retry an order. Discrepancy payloads stay
+in the database: only the names of the fields that differ are returned. Events
+return only a kill-switch transition's from, to, actor, automatic flag, reason,
+and known checklist items. Free-text reasons pass through `redact_free_text`.
+An `unknown` order is critical and carries "Look it up by client order ID. Never
+resubmit it."
+
+**Indexes.** Migration `0006_history_indexes` indexes each time column the lists
+window on, the lineage joins (`orders.signal_id`, `orders.risk_approval_id`,
+`fills.order_id`), correlation-ID lookups, and `system_events(event_type,
+created_at)`. Its upgrade and downgrade are tested, and a test checks that every
+history query searches an index. The restart rehearsal reads a lineage back
+after the app and Docker restarts.

@@ -28,6 +28,7 @@ class Base(DeclarativeBase):
 
 class SignalRecord(Base):
     __tablename__ = "signals"
+    __table_args__ = (Index("ix_signals_created_at", "created_at"),)
     signal_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     strategy_version: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -40,6 +41,10 @@ class RiskDecisionRecord(Base):
     """Every risk evaluation, approved or refused, keyed by the approval an order cites."""
 
     __tablename__ = "risk_decisions"
+    __table_args__ = (
+        Index("ix_risk_decisions_decided_at", "decided_at"),
+        Index("ix_risk_decisions_correlation_id", "correlation_id"),
+    )
     approval_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     signal_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
     approved: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -51,7 +56,13 @@ class RiskDecisionRecord(Base):
 
 class OrderRecord(Base):
     __tablename__ = "orders"
-    __table_args__ = (UniqueConstraint("client_order_id", name="uq_orders_client_order_id"),)
+    __table_args__ = (
+        UniqueConstraint("client_order_id", name="uq_orders_client_order_id"),
+        Index("ix_orders_created_at", "created_at"),
+        Index("ix_orders_signal_id", "signal_id"),
+        Index("ix_orders_risk_approval_id", "risk_approval_id"),
+        Index("ix_orders_correlation_id", "correlation_id"),
+    )
     order_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     signal_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     client_order_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
@@ -69,7 +80,10 @@ class OrderRecord(Base):
 
 class FillRecord(Base):
     __tablename__ = "fills"
-    __table_args__ = (UniqueConstraint("broker_fill_id", name="uq_fills_broker_fill_id"),)
+    __table_args__ = (
+        UniqueConstraint("broker_fill_id", name="uq_fills_broker_fill_id"),
+        Index("ix_fills_order_id", "order_id"),
+    )
     fill_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     order_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     broker_fill_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -81,6 +95,10 @@ class FillRecord(Base):
 
 class SystemEventRecord(Base):
     __tablename__ = "system_events"
+    __table_args__ = (
+        Index("ix_system_events_created_at", "created_at"),
+        Index("ix_system_events_event_type_created_at", "event_type", "created_at"),
+    )
     event_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     correlation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
@@ -157,6 +175,7 @@ class EquitySnapshotRecord(Base):
 
 class DiscrepancyRecord(Base):
     __tablename__ = "discrepancies"
+    __table_args__ = (Index("ix_discrepancies_created_at", "created_at"),)
     discrepancy_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
     entity_key: Mapped[str] = mapped_column(String(128), nullable=False)

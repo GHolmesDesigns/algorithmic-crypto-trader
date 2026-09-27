@@ -38,7 +38,9 @@ normal service start it:
 4. recovers pending or unknown orders by their persisted client order ID;
 5. reconciles persisted state with the broker, when a broker is configured;
 6. starts scheduled reconciliation when a broker is configured; and
-7. exposes health checks and an authenticated operator dashboard.
+7. exposes health checks, an authenticated operator dashboard, and bounded,
+   read-only history of the persisted signals, risk decisions, orders, fills,
+   discrepancies, and events.
 
 The broker is authoritative during reconciliation. If the database and broker
 disagree, or if required state cannot be read, the system fails closed and
@@ -234,6 +236,42 @@ Review these items from top to bottom:
 broker, strategy, market data, database, reconciliation, or trading path is
 healthy.
 
+## Review the history
+
+The dashboard shows what this process has held since it started. The history
+pages read the persisted records, so they cover earlier runs and survive a
+restart. Open them from the dashboard's **Activity** or **Risk & safety**
+section, or go to `/operator/history/orders`.
+
+| Page | What it answers |
+| --- | --- |
+| **Orders** | Every order, newest first, with its status and fills. Select an order to expand its lineage: signal, risk decision, order, and fills. **Open this order's lineage page** gives a page you can link to. |
+| **Signals** | What became of each signal: an order, or the gate that refused it. |
+| **Risk decisions** | Every approval and refusal, with the gate that failed and why. |
+| **Risk & safety** | The latest refusal, refusals counted under each of the 17 ordered gates, and kill-switch history. |
+| **Discrepancies** | What reconciliation found different, and the safety action taken. Values stay in the database; only the names of the fields that differ are shown. |
+| **System events** | Kill-switch changes and other recorded events. |
+
+Filter by symbol, status, strategy version, failed gate, client order ID or
+correlation ID, and time window. Times are UTC. A window covers at most 31 days
+and a page at most 100 rows; the server refuses anything wider and reads
+nothing. Select **Older** to page back and **Newest** to return.
+
+Client order, correlation, signal, and approval IDs select whole with one click,
+so you can copy them without JavaScript.
+
+Read these the same way as the dashboard:
+
+- **0 … recorded in this window** is a real zero.
+- **○ Not available** means the history could not be read. It is not a zero.
+- **Signal not recorded**, **Risk decision not recorded**, or a **▲ Lineage
+  gap** means a link in the audit chain is missing. Report it as an incident.
+- An **■ unknown** order carries its rule: look it up by client order ID and
+  never resubmit it.
+
+The history is read-only. Nothing on these pages can submit, cancel, or retry an
+order.
+
 ## Routine operating check
 
 At the beginning of a monitoring period:
@@ -244,6 +282,8 @@ At the beginning of a monitoring period:
 4. Confirm broker connectivity and its check time.
 5. Confirm balances and positions are plausible for this environment.
 6. Review orders, fills, signals, strategy heartbeats, alerts, and errors.
+   On the history pages, check **Risk & safety** for new refusals and
+   **Discrepancies** for new differences.
 7. When a broker is configured, confirm that scheduled reconciliation is
    `clean` and that its last run is recent.
 8. Record only the approved, redacted result in the private operations log.
@@ -369,7 +409,9 @@ checklist. See [orders the app did not place](phase-1.5-risk-execution-portfolio
 ### An order is pending or unknown
 
 1. Select **EMERGENCY STOP** if the system is not already halted.
-2. Find the persisted client order ID in the authorized audit tooling.
+2. Find the persisted client order ID on **Order history**: set **Status** to
+   `unknown` or `pending_submit`, then open the order's lineage and copy its
+   client order ID.
 3. Query the broker for that same ID.
 4. Update local state through the normal recovery path.
 5. Never create a replacement order until the original is proven absent and the
@@ -422,7 +464,7 @@ validation, exact-head remote CI, and owner-run provider evidence.
 | `risk/` | Ordered, fail-closed risk gates and the persistent kill switch. |
 | `execution/` | Audit persistence, idempotent submission, ambiguity resolution, and fills. |
 | `portfolio/` | Broker-authoritative state, reconciliation, snapshots, and scheduling. |
-| `api/` | Authenticated operator views, controls, health, and alert routing. |
+| `api/` | Authenticated operator views, controls, bounded read-only history, health, and alert routing. |
 | `app/` | Composition root, startup recovery, broker selection, trading loop, and replay runner. |
 | `db/`, `alembic/` | SQLAlchemy persistence and schema migrations. |
 | `deploy/` | Docker/VPS startup, drills, encrypted backup, and restore verification. |
@@ -593,6 +635,13 @@ provider, credential, live confirmation, or reconciliation interval.
 | `POST /operator/emergency-stop` | Operator | Persist `halted`. Unchanged if already halted. |
 | `GET /operator/rearm` | Administrator | Re-arm review page: active warnings, recent kill-switch changes, and the checklist form. |
 | `POST /operator/rearm` | Administrator | Persist `running` after the review. Requires every checklist item and a reason. The only route that lowers the kill switch. |
+| `GET /operator/history/orders` | Operator | Orders with their fills and lineage. Filters: `symbol`, `status`, `strategy_version`, `client_order_id`, `correlation_id`. |
+| `GET /operator/history/orders/{client_order_id}` | Operator | One order's lineage: signal, risk decision, order, fills, and any gaps. |
+| `GET /operator/history/signals` | Operator | Signals with their decision and order. Filters: `symbol`, `strategy_version`. |
+| `GET /operator/history/risk-decisions` | Operator | Approvals and refusals. Filters: `outcome`, `failed_gate`, `symbol`, `strategy_version`, `correlation_id`. |
+| `GET /operator/history/risk` | Operator | Latest refusal, refusals by ordered gate, and kill-switch history. |
+| `GET /operator/history/discrepancies` | Operator | Reconciliation differences by field name. Filter: `entity_type`. |
+| `GET /operator/history/events` | Operator | System events. Filter: `event_type`. |
 
 For programmatic access, send the token in the `x-operator-token` header. The
 server refuses any request with a `token` query parameter (`400`). Cookie
@@ -625,6 +674,29 @@ or JSON:
 
 A refused re-arm returns `{"detail": {"errors": [...], "missing_checklist": [...], "state": "halted"}}`
 with `422`, or `503` when the transition cannot be saved.
+
+The history routes are GET only and return JSON unless the request accepts
+`text/html`. Every list is bounded:
+
+- **Window:** `window` is `1h`, `24h` (the default), `7d`, or `31d`; or send
+  `since` and optionally `until` as ISO 8601 times (no offset means UTC). A
+  window longer than 31 days is refused.
+- **Page:** `limit` is 1 to 100 (default 25), newest first. A page with more
+  rows returns `next_before`; send it back as `before` with the same `until`, so
+  rows recorded later never shift the pages.
+- **Refusals:** a wider window, a larger page, or an unknown, repeated, or
+  malformed parameter returns `422` with
+  `{"detail": {"status": "refused", "errors": [...]}}`, and nothing is read.
+
+```json
+{"kind": "orders", "status": "available", "query": {"since": "...", "until": "...", "window": "24h", "limit": 25, "max_limit": 100, "max_days": 31, "before": null, "filters": {}}, "total": 0, "count": 0, "rows": [], "next_before": null}
+```
+
+`"total": 0` means nothing was recorded in the window. A history that cannot be
+read returns `503` with `{"detail": {"status": "unavailable", "reason": "..."}}`,
+never an empty list. A lineage for an unknown client order ID returns `404`.
+Responses carry identifiers, statuses, amounts, reasons, and times; provider
+payloads stay in the database.
 
 FastAPI also exposes its generated API documentation by default. A production
 reverse proxy should apply the deployment's access policy to `/docs`,

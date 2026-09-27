@@ -103,6 +103,30 @@ jobs:
           grep -qx 'INFO kill switch left running (was running before the drill)' "$RUNNER_TEMP/after.txt" \
             || { echo "::error::the drill's re-arm did not restore running"; exit 1; }
 
+      - name: Order lineage is rebuilt from persisted rows after the restarts
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml -f deploy/docker-compose.vps.yml --env-file .env \
+            exec -T app python - <<'PY'
+          import json, os, urllib.request
+
+          def read(path):
+              request = urllib.request.Request(
+                  "http://127.0.0.1:8000" + path,
+                  headers={"x-operator-token": os.environ["OPERATOR_TOKEN"]},
+              )
+              return json.load(urllib.request.urlopen(request, timeout=10))
+
+          lineage = read("/operator/history/orders/22222222-2222-4222-8222-222222222222")["lineage"]
+          assert lineage["status"] == "filled" and lineage["fill_count"] == 1, "order or fill missing"
+          assert lineage["signal"]["signal_id"] == "11111111-1111-4111-8111-111111111111"
+          assert lineage["risk_decision"]["approval_id"] == "33333333-3333-4333-8333-333333333333"
+          assert lineage["gaps"] == [], lineage["gaps"]
+          orders = read("/operator/history/orders?window=1h&limit=100")
+          assert orders["total"] == 1 and orders["query"]["max_limit"] == 100
+          print("lineage_rebuilt=1")
+          PY
+
       - name: Encrypted backup and manifest-verified restore
         run: |
           set -euo pipefail

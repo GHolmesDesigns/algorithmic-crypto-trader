@@ -1,4 +1,4 @@
-{#- Shell for the one-column operator pages: sign-in, control results, and the re-arm review. -#}
+{#- Shell for the one-column operator pages: sign-in, control results, the re-arm review, and history. -#}
 <!doctype html>
 <html lang="en">
   <head>
@@ -13,7 +13,7 @@
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>
-    <div class="page">
+    <div class="page{% block page_class %}{% endblock %}">
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">ACT</span>

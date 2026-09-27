@@ -95,3 +95,86 @@ def test_snapshot_batch_migration_backfills_newest_legacy_rows() -> None:
         assert (
             connection.exec_driver_sql("SELECT count(*) FROM portfolio_snapshots").scalar_one() == 1
         )
+
+
+HISTORY_TABLES = ("signals", "risk_decisions", "orders", "fills", "system_events", "discrepancies")
+
+
+def _alembic(url: str, monkeypatch):
+    from alembic.config import Config
+
+    # No ini file: alembic.ini's logging config would disable the test run's loggers.
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parents[1] / "alembic"))
+    monkeypatch.setenv("DATABASE_URL", url)
+    return config
+
+
+def _indexes(engine) -> dict[str, set[tuple[str, tuple[str, ...]]]]:
+    from sqlalchemy import inspect
+
+    inspector = inspect(engine)
+    return {
+        table: {
+            (index["name"], tuple(index["column_names"]))
+            for index in inspector.get_indexes(table)
+            if not index.get("unique")
+        }
+        for table in HISTORY_TABLES
+    }
+
+
+def test_history_index_migration_upgrades_downgrades_and_matches_the_models(
+    tmp_path, monkeypatch
+) -> None:
+    from alembic import command
+    from db.models import Base
+    from sqlalchemy import text
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'migrated.db'}"
+    config = _alembic(url, monkeypatch)
+    engine = create_engine(url, future=True)
+    command.upgrade(config, "0005_risk_decisions")
+    before = _indexes(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO signals (signal_id, symbol, strategy_version, side, quantity, "
+                "created_at) VALUES ('11111111111141118111111111111111', 'BTC-USD', 'v1', 'buy', "
+                "0.01, '2026-09-27 12:00:00.000000')"
+            )
+        )
+
+    command.upgrade(config, "head")
+    upgraded = _indexes(engine)
+    added = {table: upgraded[table] - before[table] for table in HISTORY_TABLES}
+    migration = _load_migration("0006_history_indexes.py")
+    assert {
+        (name, table, columns) for table, rows in added.items() for name, columns in rows
+    } == set(migration.INDEXES)
+
+    # The models declare the same indexes, so create_all and the migrations agree.
+    models = create_engine("sqlite+pysqlite://", future=True)
+    Base.metadata.create_all(models)
+    assert _indexes(models) == upgraded
+    models.dispose()
+
+    command.downgrade(config, "0005_risk_decisions")
+    assert _indexes(engine) == before
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM signals")).scalar_one() == 1
+        version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert version == "0005_risk_decisions"
+
+    command.upgrade(config, "head")
+    assert _indexes(engine) == upgraded
+    engine.dispose()
+
+
+def _load_migration(name: str):
+    path = Path(__file__).parents[1] / "alembic" / "versions" / name
+    spec = importlib.util.spec_from_file_location(name.removesuffix(".py"), path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

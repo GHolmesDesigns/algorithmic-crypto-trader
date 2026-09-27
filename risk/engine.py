@@ -17,6 +17,28 @@ from core.models import (
 )
 from pydantic import Field
 
+# The gates ``evaluate`` applies, in order, as (failed_gate, label). Operator history
+# groups refusals by them; a test keeps this list in step with ``evaluate``.
+RISK_GATES: tuple[tuple[str, str], ...] = (
+    ("kill_switch", "Kill switch"),
+    ("operator_pause_window", "Operator pause and trading window"),
+    ("broker_health", "Broker health"),
+    ("stale_price", "Stale or future quote"),
+    ("abnormal_volatility", "Abnormal volatility"),
+    ("price_reference", "Expected and reference price divergence"),
+    ("duplicate_prevention", "Duplicate signal or order"),
+    ("symbol_cooldown", "Symbol cooldown"),
+    ("maximum_open_positions", "Maximum open positions"),
+    ("trade_notional", "Maximum trade notional"),
+    ("symbol_position", "Per-symbol position, no shorting"),
+    ("aggregate_allocation", "Aggregate allocation"),
+    ("cash_reserve", "Minimum cash reserve"),
+    ("daily_loss", "Daily loss"),
+    ("drawdown", "Drawdown"),
+    ("slippage", "Estimated slippage"),
+    ("exchange_constraints", "Exchange quantity, price, and notional constraints"),
+)
+
 
 class ExchangeConstraints(FrozenModel):
     min_quantity: Decimal

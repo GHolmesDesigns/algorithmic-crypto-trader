@@ -1,0 +1,30 @@
+{%- extends "_operator_page.html" -%}
+{%- import "_operator_macros.html" as ui -%}
+{%- import "_history_macros.html" as hx -%}
+{% block title %}{{ view.title }}{% endblock %}
+{% block page_name %}History{% endblock %}
+{% block page_class %} page-wide{% endblock %}
+{% block content %}
+        {% include "_history_nav.html" %}
+        <section class="block" aria-labelledby="history-heading">
+          <div class="block-head">
+            <h1 id="history-heading">{{ view.title }}</h1>
+            <p class="block-note">{{ view.intro }}</p>
+          </div>
+          {{ hx.problems(view) }}
+          {%- if view.problem %}
+          <div class="notice tone-unknown" role="status">
+            <p><span class="mark" aria-hidden="true">○</span> {{ view.problem }}</p>
+            <p>Client order ID requested: <code class="copy">{{ view.client_order_id }}</code></p>
+          </div>
+          {%- endif %}
+          {%- if view.order %}
+          {%- set order = view.order %}
+          <section class="panel tone-{{ order.status.tone }}" aria-labelledby="lineage-heading">
+            <h2 id="lineage-heading">{{ ui.pill(order.status, "pill-large") }} {{ hx.text(order.symbol) }} {{ order.side }} · {{ order.order_type }}</h2>
+            {{ hx.chain(order) }}
+          </section>
+          {%- endif %}
+          <p><a class="button button-quiet" href="{{ view.path }}">All orders</a></p>
+        </section>
+{% endblock %}
