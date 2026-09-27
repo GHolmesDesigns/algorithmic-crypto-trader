@@ -4,6 +4,12 @@
 - **Applies to:** application version `0.1.0` at repository commit `b101344`
 - **Last reviewed:** 2026-09-27
 
+<!-- markdown-only-note:start -->
+Open the [styled HTML manual](user-manual.html) for audience filters, responsive
+navigation, dark-mode support, and print formatting. This Markdown file remains
+the canonical editable source.
+<!-- markdown-only-note:end -->
+
 > **Safety notice**
 >
 > This project is experimental software, not financial advice. The current
@@ -660,3 +666,7 @@ Update this manual whenever a release changes any of the following:
 
 Verify the manual against current source and tests rather than copying planned
 behavior from a roadmap.
+
+After editing this Markdown source, regenerate the styled manual with
+`python tools/build_user_manual.py` and commit the resulting
+`docs/user-manual.html` alongside the source change.
