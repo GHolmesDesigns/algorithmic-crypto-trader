@@ -740,3 +740,17 @@ def test_strategy_card_shows_the_worst_heartbeat():
     )
     assert (strategy.status.word, strategy.status.tone) == ("unhealthy", "crit")
     assert strategy.detail == "hedge (v2): cycle failed; 2 more in System health"
+
+
+@pytest.mark.asyncio
+async def test_state_text_is_escaped_not_rendered_as_markup(monkeypatch):
+    application = dashboard_app(monkeypatch)
+    await application.state.operator_state.emit_alert(
+        Alert(condition="<b>x</b>", severity="critical", message="<script>alert(1)</script>")
+    )
+    application.state.operator_state.set_runtime("degraded", '<img src=x onerror="alert(1)">')
+    html = await page(application)
+    assert "<script" not in html
+    assert "<img" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "&lt;b&gt;x&lt;/b&gt;" in html
