@@ -320,6 +320,8 @@ class FakeGeminiSandbox(FakeVenue):
             if order is None:
                 return httpx.Response(404, json={"reason": "OrderNotFound"}, request=request)
             body = self.order_payload(order, include_trades=bool(payload.get("include_trades")))
+            if "client_order_id" in payload:  # the Sandbox answers with a list here
+                return httpx.Response(200, json=[body], request=request)
             return httpx.Response(200, json=body, request=request)
         raise AssertionError(f"unexpected Gemini request {path}")
 

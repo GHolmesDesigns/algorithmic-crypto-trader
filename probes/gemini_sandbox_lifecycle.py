@@ -25,7 +25,7 @@ from uuid import uuid4
 import httpx
 from app.trading import BrokerRiskInputs, CycleStatus, TradingCycle
 from brokers.gemini import GEMINI_SANDBOX_REST_URL, GeminiBroker
-from brokers.http import ProviderError, ProviderOrderRejectedError
+from brokers.http import ProviderOrderRejectedError
 from core.models import (
     Candle,
     MarketState,
@@ -37,7 +37,6 @@ from core.models import (
     Quote,
     RiskApproval,
 )
-from core.resilience import CircuitOpen, RateLimitExceeded
 from execution.audit import InMemoryAuditStore, unlinked_orders
 from execution.engine import ExecutionEngine, InMemoryOrderStore
 from risk.engine import ExchangeConstraints, RiskLimits
@@ -46,9 +45,7 @@ from strategy.reference import AlwaysBuyStrategy
 
 from probes.common import (
     BoundedTransport,
-    BudgetExhausted,
     ProbeReport,
-    UnexpectedHost,
     bounded_client,
     prompt_secret,
     run_probe,
@@ -159,7 +156,9 @@ async def lifecycle(
             await _undersized(run, report, quote)
             await _partial_fill(run, report)
             await _trading_loop(run, report)
-    except (ProviderError, CircuitOpen, RateLimitExceeded, BudgetExhausted, UnexpectedHost) as exc:
+    except Exception as exc:
+        # Anything, even a bug, is recorded as a failed step: the result is still written
+        # and cleanup still runs. Only the error's type and Gemini's reason code are kept.
         report.step("stopped", "fail", **_describe(exc))
     finally:
         await _cancel_leftovers(run, report, transport)

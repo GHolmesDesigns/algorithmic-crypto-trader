@@ -17,7 +17,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from brokers.gemini import GeminiBroker
-from brokers.http import AmbiguousSubmissionError, ProviderOrderRejectedError
+from brokers.http import AmbiguousSubmissionError, ProviderError, ProviderOrderRejectedError
 from core.models import OrderRequest, OrderSide, OrderStatus, OrderType, RiskApproval
 from core.resilience import TokenBucketRateLimiter
 from execution.engine import ExecutionEngine, InMemoryOrderStore
@@ -46,6 +46,8 @@ class GeminiSandboxBook:
         self.execution_ask = Decimal("60010")
         self.execution_bid = Decimal("60000")
         self.ioc_depth: Decimal | None = None
+        # Extra entries a client_order_id lookup also returns, e.g. another client's order.
+        self.status_by_client: list[dict[str, Any]] = []
         self._ids = count(7_000_000_001)
         self._tids = count(1)
 
@@ -116,9 +118,11 @@ class GeminiSandboxBook:
                     404,
                     json={"result": "error", "reason": "OrderNotFound", "message": "not found"},
                 )
-            return httpx.Response(
-                200, json=self.payload(order, include_trades=bool(payload.get("include_trades")))
-            )
+            body = self.payload(order, include_trades=bool(payload.get("include_trades")))
+            if "client_order_id" in payload:
+                # Queried by client_order_id, the Sandbox answers with a list of orders.
+                return httpx.Response(200, json=self.status_by_client + [body])
+            return httpx.Response(200, json=body)
         if path == "/v1/order/cancel":
             order = self.orders[int(payload["order_id"])]
             order["is_live"] = False
@@ -511,3 +515,44 @@ async def test_a_price_too_small_to_cap_is_refused_before_anything_is_sent() -> 
 
     assert book.new_order_calls == 0
     await broker.close()
+
+
+def test_our_order_is_picked_from_a_list_and_duplicates_are_never_guessed() -> None:
+    from brokers.gemini import _only_order_for
+
+    ours = {"client_order_id": "ours", "order_id": "1"}
+    other = {"client_order_id": "someone-else", "order_id": "2"}
+    assert _only_order_for([other, ours, "not-an-order"], "ours") == ours
+    assert _only_order_for([], "ours") is None
+    assert _only_order_for([other], "ours") is None
+    with pytest.raises(ProviderError, match="share one client_order_id"):
+        _only_order_for([ours, dict(ours, order_id="3")], "ours")
+
+
+@pytest.mark.asyncio
+async def test_a_restarted_adapter_recovers_by_client_order_id_from_a_list() -> None:
+    book = GeminiSandboxBook()
+    order_request, approval = request(order_type=OrderType.LIMIT, limit_price="50000")
+    first = gemini(book)
+    await first.submit_order(order_request, approval)
+    key = str(order_request.client_order_id)
+    # The lookup's list also carries another client's order.
+    book.status_by_client = [
+        dict(
+            book.payload(book.orders[book.by_client[key]], include_trades=True),
+            client_order_id=str(uuid4()),
+        )
+    ]
+
+    restarted = gemini(book)  # knows no venue order ID, as after a restart
+    recovered = await restarted.get_order(key)
+    assert recovered is not None and recovered.status is OrderStatus.OPEN
+    assert str(recovered.request.client_order_id) == key
+
+    # Two venue orders under one idempotency key stop recovery rather than pick one.
+    book.status_by_client = [book.payload(book.orders[book.by_client[key]], include_trades=True)]
+    duplicate = gemini(book)
+    with pytest.raises(ProviderError, match="share one client_order_id"):
+        await duplicate.get_order(key)
+    for broker in (first, restarted, duplicate):
+        await broker.close()
