@@ -27,11 +27,19 @@ from execution.engine import ExecutionEngine, InMemoryOrderStore, PersistenceUna
 from portfolio.ledger import apply_fills
 from portfolio.reconciliation import PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
+from risk.engine import evaluate
 from risk.kill_switch import KillSwitch
 from sqlalchemy.exc import OperationalError
 from strategy.reference import MovingAverageCrossStrategy
 
-from tests.gate_support import CONSTRAINTS, PARITY_WINDOWS, paper_cycle, sqlite_database, state_at
+from tests.gate_support import (
+    CONSTRAINTS,
+    PARITY_LIMITS,
+    PARITY_WINDOWS,
+    paper_cycle,
+    sqlite_database,
+    state_at,
+)
 
 CANDLES = PARITY_WINDOWS["calm_range"]
 BAR = next(
@@ -124,9 +132,10 @@ async def test_pending_order_query_failure_takes_no_new_entry() -> None:
 class StubBroker:
     healthy = True
 
-    def __init__(self, positions=(), cash="10000") -> None:
+    def __init__(self, positions=(), cash="10000", hold="0") -> None:
         self.positions = positions
         self.cash = Decimal(cash)
+        self.hold = Decimal(hold)
 
     async def get_quote(self, symbol):
         return quote()
@@ -135,7 +144,7 @@ class StubBroker:
         return self.positions
 
     async def get_balances(self):
-        return (Balance(asset="USD", available=self.cash, as_of=utc_now()),)
+        return (Balance(asset="USD", available=self.cash, hold=self.hold, as_of=utc_now()),)
 
 
 def context(**changes) -> CycleContext:
@@ -192,6 +201,69 @@ async def test_daily_loss_resets_each_day_and_drawdown_tracks_the_peak() -> None
     next_day = await source.risk_inputs(SIGNAL, STATE, context())
     assert same_day.daily_loss == Decimal("1000") and same_day.drawdown == Decimal("0.1")
     assert next_day.daily_loss == Decimal("0") and next_day.drawdown == Decimal("0.1")
+
+
+@pytest.mark.asyncio
+async def test_dollars_held_by_a_resting_buy_are_not_a_loss() -> None:
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    broker = StubBroker()
+    source = BrokerRiskInputs(
+        broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0"), clock=lambda: now
+    )
+    await source.risk_inputs(SIGNAL, STATE, context())
+    # A buy limit rests: the venue moves its dollars from available to hold, and nothing fills.
+    broker.cash, broker.hold = Decimal("7000"), Decimal("3000")
+    resting = await source.risk_inputs(SIGNAL, STATE, context())
+    assert resting.daily_loss == Decimal("0") and resting.drawdown == Decimal("0")
+    assert resting.available_cash == Decimal("7000")
+
+
+@pytest.mark.asyncio
+async def test_a_buy_resting_at_the_days_first_sample_does_not_hide_a_later_loss() -> None:
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    broker = StubBroker(cash="7000", hold="3000")
+    source = BrokerRiskInputs(
+        broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0"), clock=lambda: now
+    )
+    await source.observe(STATE)
+    # The buy is cancelled, and the account is 500 dollars down on where the day opened.
+    broker.cash, broker.hold = Decimal("9500"), Decimal("0")
+    later = await source.risk_inputs(SIGNAL, STATE, context())
+    assert later.daily_loss == Decimal("500") and later.drawdown == Decimal("0.05")
+
+
+@pytest.mark.asyncio
+async def test_dollars_held_by_a_resting_buy_cannot_pay_for_another_buy() -> None:
+    # The signal buys about 30,480 dollars of BTC: more than the free dollars, less than all.
+    broker = StubBroker(cash="30000", hold="5000")
+    source = BrokerRiskInputs(broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0"))
+    refused = evaluate(SIGNAL, await source.risk_inputs(SIGNAL, STATE, context()), PARITY_LIMITS)
+    assert refused.approved is False and refused.failed_gate == "cash_reserve"
+
+    broker.cash, broker.hold = Decimal("35000"), Decimal("0")  # the resting buy is cancelled
+    approved = evaluate(SIGNAL, await source.risk_inputs(SIGNAL, STATE, context()), PARITY_LIMITS)
+    assert approved.approved is True
+
+
+class CoinsOnly(StubBroker):
+    async def get_balances(self):
+        return ()  # venues leave out a dollar row that is empty
+
+
+@pytest.mark.asyncio
+async def test_an_account_without_dollars_is_valued_by_its_coins_alone() -> None:
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    coins = Position(
+        symbol="BTC-USD", quantity=Decimal("1"), average_price=Decimal("0"), as_of=utc_now()
+    )
+    broker = CoinsOnly((coins,))
+    source = BrokerRiskInputs(
+        broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0"), clock=lambda: now
+    )
+    first = await source.risk_inputs(SIGNAL, STATE, context())
+    broker.positions = (coins.model_copy(update={"quantity": Decimal("0.5")}),)
+    later = await source.risk_inputs(SIGNAL, STATE, context())
+    assert first.available_cash == Decimal("0") and later.drawdown == Decimal("0.5")
 
 
 def fill(side: OrderSide, quantity: str, price: str, fee: str = "0", *, second: int = 0) -> Fill:
