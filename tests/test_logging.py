@@ -5,6 +5,7 @@ from uuid import uuid4
 from core.logging import (
     JsonFormatter,
     SecretScrubber,
+    redact_free_text,
     reset_correlation_id,
     scrub_secrets,
     set_correlation_id,
@@ -71,3 +72,26 @@ def test_scrubbed_records_format_several_arguments_and_redact_them() -> None:
     message = json.loads(JsonFormatter().format(record))["message"]
 
     assert message == "startup recovery halted: token=[REDACTED] leaked (kill switch halted)"
+
+
+def test_free_text_keeps_the_reference_and_removes_secrets_addresses_and_identifiers() -> None:
+    text = (
+        "INC-42  approved\nby ops@example.test; api_key=abc123 Bearer xyz "
+        "see https://ntfy.example.test/private-topic operator-token-value "
+        "order 3f2b1c4e-9a8d-4f6e-b1c2-0a9e8d7c6b5a"
+    )
+
+    redacted = redact_free_text(text, secrets=("operator-token-value", ""))
+
+    assert redacted == (
+        "INC-42 approved by [REDACTED]; api_key=[REDACTED] Bearer [REDACTED] "
+        "see [REDACTED] [REDACTED] order [REDACTED]"
+    )
+
+
+def test_free_text_leaves_an_ordinary_reference_alone() -> None:
+    text = (
+        "Sandbox check left an open order; reconciled clean at 14:05 UTC, owner approved "
+        "under the planned-maintenance-window-procedure-for-sandbox-checks runbook."
+    )
+    assert redact_free_text(text) == text

@@ -14,6 +14,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from api.controls import REARM_CHECKLIST
+
 # Colour is never the only carrier: every tone pairs a mark with a word.
 MARKS = {"ok": "●", "warn": "▲", "crit": "■", "unknown": "○", "neutral": "◐"}
 _SEVERITY = {"crit": 4, "warn": 3, "unknown": 2, "neutral": 1, "ok": 0}
@@ -116,6 +118,7 @@ class Safety:
     summary: str
     causes: tuple[str, ...]
     next_step: str
+    last_change: dict[str, Any] | None = None
 
     @property
     def halted(self) -> bool:
@@ -134,7 +137,7 @@ def build_dashboard(
     mode = str(trading.get("mode", "unknown"))
     strategies = [_heartbeat(item, now) for item in snapshot.get("strategies", ())]
     alerts = _alerts(snapshot, now)
-    safety = _safety(snapshot)
+    safety = _safety(snapshot, now)
     return {
         "header": {
             "mode": mode,
@@ -163,6 +166,7 @@ def build_dashboard(
         "health": _health(snapshot, now),
         "strategies": strategies,
         "legend": [Status(word, tone) for tone, word in _LEGEND],
+        "rearm_checklist": REARM_CHECKLIST,
     }
 
 
@@ -243,7 +247,7 @@ def _state(label: str, status: Status) -> Fact:
     return Fact(label, "status", status.word, status=status)
 
 
-def _safety(snapshot: Mapping[str, Any]) -> Safety:
+def _safety(snapshot: Mapping[str, Any], now: datetime) -> Safety:
     status = _status(snapshot.get("risk", {}).get("kill_switch"), _KILL_SWITCH, "crit")
     if status.word == "running":
         return Safety(
@@ -260,20 +264,46 @@ def _safety(snapshot: Mapping[str, Any]) -> Safety:
             _causes(snapshot),
             "Investigate the cause. Only an administrator re-arm resumes trading, after "
             "the checklist.",
+            _last_change(snapshot, status.word, now),
         )
     return Safety(
         status,
         "New trading work is refused, and only an administrator can re-arm.",
         _causes(snapshot),
         "Leave it halted and escalate. An administrator re-arms only after the checklist.",
+        _last_change(snapshot, status.word, now),
     )
+
+
+_ACTORS = {"operator": "Operator", "admin": "Administrator", "system": "The system"}
+
+
+def _transition(item: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    source = str(item.get("from", "unknown"))
+    target = str(item.get("to", "unknown"))
+    return {
+        "change": f"{source} to {target}",
+        "status": _status(target, _KILL_SWITCH, "crit"),
+        "actor": _ACTORS.get(str(item.get("actor")), "Unknown"),
+        "kind": "automatic" if item.get("automatic") else "manual",
+        "reason": str(item.get("reason") or "no reason recorded"),
+        "at": _stamp(item.get("created_at"), now),
+    }
+
+
+def _last_change(snapshot: Mapping[str, Any], state: str, now: datetime) -> dict[str, Any] | None:
+    """The recorded transition into the current state, when the newest record explains it."""
+
+    transitions = snapshot.get("risk", {}).get("transitions") or ()
+    if not transitions or transitions[0].get("to") != state:
+        return None
+    return _transition(transitions[0], now)
 
 
 def _causes(snapshot: Mapping[str, Any]) -> tuple[str, ...]:
     """Explain a pause or halt from the state that can trip the switch.
 
-    The kill switch stores only its state, so an operator control, a file or
-    environment flag, or an earlier process leaves no cause here.
+    The recorded transition, shown beside these, says who or what set the state.
     """
 
     causes = []
@@ -722,4 +752,85 @@ def _health(snapshot: Mapping[str, Any], now: datetime) -> list[dict[str, Any]]:
                 ),
             ],
         },
+    ]
+
+
+def build_rearm_review(
+    snapshot: Mapping[str, Any], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Everything an administrator must see before re-arming, from ``/operator/state``."""
+
+    now = now or datetime.now(UTC)
+    warnings = _rearm_warnings(snapshot, now)
+    safety = _safety(snapshot, now)
+    return {
+        "safety": safety,
+        "warnings": warnings,
+        "attention": sum(1 for item in warnings if item["status"].tone != "ok"),
+        "transitions": [
+            _transition(item, now) for item in snapshot.get("risk", {}).get("transitions") or ()
+        ],
+    }
+
+
+def _rearm_warnings(snapshot: Mapping[str, Any], now: datetime) -> list[dict[str, Any]]:
+    recovery = snapshot.get("recovery", {})
+    reconciliation = snapshot.get("reconciliation", {})
+    runs = reconciliation.get("runs")
+    orders = [str(order.get("status")) for order in snapshot.get("orders", ())]
+    pending = orders.count("pending_submit")
+    unknown = orders.count("unknown")
+    if unknown:
+        order_status = Status(f"{unknown} unknown", "crit")
+    elif pending:
+        order_status = Status(f"{pending} pending", "warn")
+    else:
+        order_status = Status("none", "ok")
+    strategies = [_heartbeat(item, now) for item in snapshot.get("strategies", ())]
+    worst = _worst(strategies)
+    if worst is None:
+        strategy = {
+            "label": "Strategy heartbeat",
+            "status": Status("none registered", "unknown"),
+            "detail": "No strategy heartbeat is registered.",
+            "stamp": None,
+        }
+    else:
+        strategy = {
+            "label": "Strategy heartbeat",
+            "status": worst["status"],
+            "detail": f"{worst['name']} ({worst['version']}): {worst['detail']}",
+            "stamp": worst["last_seen"] if worst["last_seen"].iso else None,
+        }
+    completed = _stamp(recovery.get("completed_at"), now)
+    last_run = _stamp(reconciliation.get("last_run_at"), now)
+    return [
+        {
+            "label": "Startup recovery",
+            "status": _status(recovery.get("status"), _RECOVERY),
+            "detail": str(recovery.get("detail", "")),
+            "stamp": completed if completed.iso else None,
+        },
+        {
+            "label": "Reconciliation",
+            "status": _status(reconciliation.get("last_result"), _RECONCILIATION),
+            "detail": (
+                f"{reconciliation.get('last_discrepancies', 0)} difference(s) in the last run; "
+                f"{runs} run(s) since start."
+                if isinstance(runs, int)
+                else "No scheduled reconciliation is running in this process."
+            ),
+            "stamp": last_run if last_run.iso else None,
+        },
+        {
+            "label": "Pending or unknown orders",
+            "status": order_status,
+            "detail": (
+                f"{pending} pending submission and {unknown} unknown among the "
+                f"{len(orders)} order(s) this process holds. Resolve each by looking it up "
+                "with its client order ID. Never resubmit it."
+            ),
+            "stamp": None,
+        },
+        strategy,
     ]

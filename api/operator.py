@@ -13,6 +13,8 @@ from risk.kill_switch import KillSwitch
 
 from api.alerts import Alert, AlertDelivery, AlertRouter
 
+TRANSITION_LIMIT = 10
+
 
 @dataclass(frozen=True, slots=True)
 class StrategyHeartbeat:
@@ -224,6 +226,15 @@ class OperatorState:
             ],
         }
 
+    def transitions(self, limit: int = TRANSITION_LIMIT) -> list[dict[str, Any]]:
+        """The newest kill-switch transitions, newest first, including persisted ones."""
+
+        fields = ("from", "to", "actor", "automatic", "reason", "created_at")
+        return [
+            {key: event.get(key) for key in fields}
+            for event in reversed(self.kill_switch.audit_events[-limit:])
+        ]
+
     def to_dict(self) -> dict[str, Any]:
         snapshot = self.snapshot
         health = self.health()
@@ -242,7 +253,10 @@ class OperatorState:
                 "detail": snapshot.connectivity_detail,
                 "checked_at": _iso(snapshot.connectivity_checked_at),
             },
-            "risk": {"kill_switch": self.kill_switch.state.value},
+            "risk": {
+                "kill_switch": self.kill_switch.state.value,
+                "transitions": self.transitions(),
+            },
             "recovery": (
                 self.startup_recovery.to_dict()
                 if self.startup_recovery is not None

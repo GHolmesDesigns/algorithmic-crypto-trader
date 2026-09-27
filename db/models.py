@@ -7,7 +7,17 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Index, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -74,7 +84,8 @@ class SystemEventRecord(Base):
     event_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     correlation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # Migration 0001 created this column as JSON, not JSONB.
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

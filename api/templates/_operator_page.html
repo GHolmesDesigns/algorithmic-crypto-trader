@@ -1,0 +1,48 @@
+{#- Shell for the one-column operator pages: sign-in, control results, and the re-arm review. -#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="referrer" content="no-referrer">
+    <title>{% block title %}{% endblock %} · {{ page.mode }} · Operator</title>
+    <style>
+{% include "operator.css" %}
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">ACT</span>
+          <div>
+            <p class="brand-name">Algorithmic Crypto Trader</p>
+            <p class="page-name">{% block page_name %}{% endblock %}</p>
+          </div>
+        </div>
+        <dl class="context">
+          <div>
+            <dt>Mode</dt>
+            <dd><span class="mode tone-{{ page.mode_tone }}"><span class="mark" aria-hidden="true">◆</span> {{ page.mode }}</span></dd>
+          </div>
+          <div>
+            <dt>Credential scope</dt>
+            <dd class="mono">{{ page.credential_scope }}</dd>
+          </div>
+          <div>
+            <dt>Signed in as</dt>
+            <dd>{{ page.role }}</dd>
+          </div>
+        </dl>
+        {%- if page.signed_in %}
+        <form class="signout" method="post" action="/operator/logout"><button class="button button-quiet" type="submit">Sign out</button></form>
+        {%- endif %}
+      </header>
+      <main id="main" tabindex="-1">
+{% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

@@ -17,6 +17,10 @@
 >   - All merged fields are rendered, including the seven runtime statuses.
 >   - Refresh is a working link; the dead HTMX attributes are gone.
 >   - PAUSE is hidden while halted, and RE-ARM moved to Risk & safety.
+> - **#60 merged:** safety controls end on a server-rendered result page, and **Sign out** (`POST /operator/logout`) ends the session.
+>   - RE-ARM is now the administrator re-arm review at `GET /operator/rearm`. It repeats the active warnings, and the server enforces the seven checklist items and a redacted cause-and-approval reference.
+>   - Kill-switch transitions are saved to `system_events` and returned as `risk.transitions` in `/operator/state`; the safety bar shows the last change as the cause.
+>   - Query-string tokens are refused with `400`. This supersedes the §4.1 "no sign-out control" and the §5.9 query-token compatibility statements.
 > - **The §10 iterations are now carded:**
 >   - Iteration A → #59 (command center, merged) and #60 (safety controls, sign-out, enforced re-arm review);
 >   - Iteration B → #61 (bounded history) and #62 (trends);

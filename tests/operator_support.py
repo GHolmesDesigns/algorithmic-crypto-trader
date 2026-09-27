@@ -1,0 +1,44 @@
+"""Operator-surface helpers: a SQLite database that the real kill-switch journal writes to."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from api.controls import REARM_CHECKLIST
+from app.main import attach_kill_switch_journal, create_app
+from core.guards import CredentialScope, StartupSettings
+from core.models import TradingMode
+from db.models import SystemEventRecord
+from fastapi import FastAPI
+from sqlalchemy import create_engine
+
+# A complete re-arm review: every checklist item and a cause-and-approval reference.
+REARM = {
+    "checklist": [key for key, _ in REARM_CHECKLIST],
+    "reason": "INC-42 drill pause ended; approved by the incident owner",
+}
+
+
+def sqlite_settings(
+    tmp_path: Path,
+    mode: TradingMode = TradingMode.BACKTEST,
+    scope: CredentialScope = CredentialScope.NONE,
+) -> StartupSettings:
+    """Settings for a file database with the ``system_events`` table the journal uses."""
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'trader.db'}"
+    engine = create_engine(url, future=True)
+    SystemEventRecord.__table__.create(engine, checkfirst=True)
+    engine.dispose()
+    return StartupSettings(mode, scope, "", url, "INFO")
+
+
+def journaled_app(tmp_path: Path, mode: TradingMode = TradingMode.BACKTEST, **options) -> FastAPI:
+    """``create_app`` plus the journal that the service lifespan attaches at startup.
+
+    Paper or live mode with SQLite needs ``APP_ENV=test``.
+    """
+
+    application = create_app(sqlite_settings(tmp_path, mode), **options)
+    attach_kill_switch_journal(application)
+    return application

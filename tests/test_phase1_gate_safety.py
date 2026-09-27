@@ -36,6 +36,7 @@ from risk.kill_switch import KillSwitch
 from strategy.reference import MovingAverageCrossStrategy
 
 from tests.gate_support import PARITY_WINDOWS, paper_cycle, state_at
+from tests.operator_support import REARM, journaled_app
 
 ROOT = Path(__file__).parents[1]
 CANDLES = PARITY_WINDOWS["calm_range"]
@@ -74,10 +75,8 @@ def operator_app(switch_path: Path, monkeypatch):
     monkeypatch.setenv("OPERATOR_TOKEN", OPERATOR)
     monkeypatch.setenv("OPERATOR_ADMIN_TOKEN", ADMIN)
     monkeypatch.setenv("KILL_SWITCH_FILE", str(switch_path))
-    settings = StartupSettings(
-        TradingMode.PAPER, CredentialScope.NONE, "", "postgresql://unused", "INFO"
-    )
-    return create_app(settings)
+    monkeypatch.setenv("APP_ENV", "test")
+    return journaled_app(switch_path.parent, TradingMode.PAPER)
 
 
 def client_for(application) -> httpx.AsyncClient:
@@ -122,16 +121,25 @@ async def test_authenticated_api_emergency_stop_survives_restart_and_needs_admin
         assert (await client.post("/operator/emergency-stop")).status_code == 401
         assert KillSwitch(switch_path).state is KillSwitchState.RUNNING
         stop = await client.post("/operator/emergency-stop", headers={"x-operator-token": OPERATOR})
-        assert stop.json() == {"state": "halted"}
+        assert stop.json()["state"] == "halted"
 
     assert (await attempt(KillSwitch(switch_path))).decision.failed_gate == "kill_switch"
 
     async with client_for(operator_app(switch_path, monkeypatch)) as client:
-        denied = await client.post("/operator/rearm", headers={"x-operator-token": OPERATOR})
+        denied = await client.post(
+            "/operator/rearm", headers={"x-operator-token": OPERATOR}, json=REARM
+        )
         assert denied.status_code == 403
         assert KillSwitch(switch_path).state is KillSwitchState.HALTED
-        rearm = await client.post("/operator/rearm", headers={"x-operator-token": ADMIN})
-        assert rearm.json() == {"state": "running"}
+        incomplete = await client.post(
+            "/operator/rearm", headers={"x-operator-token": ADMIN}, json={"reason": "INC-42"}
+        )
+        assert incomplete.status_code == 422
+        assert KillSwitch(switch_path).state is KillSwitchState.HALTED
+        rearm = await client.post(
+            "/operator/rearm", headers={"x-operator-token": ADMIN}, json=REARM
+        )
+        assert rearm.json()["state"] == "running"
 
     assert (await attempt(KillSwitch(switch_path))).status is CycleStatus.SUBMITTED
 

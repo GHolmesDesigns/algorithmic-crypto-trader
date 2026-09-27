@@ -31,6 +31,7 @@
       </div>
     </dl>
     <a class="button button-quiet refresh" href="/operator">Refresh</a>
+    <form class="signout" method="post" action="/operator/logout"><button class="button button-quiet" type="submit">Sign out</button></form>
   </header>
 
   <nav class="sections" aria-label="Dashboard sections">
@@ -53,14 +54,18 @@
       {%- if not safety.running %}
       <div class="safety-cause">
         <h3 class="eyebrow">Cause</h3>
-        {%- if safety.causes %}
+        {%- if safety.causes or safety.last_change %}
         <ul>
           {%- for cause in safety.causes %}
           <li>{{ cause }}</li>
           {%- endfor %}
+          {%- if safety.last_change %}
+          {%- set change = safety.last_change %}
+          <li>Last change: {{ change.change }} by {{ change.actor }} ({{ change.kind }}), {{ ui.stamp(change.at) }}. {{ change.reason }}</li>
+          {%- endif %}
         </ul>
         {%- else %}
-        <p>Not recorded. The kill switch stores only its state: an operator control or the kill-switch file or environment flag may have set it. Check Alerts &amp; errors and the application log.</p>
+        <p>Not recorded. No saved kill-switch change explains this state: it may predate the change history, or the history could not be read. Check Alerts &amp; errors and the application log.</p>
         {%- endif %}
       </div>
       {%- endif %}
@@ -308,22 +313,18 @@
         </div>
         <div class="panel">
           <h3>Re-arm</h3>
-          <p>Re-arm sets the kill switch to running. It repairs nothing. Only an administrator re-arms, after every item on this checklist:</p>
+          <p>Re-arm sets the kill switch to running. It repairs nothing. Only an administrator re-arms, on the re-arm review page, after confirming every item on this checklist and recording the cause and approval:</p>
           <ol class="checklist">
-            <li>The original cause is identified and documented.</li>
-            <li>The approved mode and credential scope are confirmed.</li>
-            <li>Every pending or unknown order is resolved by looking it up with its client order ID, never by resubmitting it.</li>
-            <li>Broker-authoritative balances, positions, orders, and fills are confirmed.</li>
-            <li>Startup recovery and reconciliation are clean.</li>
-            <li>Required market data and risk inputs are current.</li>
-            <li>The incident owner has approved, when the procedure requires it.</li>
+            {%- for key, text in view.rearm_checklist %}
+            <li>{{ text }}</li>
+            {%- endfor %}
           </ol>
           {%- if not header.is_admin %}
           <p class="note">Your operator role cannot re-arm. Ask an administrator.</p>
           {%- elif safety.running %}
           <p class="note">Nothing to re-arm: the kill switch is running.</p>
           {%- else %}
-          <form method="post" action="/operator/rearm"><button class="button button-rearm" type="submit">RE-ARM</button></form>
+          <p><a class="button button-rearm" href="/operator/rearm">Review and re-arm</a></p>
           {%- endif %}
         </div>
       </div>

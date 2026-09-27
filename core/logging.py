@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 from uuid import UUID
 
@@ -40,6 +40,11 @@ SECRET_FIELD_NAMES = frozenset(
 _SECRET_TEXT = re.compile(
     r"(?i)(bearer\s+|(?:api[_-]?key|secret|token|password|signature)\s*[=:]\s*)[^\s,;]+"
 )
+_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# Keys, tokens, account and order identifiers: long unbroken runs mixing letters and
+# digits. Hyphenated plain words stay readable.
+_OPAQUE = re.compile(r"(?=[\w+/=-]*\d)(?=[\w+/=-]*[A-Za-z])[\w+/=-]{32,}", re.ASCII)
 _correlation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "correlation_id", default=None
 )
@@ -66,6 +71,23 @@ def scrub_secrets(value: Any) -> Any:
         return [scrub_secrets(item) for item in value]
     if isinstance(value, str):
         return _SECRET_TEXT.sub(lambda match: f"{match.group(1)}{REDACTED}", value)
+    return value
+
+
+def redact_free_text(text: str, *, secrets: Iterable[str] = ()) -> str:
+    """Make operator-entered text safe to store and show.
+
+    Collapses whitespace, then removes the given secrets, secret-bearing fields,
+    URLs, email addresses, and long opaque strings such as keys and identifiers.
+    """
+
+    value = " ".join(text.split())
+    for secret in secrets:
+        if secret:
+            value = value.replace(secret, REDACTED)
+    value = scrub_secrets(value)
+    for pattern in (_URL, _EMAIL, _OPAQUE):
+        value = pattern.sub(REDACTED, value)
     return value
 
 

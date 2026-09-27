@@ -27,6 +27,7 @@ from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
 from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
+from risk.kill_switch_journal import SqlAlchemyKillSwitchJournal
 
 from app.paper_runtime import start_paper_runtime
 from app.recovery import StartupRecoveryResult, recover_on_startup
@@ -74,11 +75,13 @@ def create_app(
 async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
     broker = application.state.operator_state.broker
     stop_reconciliation: Callable[[], Awaitable[None]] | None = None
+    close_journal: Callable[[], None] | None = None
     paper_runtime = None
     try:
         # Reject a bad interval before recovery does any work.
         interval = _reconcile_interval() if broker is not None else None
         await assert_live_key_scope(application.state.startup_settings, broker)
+        close_journal = attach_kill_switch_journal(application)
         recovery = await run_startup_recovery(application)
         logger.info(
             "startup recovery %s: %s (kill switch %s)",
@@ -101,9 +104,28 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
                 try:
                     await application.state.operator_state.alert_router.close()
                 finally:
-                    close = getattr(broker, "close", None)
-                    if close is not None:
-                        await close()
+                    try:
+                        close = getattr(broker, "close", None)
+                        if close is not None:
+                            await close()
+                    finally:
+                        if close_journal is not None:
+                            close_journal()
+
+
+def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
+    """Record kill-switch transitions in ``system_events``; return a close callback.
+
+    The lifespan attaches it before startup recovery, so a recovery halt is recorded.
+    Without it, the kill switch refuses every re-arm.
+    """
+
+    settings: StartupSettings = application.state.startup_settings
+    engine = create_database_engine(settings.database_url, settings.trading_mode)
+    application.state.kill_switch.attach_journal(
+        SqlAlchemyKillSwitchJournal(create_session_factory(engine))
+    )
+    return engine.dispose
 
 
 def start_scheduled_reconciliation(

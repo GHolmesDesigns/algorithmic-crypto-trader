@@ -65,22 +65,41 @@ require_paper() {
   fi
 }
 
-# api METHOD PATH ROLE [FIELD] prints the JSON response, or one dotted field of it.
+# api METHOD PATH ROLE [FIELD [NAME=VALUE...]] prints the JSON response, or one dotted
+# field of it. NAME=VALUE pairs are sent as a form body.
 api() {
   compose exec -T app python -c '
-import json, os, sys, urllib.request
+import json, os, sys, urllib.parse, urllib.request
 method, path, role = sys.argv[1:4]
 token = os.environ["OPERATOR_ADMIN_TOKEN" if role == "admin" else "OPERATOR_TOKEN"]
+headers = {"x-operator-token": token, "accept": "application/json"}
+form = [tuple(pair.split("=", 1)) for pair in sys.argv[5:]]
+data = urllib.parse.urlencode(form).encode() if form else None
+if data is not None:
+    headers["content-type"] = "application/x-www-form-urlencoded"
 request = urllib.request.Request(
-    "http://127.0.0.1:8000" + path,
-    method=method,
-    headers={"x-operator-token": token, "accept": "application/json"},
+    "http://127.0.0.1:8000" + path, data=data, method=method, headers=headers
 )
 body = json.loads(urllib.request.urlopen(request, timeout=10).read())
-for key in sys.argv[4].split(".") if len(sys.argv) > 4 else ():
+for key in sys.argv[4].split(".") if len(sys.argv) > 4 and sys.argv[4] else ():
     body = body[key]
 print(body if isinstance(body, str) else json.dumps(body, sort_keys=True))
 ' "$@"
+}
+
+# rearm_after_drill re-arms through the administrator review. It runs only when every
+# drill check passed and the kill switch was running before the drill, so the pause
+# being lifted is the drill's own marker and the checks stand in for the checklist.
+rearm_after_drill() {
+  api POST /operator/rearm admin state \
+    checklist=cause_documented \
+    checklist=mode_and_scope_confirmed \
+    checklist=orders_resolved \
+    checklist=broker_state_confirmed \
+    checklist=recovery_and_reconciliation_clean \
+    checklist=inputs_current \
+    checklist=approval_obtained \
+    "reason=Restart drill $(date -u +%Y-%m-%d): every drill check passed; lifting the drill's own pause marker under the owner's standing drill authorization"
 }
 
 # Cover every table backup-postgres.sh backs up.
@@ -192,7 +211,8 @@ case "${1:-}" in
     record_recovery reboot
     original=$(cat "$state_dir/original-kill-switch")
     if [ "$failures" -eq 0 ] && [ "$original" = running ]; then
-      restored=$(api POST /operator/rearm admin state || echo unavailable)
+      restored=$(rearm_after_drill || echo unavailable)
+      check rearm "$(ok test "$restored" = running)" "state=$restored"
     else
       restored=$(api GET /operator/kill-switch operator state || echo unavailable)
     fi
