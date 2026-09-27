@@ -74,7 +74,8 @@ exits non-zero on any failure. The drill:
 - refuses to run in `live` mode or with trade-capable credentials;
 - reads operator tokens only inside the app container;
 - pauses trading as a marker and checks that the pause survives the app restart
-  and the reboot;
+  and the reboot (a system that is already halted stays halted, and the drill
+  checks that the halt survives instead);
 - compares the migration version and every state table's row count across the
   app restart and the reboot;
 - restores the original kill-switch state only if every check passed.

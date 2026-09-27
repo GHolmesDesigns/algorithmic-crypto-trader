@@ -46,18 +46,37 @@ class KillSwitch:
                 raise PermissionError("HALTED requires manual re-arm")
             if automatic and state is KillSwitchState.RUNNING:
                 raise PermissionError("automatic actuation cannot re-arm the kill switch")
+            if state is not KillSwitchState.RUNNING and _SEVERITY[state] < _SEVERITY[self._state]:
+                raise PermissionError("only a manual re-arm can lower the kill switch")
             previous = self._state
             self._state = state
-            event = {
-                "event": "kill_switch_transition",
-                "from": previous.value,
-                "to": state.value,
-                "automatic": str(automatic).lower(),
-                "reason": reason,
-                "created_at": utc_now().isoformat(),
-            }
-            self.audit_events.append(event)
+            if state is not previous:
+                event = {
+                    "event": "kill_switch_transition",
+                    "from": previous.value,
+                    "to": state.value,
+                    "automatic": str(automatic).lower(),
+                    "reason": reason,
+                    "created_at": utc_now().isoformat(),
+                }
+                self.audit_events.append(event)
+            # Rewrite even an unchanged state, so a lost file is restored instead of
+            # reading back as running after a restart.
             self._persist()
+
+    def tighten(self, state: KillSwitchState, *, reason: str = "") -> bool:
+        """Raise severity to ``state`` and return whether anything changed.
+
+        A request at or below the current severity leaves the state as it is, so this
+        path can never turn a halt into a pause. Only a re-arm lowers the switch.
+        """
+
+        with self._lock:
+            if _SEVERITY[state] > _SEVERITY[self._state]:
+                self.set_state(state, reason=reason)
+                return True
+            self._persist()
+            return False
 
     def trip(self, reason: str) -> None:
         self.set_state(KillSwitchState.HALTED, automatic=True, reason=reason)

@@ -118,7 +118,7 @@ select **PAUSE** and contact the administrator. If it unexpectedly shows
 | --- | --- | --- |
 | `running` | The safety control permits work, subject to every other risk gate. It does not prove that a strategy is active. | Continue monitoring. |
 | `paused` | New trading work should not proceed. Use this for planned investigation or uncertainty that is not yet an emergency. | Investigate; do not re-arm until the cause is understood. |
-| `halted` | The system or an operator identified a critical condition. Automatic processes cannot re-arm it. | Escalate and keep it halted until the re-arm checklist is complete. |
+| `halted` | The system or an operator identified a critical condition. Automatic processes cannot re-arm it, and an operator cannot lower it to `paused`. | Escalate and keep it halted until the re-arm checklist is complete. |
 
 The kill-switch state is stored across application and host restarts when the
 deployment uses the configured persistent volume.
@@ -189,6 +189,11 @@ Use **PAUSE** when you need time to investigate, when expected data is missing,
 or before a planned maintenance action. Both operator and administrator tokens
 can pause.
 
+**PAUSE** never lowers a stricter state. While the system is halted, the
+dashboard shows "administrator re-arm required" in place of **PAUSE**. A pause
+request sent anyway leaves the system halted and reports "Already halted".
+Pausing a system that is already paused changes nothing.
+
 ### Emergency stop
 
 Use **EMERGENCY STOP** immediately when:
@@ -201,13 +206,15 @@ Use **EMERGENCY STOP** immediately when:
 - you are unsure whether continued operation is safe.
 
 Both operator and administrator tokens can stop the system. A halted state
-cannot be cleared automatically.
+cannot be cleared automatically or by an operator. Selecting **EMERGENCY STOP**
+again while halted changes nothing.
 
 ### Re-arm
 
 Only an administrator can see and use **RE-ARM** when a separate administrator
 token is configured. Re-arming changes the kill switch to `running`; it does
-not repair a broker, database, data feed, strategy, or unresolved order.
+not repair a broker, database, data feed, strategy, or unresolved order. It is
+the only control that lowers the kill switch.
 
 Complete every item before re-arming:
 
@@ -337,7 +344,8 @@ portfolio, or reconciliation contracts around one venue.
 - The broker is authoritative during reconciliation.
 - Divergence alerts the operator and trips the configured safety response before
   new entries.
-- `HALTED` persists and requires authenticated manual re-arm.
+- `HALTED` persists and requires authenticated manual re-arm. Operator stops
+  only raise severity; a pause never lowers a halt.
 - Automated tests never contact an exchange or place a real order.
 - Credentials may never allow withdrawals or transfers.
 
@@ -476,9 +484,9 @@ provider, credential, live confirmation, or reconciliation interval.
 | `GET /operator/fragment` | Operator | Dashboard fragment used for the 15-second refresh. |
 | `GET /operator/state` | Operator | Full operator snapshot as JSON. |
 | `GET /operator/kill-switch` | Operator | Current kill-switch state. |
-| `POST /operator/pause` | Operator | Persist `paused`. |
-| `POST /operator/emergency-stop` | Operator | Persist `halted`. |
-| `POST /operator/rearm` | Administrator | Persist `running` after manual review. |
+| `POST /operator/pause` | Operator | Persist `paused` from `running`. Never lowers `halted`; returns the unchanged state instead. |
+| `POST /operator/emergency-stop` | Operator | Persist `halted`. Unchanged if already halted. |
+| `POST /operator/rearm` | Administrator | Persist `running` after manual review. The only route that lowers the kill switch. |
 
 For programmatic access, send the token in the `x-operator-token` header. Do
 not put it in a URL. Cookie authentication is intended for the browser. The

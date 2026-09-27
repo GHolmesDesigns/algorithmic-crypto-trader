@@ -5,7 +5,7 @@
 # `after-reboot`:
 #
 #   drill.sh deploy <commit-sha>   check out, rebuild, wait for health
-#   drill.sh before-reboot         pause marker, row-count baseline, app restart check
+#   drill.sh before-reboot         pause marker (a halt stays halted), row-count baseline, app restart check
 #   systemctl reboot               (only with owner approval for the window)
 #   drill.sh after-reboot          post-reboot checks, restore the original kill-switch state
 #   drill.sh backup                install the nightly backup and run it once
@@ -163,13 +163,15 @@ case "${1:-}" in
 
   before-reboot)
     api GET /operator/kill-switch operator state > "$state_dir/original-kill-switch"
-    api POST /operator/pause operator state >/dev/null
+    # A pause never lowers a halt, so the marker is whichever stop state it leaves.
+    api POST /operator/pause operator state > "$state_dir/marker-kill-switch"
+    marker=$(cat "$state_dir/marker-kill-switch")
     counts > "$state_dir/before.txt"
     check baseline-counts "$(ok test -s "$state_dir/before.txt")" "$(wc -l < "$state_dir/before.txt") rows recorded"
     compose restart app >/dev/null
     check app-restart-health "$(ok wait_healthy)" "db and app healthy"
     state=$(api GET /operator/kill-switch operator state || echo unavailable)
-    check app-restart-kill-switch "$(ok test "$state" = paused)" "state=$state"
+    check app-restart-kill-switch "$(ok test "$state" = "$marker" -a "$marker" != running)" "state=$state"
     counts > "$state_dir/after-app-restart.txt"
     check app-restart-rows "$(ok cmp -s "$state_dir/before.txt" "$state_dir/after-app-restart.txt")" "row counts unchanged"
     record_recovery app-restart
@@ -181,8 +183,10 @@ case "${1:-}" in
     check reboot-health "$(ok wait_healthy)" "containers restarted on their own and are healthy"
     volumes=$(docker volume ls --format '{{.Name}}' | grep -cE '_(postgres-data|kill-switch-data)$' || true)
     check reboot-volumes "$(ok test "$volumes" -eq 2)" "$volumes of 2 named volumes present"
+    # A marker file from an older drill run means that run's pause produced `paused`.
+    marker=$(cat "$state_dir/marker-kill-switch" 2>/dev/null || echo paused)
     state=$(api GET /operator/kill-switch operator state || echo unavailable)
-    check reboot-kill-switch "$(ok test "$state" = paused)" "state=$state"
+    check reboot-kill-switch "$(ok test "$state" = "$marker" -a "$marker" != running)" "state=$state"
     counts > "$state_dir/after-reboot.txt"
     check reboot-rows "$(ok cmp -s "$state_dir/before.txt" "$state_dir/after-reboot.txt")" "row counts unchanged"
     record_recovery reboot

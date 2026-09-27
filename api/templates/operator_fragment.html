@@ -41,7 +41,11 @@
     {% endfor %}
   </ul>
   <h2>Controls</h2>
-  <form method="post" action="/operator/pause"><button type="submit">PAUSE</button></form>
+  {% if snapshot.risk.kill_switch == "halted" %}
+    <p><strong>Halted:</strong> administrator re-arm required. PAUSE cannot lower a halt.</p>
+  {% else %}
+    <form method="post" action="/operator/pause"><button type="submit">PAUSE</button></form>
+  {% endif %}
   <form method="post" action="/operator/emergency-stop"><button type="submit">EMERGENCY STOP</button></form>
   {% if auth_role == "admin" %}
     <form method="post" action="/operator/rearm"><button type="submit">RE-ARM</button></form>

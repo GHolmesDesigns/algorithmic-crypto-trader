@@ -325,7 +325,8 @@ case "$1" in
     if [ "$3" = db ]; then cat "$STUB_DIR/counts.txt"; exit 0; fi
     case "$7 $8" in
       "GET /operator/kill-switch") cat "$state_file" ;;
-      "POST /operator/pause") echo paused > "$state_file"; echo paused ;;
+      "POST /operator/pause")
+        [ "$(cat "$state_file")" = halted ] || echo paused > "$state_file"; cat "$state_file" ;;
       "POST /operator/rearm")
         echo "$9" > "$STUB_DIR/rearm-role"; echo running > "$state_file"; echo running ;;
       "GET /operator/state") echo "${FAKE_RECOVERY:-no_broker}" ;;
@@ -400,6 +401,36 @@ def test_drill_fails_and_stays_paused_when_rows_change_across_reboot(tmp_path) -
     assert "CHECK reboot-rows: FAIL" in after.stdout
     assert "RESULT after-reboot: FAIL (1 failed checks)" in after.stdout
     assert "INFO kill switch left paused" in after.stdout
+    assert not (tmp_path / "rearm-role").exists()
+
+
+@needs_sh
+def test_drill_leaves_a_halt_halted_and_checks_it_across_restarts(tmp_path) -> None:
+    env = drill_env(tmp_path)
+    (tmp_path / "kill-switch").write_text("halted\n", encoding="utf-8")
+
+    before = run_script("drill.sh", env, "before-reboot")
+    after = run_script("drill.sh", env, "after-reboot")
+
+    assert before.returncode == 0, before.stdout + before.stderr
+    assert "CHECK app-restart-kill-switch: PASS state=halted" in before.stdout
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert "CHECK reboot-kill-switch: PASS state=halted" in after.stdout
+    assert "INFO kill switch left halted (was halted before the drill)" in after.stdout
+    assert (tmp_path / "kill-switch").read_text().strip() == "halted"
+    assert not (tmp_path / "rearm-role").exists()
+
+
+@needs_sh
+def test_drill_fails_when_the_marker_does_not_survive_a_restart(tmp_path) -> None:
+    env = drill_env(tmp_path)
+    assert run_script("drill.sh", env, "before-reboot").returncode == 0
+    (tmp_path / "kill-switch").write_text("running\n", encoding="utf-8")
+
+    after = run_script("drill.sh", env, "after-reboot")
+
+    assert after.returncode != 0
+    assert "CHECK reboot-kill-switch: FAIL state=running" in after.stdout
     assert not (tmp_path / "rearm-role").exists()
 
 
