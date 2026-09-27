@@ -1,9 +1,13 @@
+import asyncio
+import io
 import os
 import re
 import shutil
 import subprocess
+import sys
+import urllib.request
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -334,8 +338,9 @@ case "$1" in
       "POST /operator/pause")
         [ "$(cat "$state_file")" = halted ] || echo paused > "$state_file"; cat "$state_file" ;;
       "POST /operator/rearm")
+        [ -z "${FAKE_REARM_REFUSED:-}" ] || exit 1
         echo "$9" > "$STUB_DIR/rearm-role"
-        shift 10; printf '%s\\n' "$@" > "$STUB_DIR/rearm-form"
+        shift 6; printf '%s\\n' "$@" > "$STUB_DIR/rearm-args"
         echo running > "$state_file"; echo running ;;
       "GET /operator/state") echo "${FAKE_RECOVERY:-no_broker}" ;;
     esac ;;
@@ -370,9 +375,13 @@ def drill_env(
     return env
 
 
-def test_drill_api_helper_is_valid_python() -> None:
+def drill_api_code() -> str:
     script = (ROOT / "deploy" / "drill.sh").read_text()
-    code = script.split("python -c '", 1)[1].split('\' "$@"', 1)[0]
+    return script.split("python -c '", 1)[1].split('\' "$@"', 1)[0]
+
+
+def test_drill_api_helper_is_valid_python() -> None:
+    code = drill_api_code()
 
     compile(code, "drill-api", "exec")
     assert "OPERATOR_ADMIN_TOKEN" in code
@@ -391,45 +400,72 @@ def test_drill_restart_and_reboot_phases_pass_and_restore_kill_switch(tmp_path) 
     assert "CHECK app-restart-kill-switch: PASS state=paused" in before.stdout
     assert after.returncode == 0, after.stdout + after.stderr
     assert "CHECK reboot-rows: PASS row counts unchanged" in after.stdout
+    assert "CHECK rearm: PASS state=running" in after.stdout
     assert "INFO kill switch left running (was running before the drill)" in after.stdout
     assert (tmp_path / "rearm-role").read_text().strip() == "admin"
     assert "never-printed" not in before.stdout + after.stdout + before.stderr + after.stderr
 
 
 @needs_sh
-@pytest.mark.asyncio
-async def test_drill_rearm_passes_the_servers_review(tmp_path, monkeypatch) -> None:
+def test_drill_rearm_passes_the_servers_review(tmp_path, monkeypatch, capsys) -> None:
     env = drill_env(tmp_path)
     assert run_script("drill.sh", env, "before-reboot").returncode == 0
-    assert run_script("drill.sh", env, "after-reboot").returncode == 0
-    # Replay the exact form the drill sent against the real application.
-    sent = (tmp_path / "rearm-form").read_text(encoding="utf-8").splitlines()
-    form = [tuple(pair.split("=", 1)) for pair in sent]
-    assert {value for name, value in form if name == "checklist"} == {
+    after = run_script("drill.sh", env, "after-reboot")
+    assert "CHECK rearm: PASS state=running" in after.stdout
+    args = (tmp_path / "rearm-args").read_text(encoding="utf-8").splitlines()
+    assert args[:4] == ["POST", "/operator/rearm", "admin", "state"]
+    assert {pair.split("=", 1)[1] for pair in args if pair.startswith("checklist=")} == {
         key for key, _ in REARM_CHECKLIST
     }
+
+    # Run the drill's own request code with those arguments against the real application.
     monkeypatch.setenv("OPERATOR_TOKEN", "operator-secret")
     monkeypatch.setenv("OPERATOR_ADMIN_TOKEN", "admin-secret")
     monkeypatch.setenv("KILL_SWITCH_FILE", str(tmp_path / "app-kill-switch.json"))
     application = journaled_app(tmp_path)
     application.state.kill_switch.tighten(KillSwitchState.PAUSED, reason="drill marker")
-    transport = httpx.ASGITransport(app=application)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/operator/rearm",
-            content=urlencode(form),
-            headers={
-                "x-operator-token": "admin-secret",
-                "accept": "application/json",
-                "content-type": "application/x-www-form-urlencoded",
-            },
-        )
-    assert response.status_code == 200, response.text
-    assert response.json()["state"] == "running"
+
+    async def send(request) -> httpx.Response:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+            return await client.request(
+                request.get_method(),
+                urlsplit(request.full_url).path,
+                content=request.data,
+                headers=dict(request.header_items()),
+            )
+
+    def urlopen(request, timeout):
+        url = urlsplit(request.full_url)
+        assert (url.hostname, url.port) == ("127.0.0.1", 8000)
+        response = asyncio.run(send(request))
+        assert response.status_code == 200, response.text
+        return io.BytesIO(response.content)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(sys, "argv", ["-c", *args])
+    exec(compile(drill_api_code(), "drill-api", "exec"), {"__name__": "__main__"})
+
+    assert capsys.readouterr().out == "running\n"
+    assert application.state.kill_switch.state is KillSwitchState.RUNNING
     rearm = application.state.kill_switch.audit_events[-1]
     assert rearm["actor"] == "admin"
+    assert rearm["checklist"] == [key for key, _ in REARM_CHECKLIST]
     assert rearm["reason"].startswith("Restart drill 20")
     assert "every drill check passed" in rearm["reason"]
+
+
+@needs_sh
+def test_drill_fails_when_its_rearm_is_refused(tmp_path) -> None:
+    env = drill_env(tmp_path, FAKE_REARM_REFUSED="1")
+    assert run_script("drill.sh", env, "before-reboot").returncode == 0
+
+    after = run_script("drill.sh", env, "after-reboot")
+
+    assert after.returncode != 0
+    assert "CHECK rearm: FAIL state=unavailable" in after.stdout
+    assert "RESULT after-reboot: FAIL (1 failed checks)" in after.stdout
+    assert (tmp_path / "kill-switch").read_text().strip() == "paused"
 
 
 @needs_sh

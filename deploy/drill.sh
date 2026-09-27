@@ -73,7 +73,7 @@ import json, os, sys, urllib.parse, urllib.request
 method, path, role = sys.argv[1:4]
 token = os.environ["OPERATOR_ADMIN_TOKEN" if role == "admin" else "OPERATOR_TOKEN"]
 headers = {"x-operator-token": token, "accept": "application/json"}
-form = [pair.split("=", 1) for pair in sys.argv[5:]]
+form = [tuple(pair.split("=", 1)) for pair in sys.argv[5:]]
 data = urllib.parse.urlencode(form).encode() if form else None
 if data is not None:
     headers["content-type"] = "application/x-www-form-urlencoded"
@@ -212,6 +212,7 @@ case "${1:-}" in
     original=$(cat "$state_dir/original-kill-switch")
     if [ "$failures" -eq 0 ] && [ "$original" = running ]; then
       restored=$(rearm_after_drill || echo unavailable)
+      check rearm "$(ok test "$restored" = running)" "state=$restored"
     else
       restored=$(api GET /operator/kill-switch operator state || echo unavailable)
     fi
