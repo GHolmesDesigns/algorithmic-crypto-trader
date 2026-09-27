@@ -138,6 +138,12 @@ class GeminiBroker(BrokerInterface):
         )
 
     async def get_balances(self) -> tuple[Balance, ...]:
+        """Read Get Available Balances: ``amount`` is the total, ``available`` excludes holds.
+
+        Gemini reduces ``available`` as soon as an order reserves funds, so the hold is
+        the difference. A row without its total cannot be split and fails the read.
+        """
+
         payload = await self._private("POST", "/v1/balances", {})
         if not isinstance(payload, list):
             raise ProviderHTTPError(502, "Gemini balances response was not a list", payload=payload)
@@ -146,9 +152,10 @@ class GeminiBroker(BrokerInterface):
         for row in payload:
             if not isinstance(row, Mapping):
                 continue
+            if row.get("amount") is None:
+                raise ProviderHTTPError(502, "Gemini balance row omitted its amount", payload=row)
             available = _decimal(row.get("available"), default=Decimal("0"))
-            hold = _decimal(row.get("available_for_withdrawal"), default=available)
-            hold = max(Decimal("0"), available - hold)
+            hold = max(Decimal("0"), _decimal(row.get("amount")) - available)
             if available or hold:
                 result.append(
                     Balance(
@@ -161,17 +168,19 @@ class GeminiBroker(BrokerInterface):
         return tuple(sorted(result, key=lambda item: item.asset))
 
     async def get_positions(self) -> tuple[Position, ...]:
+        """Each coin's total, including what a resting sell reserves, as the ledger counts it."""
+
         balances = await self.get_balances()
         now = utc_now()
         return tuple(
             Position(
                 symbol=f"{balance.asset}-USD",
-                quantity=balance.available,
+                quantity=balance.available + balance.hold,
                 average_price=Decimal("0"),
                 as_of=now,
             )
             for balance in balances
-            if balance.asset != "USD" and balance.available
+            if balance.asset != "USD" and (balance.available or balance.hold)
         )
 
     async def submit_order(self, request: OrderRequest, approval: RiskApproval) -> Order:

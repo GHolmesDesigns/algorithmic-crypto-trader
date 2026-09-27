@@ -265,9 +265,11 @@ class CoinbaseBroker(BrokerInterface):
     async def get_positions(self) -> tuple[Position, ...]:
         """Derive positions from the account listing.
 
-        Callers read balances and then positions, so a listing ``get_balances`` took
-        within ``ACCOUNT_SNAPSHOT_SECONDS`` is reused: half the paginated requests, and
-        both views from the same moment. Any order write discards it.
+        A position is each coin's total, including what a resting sell holds, as the
+        fill-based ledger counts it. Callers read balances and then positions, so a
+        listing ``get_balances`` took within ``ACCOUNT_SNAPSHOT_SECONDS`` is reused:
+        half the paginated requests, and both views from the same moment. Any order
+        write discards it.
         """
 
         snapshot = self._account_snapshot
@@ -279,12 +281,12 @@ class CoinbaseBroker(BrokerInterface):
         return tuple(
             Position(
                 symbol=f"{balance.asset}-USD",
-                quantity=balance.available,
+                quantity=balance.available + balance.hold,
                 average_price=Decimal("0"),
                 as_of=now,
             )
             for balance in balances
-            if balance.asset != "USD" and balance.available
+            if balance.asset != "USD" and (balance.available or balance.hold)
         )
 
     async def get_products(self, *, product_type: str = "SPOT") -> tuple[dict[str, Any], ...]:
