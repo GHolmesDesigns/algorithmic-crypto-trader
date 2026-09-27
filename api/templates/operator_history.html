@@ -1,0 +1,216 @@
+{%- extends "_operator_page.html" -%}
+{%- import "_operator_macros.html" as ui -%}
+{%- import "_history_macros.html" as hx -%}
+{% block title %}{{ view.title }}{% endblock %}
+{% block page_name %}History{% endblock %}
+{% block page_class %} page-wide{% endblock %}
+{% block content %}
+        {% include "_history_nav.html" %}
+        <section class="block" aria-labelledby="history-heading">
+          <div class="block-head">
+            <h1 id="history-heading">{{ view.title }}</h1>
+            <p class="block-note">{{ view.intro }}</p>
+          </div>
+          {{ hx.filters(view) }}
+          {{ hx.problems(view) }}
+          {%- if view.kind == "risk" and view.risk %}
+          {%- set risk = view.risk %}
+          <div class="split">
+            <section class="panel" aria-labelledby="latest-heading">
+              <h2 id="latest-heading">Latest refusal</h2>
+              {%- if risk.latest %}
+              {%- set latest = risk.latest %}
+              <p>{{ hx.decision(latest.decision) }}</p>
+              <p class="event-meta">Decided {{ ui.stamp(latest.decision.decided) }}</p>
+              <p>{% if latest.signal %}Signal: {{ latest.signal.text }} · strategy <span class="mono">{{ latest.signal.strategy_version }}</span>{% else %}{{ ui.absent("Signal not recorded.") }}{% endif %}</p>
+              <dl class="ids"><div><dt>Correlation ID</dt><dd>{{ hx.copy(latest.decision.correlation_id) }}</dd></div></dl>
+              {%- else %}
+              <p class="empty"><span class="count">0</span> refusals recorded in this window.</p>
+              {%- endif %}
+            </section>
+            <section class="panel" aria-labelledby="totals-heading">
+              <h2 id="totals-heading">Decisions in this window</h2>
+              <dl class="facts">
+                <div><dt>Kill switch now</dt><dd>{{ ui.pill(risk.state) }}</dd></div>
+                <div><dt>Risk decisions</dt><dd><span class="count">{{ risk.decisions }}</span></dd></div>
+                <div><dt>Approved</dt><dd><span class="count">{{ risk.approved }}</span></dd></div>
+                <div><dt>Refused</dt><dd><span class="count">{{ risk.refused }}</span></dd></div>
+                <div><dt>Window</dt><dd>{{ ui.stamp(view.window.since) }} to {{ ui.stamp(view.window.until) }}</dd></div>
+              </dl>
+            </section>
+          </div>
+          <section class="panel" aria-labelledby="gates-heading">
+            <h2 id="gates-heading">Refusals by gate</h2>
+            <p class="note">The gates run in this order and stop at the first refusal, so each refusal counts once, under the gate that stopped it. A missing input is a refusal, never a pass.</p>
+            <div class="table-wrap" role="region" aria-labelledby="gates-heading" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr><th scope="col" class="num">Order</th><th scope="col">Gate</th><th scope="col" class="num">Refusals</th><th scope="col">Latest</th></tr>
+                </thead>
+                <tbody>
+                  {%- for gate in risk.gates + risk.other %}
+                  <tr>
+                    <td class="num">{% if gate.position %}{{ gate.position }}{% else %}{{ ui.absent("before") }}{% endif %}</td>
+                    <th scope="row">{{ gate.label }} <span class="mono age">{{ gate.gate }}</span></th>
+                    <td class="num"><span class="count">{{ gate.refusals }}</span></td>
+                    <td>{% if gate.latest %}{{ ui.stamp(gate.latest) }}{% else %}{{ ui.absent("none in this window") }}{% endif %}</td>
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            <p><a href="{{ risk.refusals_href }}">Every refusal in this window, in detail</a></p>
+          </section>
+          <section class="panel" aria-labelledby="transitions-heading">
+            <h2 id="transitions-heading">Kill-switch history</h2>
+            {%- if view.rows %}
+            <p class="note"><span class="count">{{ risk.transitions_total }}</span> change(s) recorded in this window, newest first.</p>
+            <ol class="events">
+              {%- for row in view.rows %}
+              {{ hx.event(row) }}
+              {%- endfor %}
+            </ol>
+            {%- if risk.transitions_total > view.rows | length %}
+            <p><a href="{{ risk.transitions_href }}">All {{ risk.transitions_total }} kill-switch changes in this window</a></p>
+            {%- endif %}
+            {%- else %}
+            <p class="empty"><span class="count">0</span> kill-switch changes recorded in this window.</p>
+            {%- endif %}
+          </section>
+          {%- elif view.summary %}
+          {%- set summary = view.summary %}
+          <section class="panel" aria-labelledby="results-heading">
+            <h2 id="results-heading">Results</h2>
+            <p class="note">Window: {{ ui.stamp(view.window.since) }} to {{ ui.stamp(view.window.until) }}.</p>
+            {%- if summary.total == 0 %}
+            <p class="empty"><span class="count">0</span> {{ view.noun }} recorded in this window.</p>
+            {%- elif not view.rows %}
+            <p class="empty">No older {{ view.noun }} in this window. <span class="count">{{ summary.total }}</span> in all.</p>
+            {%- else %}
+            <p><span class="count">{{ summary.total }}</span> {{ view.noun }} recorded in this window. Showing <span class="count">{{ summary.shown }}</span>, newest first{% if summary.continued %}, continuing from an earlier page{% endif %}.</p>
+            {%- if view.kind == "orders" %}
+            <ol class="ledger">
+              {%- for order in view.rows %}
+              <li class="ledger-row">
+                <details>
+                  <summary>
+                    {{ ui.pill(order.status) }}
+                    <span class="sym">{{ hx.text(order.symbol) }}</span>
+                    <span>{{ order.side }} · {{ order.order_type }}</span>
+                    <span class="mono">qty {{ hx.text(order.quantity) }}</span>
+                    <span class="mono">filled {{ order.filled }} in {{ order.fill_count }} fill(s)</span>
+                    <span>{{ ui.stamp(order.created) }}</span>
+                    {%- if order.gaps %}
+                    <span class="pill tone-warn"><span class="mark" aria-hidden="true">▲</span> lineage gap</span>
+                    {%- endif %}
+                    {%- if order.rule %}
+                    <span class="rule">{{ order.rule }}</span>
+                    {%- endif %}
+                  </summary>
+                  <div class="ledger-body">
+                    {{ hx.chain(order) }}
+                    {%- if order.href %}
+                    <p><a href="{{ order.href }}">Open this order's lineage page</a></p>
+                    {%- endif %}
+                  </div>
+                </details>
+              </li>
+              {%- endfor %}
+            </ol>
+            {%- elif view.kind == "signals" %}
+            <div class="table-wrap" role="region" aria-labelledby="results-heading" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr><th scope="col">Created</th><th scope="col">Signal</th><th scope="col">Strategy version</th><th scope="col">Risk decision</th><th scope="col">Order</th><th scope="col">Signal ID</th></tr>
+                </thead>
+                <tbody>
+                  {%- for row in view.rows %}
+                  <tr>
+                    <td>{{ ui.stamp(row.signal.created) }}</td>
+                    <td class="sym">{{ row.signal.text }}</td>
+                    <td class="mono">{{ row.signal.strategy_version }}</td>
+                    <td>{% if row.decision %}{{ hx.decision(row.decision) }}{% else %}{{ ui.absent("not recorded") }}{% endif %}</td>
+                    <td>{% if row.order %}{{ ui.pill(row.order.status) }} <a href="{{ row.order.href }}">Lineage</a>{% else %}{{ row.why }}{% endif %}</td>
+                    <td>{{ hx.copy(row.signal.signal_id) }}</td>
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- elif view.kind == "risk_decisions" %}
+            <div class="table-wrap" role="region" aria-labelledby="results-heading" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr><th scope="col">Decided</th><th scope="col">Outcome, gate, and reason</th><th scope="col">Signal</th><th scope="col">Order</th><th scope="col">Correlation ID</th></tr>
+                </thead>
+                <tbody>
+                  {%- for row in view.rows %}
+                  <tr>
+                    <td>{{ ui.stamp(row.decision.decided) }}</td>
+                    <td>{{ hx.decision(row.decision) }}</td>
+                    <td>{% if row.signal %}<span class="sym">{{ row.signal.text }}</span> · <span class="mono">{{ row.signal.strategy_version }}</span>{% else %}{{ ui.absent("not recorded") }}{% endif %}</td>
+                    <td>{% if row.order %}{{ ui.pill(row.order.status) }} <a href="{{ row.order.href }}">Lineage</a>{% else %}{{ ui.absent("no order") }}{% endif %}</td>
+                    <td>{{ hx.copy(row.decision.correlation_id) }}</td>
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- elif view.kind == "discrepancies" %}
+            <div class="table-wrap" role="region" aria-labelledby="results-heading" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr><th scope="col">Recorded</th><th scope="col">Entity</th><th scope="col">Key</th><th scope="col">What differs</th><th scope="col">Safety action</th></tr>
+                </thead>
+                <tbody>
+                  {%- for row in view.rows %}
+                  <tr>
+                    <td>{{ ui.stamp(row.created) }}</td>
+                    <td>{{ row.entity_type }}</td>
+                    <td class="mono id">{% if row.href %}<a href="{{ row.href }}">{{ row.entity_key }}</a>{% else %}{{ row.entity_key }}{% endif %}</td>
+                    <td>{{ row.presence }}</td>
+                    <td>{{ ui.pill(row.action) }}</td>
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- elif view.kind == "events" %}
+            <ol class="events">
+              {%- for row in view.rows %}
+              {{ hx.event(row) }}
+              {%- endfor %}
+            </ol>
+            {%- endif %}
+            {%- endif %}
+            {%- if view.next_href or view.newest_href %}
+            <nav class="pager" aria-label="Pages">
+              {%- if view.newest_href %}
+              <a class="button button-quiet" href="{{ view.newest_href }}">Newest</a>
+              {%- endif %}
+              {%- if view.next_href %}
+              <a class="button button-quiet" href="{{ view.next_href }}">Older {{ view.noun }}</a>
+              {%- endif %}
+            </nav>
+            {%- endif %}
+          </section>
+          {%- endif %}
+          {%- if view.kind == "orders" %}
+          <section class="panel" aria-labelledby="statuses-heading">
+            <h2 id="statuses-heading">Order statuses</h2>
+            <div class="table-wrap" role="region" aria-labelledby="statuses-heading" tabindex="0">
+              <table class="data states">
+                <thead>
+                  <tr><th scope="col">Status</th><th scope="col">Meaning</th></tr>
+                </thead>
+                <tbody>
+                  {%- for item in view.statuses %}
+                  <tr><th scope="row">{{ ui.pill(item.status) }}</th><td>{{ item.meaning }}</td></tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          {%- endif %}
+        </section>
+{% endblock %}

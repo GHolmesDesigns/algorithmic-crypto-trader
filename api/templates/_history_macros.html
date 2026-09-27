@@ -1,0 +1,158 @@
+{#- Pieces shared by the history pages. Identifiers select whole on one click, so they copy without JavaScript. -#}
+{%- import "_operator_macros.html" as ui -%}
+
+{% macro copy(value) -%}
+{%- if value -%}
+<code class="copy">{{ value.text }}</code>
+{%- else -%}
+{{ ui.absent("not recorded") }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro text(value) -%}
+{%- if value.absent is defined -%}
+{{ ui.absent(value.absent) }}
+{%- else -%}
+{{ value.text }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro filters(view) -%}
+{%- if view.fields %}
+          <form class="panel" method="get" action="{{ view.path }}" aria-labelledby="filters-heading">
+            <h2 id="filters-heading">Filters</h2>
+            <div class="filter-grid">
+              {%- for field in view.fields %}
+              <div class="field">
+                <label for="filter-{{ field.name }}">{{ field.label }}</label>
+                {%- if field.options %}
+                <select id="filter-{{ field.name }}" name="{{ field.name }}">
+                  {%- for value, label in field.options %}
+                  <option value="{{ value }}"{% if value == field.value %} selected{% endif %}>{{ label }}</option>
+                  {%- endfor %}
+                </select>
+                {%- else %}
+                <input id="filter-{{ field.name }}" name="{{ field.name }}" type="{{ field.type }}" value="{{ field.value }}"{% if field.type == "datetime-local" %} step="1"{% endif %}{% if field.maxlength %} maxlength="{{ field.maxlength }}"{% endif %}>
+                {%- endif %}
+              </div>
+              {%- endfor %}
+            </div>
+            <div class="actions">
+              <button class="button button-rearm" type="submit">Apply filters</button>
+              <a class="button button-quiet" href="{{ view.path }}">Clear filters</a>
+            </div>
+            <p class="note">Times are UTC. Choose a window, or choose "From the start time" and set a start. A window covers at most {{ view.limits.days }} days and a page at most {{ view.limits.rows }} rows; the server refuses anything wider.</p>
+          </form>
+{%- endif %}
+{%- endmacro %}
+
+{% macro problems(view) -%}
+{%- if view.errors %}
+          <div class="notice tone-crit" role="alert">
+            <p><span class="mark" aria-hidden="true">■</span> Request refused. Nothing was read.</p>
+            <ul class="errors">
+              {%- for error in view.errors %}
+              <li>{{ error }}</li>
+              {%- endfor %}
+            </ul>
+          </div>
+{%- endif %}
+{%- if view.unavailable %}
+          <div class="notice tone-unknown" role="status">
+            <p><span class="mark" aria-hidden="true">○</span> Not available: {{ view.unavailable }}.</p>
+            <p>Nothing could be read, so this is not a count of zero. Check System health on the dashboard and the application log.</p>
+          </div>
+{%- endif %}
+{%- endmacro %}
+
+{% macro decision(item) -%}
+{{ ui.pill(item.outcome) }}{% if item.gate %} <strong>{{ item.gate }}.</strong>{% endif %} {{ item.reason }}
+{%- endmacro %}
+
+{% macro chain(order) -%}
+            <ol class="chain">
+              <li class="chain-step">
+                <h3>1 · Signal</h3>
+                {%- if order.signal %}
+                <p>{{ order.signal.text }} · strategy <span class="mono">{{ order.signal.strategy_version }}</span> · {{ ui.stamp(order.signal.created) }}</p>
+                <dl class="ids"><div><dt>Signal ID</dt><dd>{{ copy(order.signal.signal_id) }}</dd></div></dl>
+                {%- else %}
+                <p>{{ ui.absent("Signal not recorded.") }}</p>
+                {%- endif %}
+              </li>
+              <li class="chain-step">
+                <h3>2 · Risk decision</h3>
+                {%- if order.decision %}
+                <p>{{ decision(order.decision) }}</p>
+                <p class="event-meta">Decided {{ ui.stamp(order.decision.decided) }}</p>
+                <dl class="ids">
+                  <div><dt>Approval ID</dt><dd>{{ copy(order.decision.approval_id) }}</dd></div>
+                  <div><dt>Correlation ID</dt><dd>{{ copy(order.decision.correlation_id) }}</dd></div>
+                </dl>
+                {%- else %}
+                <p>{{ ui.absent("Risk decision not recorded.") }}</p>
+                {%- endif %}
+              </li>
+              <li class="chain-step">
+                <h3>3 · Order</h3>
+                <p>{{ ui.pill(order.status) }} {{ text(order.symbol) }} {{ order.side }} · {{ order.order_type }} · quantity {{ text(order.quantity) }} · limit price {{ text(order.limit_price) }}</p>
+                {%- if order.rule %}
+                <p class="rule">{{ order.rule }}</p>
+                {%- endif %}
+                <p class="event-meta">Created {{ ui.stamp(order.created) }} · strategy <span class="mono">{{ order.strategy_version }}</span></p>
+                <dl class="ids">
+                  <div><dt>Client order ID</dt><dd>{{ copy(order.client_order_id) }}</dd></div>
+                  <div><dt>Correlation ID</dt><dd>{{ copy(order.correlation_id) }}</dd></div>
+                </dl>
+              </li>
+              <li class="chain-step">
+                <h3>4 · Fills</h3>
+                {%- if order.fills %}
+                <p>Filled <span class="count">{{ order.filled }}</span> in <span class="count">{{ order.fill_count }}</span> fill(s).</p>
+                <div class="table-wrap" role="region" aria-label="Fills" tabindex="0">
+                  <table class="data">
+                    <thead>
+                      <tr><th scope="col">Fill ID</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Price</th><th scope="col" class="num">Fee</th><th scope="col">Time</th></tr>
+                    </thead>
+                    <tbody>
+                      {%- for fill in order.fills %}
+                      <tr><td class="mono id">{{ fill.fill_id }}</td><td class="num">{{ fill.quantity }}</td><td class="num">{{ fill.price }}</td><td class="num">{{ fill.fee }}</td><td>{{ ui.stamp(fill.occurred) }}</td></tr>
+                      {%- endfor %}
+                    </tbody>
+                  </table>
+                </div>
+                {%- if order.more_fills %}
+                <p class="note">Showing the first {{ order.fills | length }} of {{ order.fill_count }} fills. The total above counts them all.</p>
+                {%- endif %}
+                {%- else %}
+                <p class="empty"><span class="count">0</span> fills recorded.</p>
+                {%- endif %}
+              </li>
+            </ol>
+            {%- if order.gaps %}
+            <div class="notice tone-warn">
+              <p><span class="mark" aria-hidden="true">▲</span> Lineage gap</p>
+              <ul class="causes">
+                {%- for gap in order.gaps %}
+                <li>{{ gap }}</li>
+                {%- endfor %}
+              </ul>
+            </div>
+            {%- else %}
+            <p class="note">Lineage complete: the signal, the approved risk decision, the order, and every fill it needs are recorded.</p>
+            {%- endif %}
+{%- endmacro %}
+
+{% macro event(row) -%}
+            <li class="event">
+              {%- if row.change %}
+              <p class="event-head">{{ ui.pill(row.change.status) }} {{ row.change.text }}</p>
+              <p>{{ row.change.reason }}</p>
+              <p class="event-meta">{{ row.change.actor }} ({{ row.change.kind }}) · {{ ui.stamp(row.created) }}{% if row.change.checklist %} · {{ row.change.checklist }}{% endif %}</p>
+              {%- else %}
+              <p class="event-head"><span class="mono">{{ row.event_type }}</span></p>
+              <p>{{ ui.absent("Detail is not shown for this event type.") }}</p>
+              <p class="event-meta">{{ ui.stamp(row.created) }} · correlation {{ copy(row.correlation_id) }}</p>
+              {%- endif %}
+            </li>
+{%- endmacro %}

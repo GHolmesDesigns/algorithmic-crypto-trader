@@ -1,0 +1,8 @@
+        <nav class="history-nav" aria-label="History views">
+          <ul>
+            <li><a href="/operator">Dashboard</a></li>
+            {%- for item in view.nav %}
+            <li><a href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.label }}</a></li>
+            {%- endfor %}
+          </ul>
+        </nav>

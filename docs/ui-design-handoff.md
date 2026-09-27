@@ -21,6 +21,9 @@
 >   - RE-ARM is now the administrator re-arm review at `GET /operator/rearm`. It repeats the active warnings, and the server enforces the seven checklist items and a redacted cause-and-approval reference.
 >   - Kill-switch transitions are saved to `system_events` and returned as `risk.transitions` in `/operator/state`; the safety bar shows the last change as the cause.
 >   - Query-string tokens are refused with `400`. This supersedes the §4.1 "no sign-out control" and the §5.9 query-token compatibility statements.
+> - **#61 merged:** bounded, read-only history under `/operator/history/*`, as JSON and HTML. Orders expand into their lineage (signal, risk decision, order, fills); signals, risk decisions, discrepancies, and system events are filterable; **Risk & safety** shows the latest refusal, refusals by the 17 ordered gates, and kill-switch history.
+>   - Every list caps its window at 31 days and its page at 100 rows, and refuses anything wider.
+>   - "0 recorded" and "not available" render differently. This supersedes the §5.10 and §8.2 statements that persisted records lack browser read APIs, and the §8.4 statement that gate views need new read models.
 > - **The §10 iterations are now carded:**
 >   - Iteration A → #59 (command center, merged) and #60 (safety controls, sign-out, enforced re-arm review);
 >   - Iteration B → #61 (bounded history) and #62 (trends);

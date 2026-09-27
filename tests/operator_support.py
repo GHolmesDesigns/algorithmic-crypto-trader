@@ -1,14 +1,14 @@
-"""Operator-surface helpers: a SQLite database that the real kill-switch journal writes to."""
+"""Operator-surface helpers: a SQLite database that the real journal and history use."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from api.controls import REARM_CHECKLIST
-from app.main import attach_kill_switch_journal, create_app
+from app.main import attach_history, attach_kill_switch_journal, create_app
 from core.guards import CredentialScope, StartupSettings
 from core.models import TradingMode
-from db.models import SystemEventRecord
+from db.models import Base, SystemEventRecord
 from fastapi import FastAPI
 from sqlalchemy import create_engine
 
@@ -41,4 +41,17 @@ def journaled_app(tmp_path: Path, mode: TradingMode = TradingMode.BACKTEST, **op
 
     application = create_app(sqlite_settings(tmp_path, mode), **options)
     attach_kill_switch_journal(application)
+    return application
+
+
+def history_app(tmp_path: Path, mode: TradingMode = TradingMode.BACKTEST, **options) -> FastAPI:
+    """``journaled_app`` with every table and the history reads the lifespan attaches."""
+
+    settings = sqlite_settings(tmp_path, mode)
+    engine = create_engine(settings.database_url, future=True)
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    application = create_app(settings, **options)
+    attach_kill_switch_journal(application)
+    attach_history(application)
     return application

@@ -160,11 +160,11 @@
     <section id="activity" class="block" aria-labelledby="activity-heading">
       <div class="block-head">
         <h2 id="activity-heading">Activity</h2>
-        <p class="block-note">Records this process holds since it started. Risk decisions and full history are not on this page.</p>
+        <p class="block-note">Records this process holds since it started. The persisted history, with risk decisions and each order's lineage, is under <a href="/operator/history/orders">Order history</a>.</p>
       </div>
       <dl class="lineage">
         <div><dt>Signals</dt><dd><span class="count">{{ activity.counts.signals }}</span></dd></div>
-        <div><dt>Risk decisions</dt><dd>{{ ui.absent("not shown here") }}</dd></div>
+        <div><dt>Risk decisions</dt><dd>{{ ui.absent("not held here") }} <a href="/operator/history/risk-decisions">History</a></dd></div>
         <div><dt>Orders</dt><dd><span class="count">{{ activity.counts.orders }}</span></dd></div>
         <div><dt>Fills</dt><dd><span class="count">{{ activity.counts.fills }}</span></dd></div>
       </dl>
@@ -293,7 +293,7 @@
     <section id="safety" class="block" aria-labelledby="risk-heading">
       <div class="block-head">
         <h2 id="risk-heading">Risk &amp; safety</h2>
-        <p class="block-note">Every order still passes the ordered risk gates. Gate history is not on this page.</p>
+        <p class="block-note">Every order still passes the ordered risk gates. Refusals by gate and kill-switch history are under <a href="/operator/history/risk">Risk &amp; safety history</a>.</p>
       </div>
       <div class="split">
         <div class="panel">
