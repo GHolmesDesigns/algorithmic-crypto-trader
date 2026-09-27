@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from api.alerts import Alert, AlertRouter
+from api.alerts import Alert, AlertRouter, build_alert_router
 from api.operator import OperatorState
 from api.routes import router
 from core.guards import (
@@ -28,6 +28,7 @@ from portfolio.scheduler import ScheduledReconciler
 from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
 
+from app.paper_runtime import start_paper_runtime
 from app.recovery import StartupRecoveryResult, recover_on_startup
 from app.startup_broker import assert_live_key_scope, build_startup_broker
 
@@ -73,6 +74,7 @@ def create_app(
 async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
     broker = application.state.operator_state.broker
     stop_reconciliation: Callable[[], Awaitable[None]] | None = None
+    paper_runtime = None
     try:
         # Reject a bad interval before recovery does any work.
         interval = _reconcile_interval() if broker is not None else None
@@ -85,13 +87,23 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
             application.state.kill_switch.state.value,
         )
         stop_reconciliation = start_scheduled_reconciliation(application, interval_seconds=interval)
+        paper_runtime = await start_paper_runtime(application)
         yield
     finally:
-        if stop_reconciliation is not None:
-            await stop_reconciliation()
-        close = getattr(broker, "close", None)
-        if close is not None:
-            await close()
+        try:
+            if paper_runtime is not None:
+                await paper_runtime.stop()
+        finally:
+            try:
+                if stop_reconciliation is not None:
+                    await stop_reconciliation()
+            finally:
+                try:
+                    await application.state.operator_state.alert_router.close()
+                finally:
+                    close = getattr(broker, "close", None)
+                    if close is not None:
+                        await close()
 
 
 def start_scheduled_reconciliation(
@@ -215,7 +227,10 @@ def main() -> None:
     configure_logging(settings.log_level)
     logger.info(startup_banner(settings))
     broker = build_startup_broker(settings)
-    application = create_app(settings, broker=broker, recover_on_start=True)
+    alert_router = build_alert_router(os.environ)
+    application = create_app(
+        settings, broker=broker, alert_router=alert_router, recover_on_start=True
+    )
     import uvicorn
 
     # uvicorn completes the lifespan startup, including recovery, before it

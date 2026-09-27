@@ -39,6 +39,10 @@ class OperatorSnapshot:
     signals: tuple[Signal, ...] = ()
     strategy_version: str = "unknown"
     strategy_heartbeats: tuple[StrategyHeartbeat, ...] = ()
+    runtime_status: str = "not_started"
+    runtime_detail: str = "paper runtime has not started"
+    runtime_last_cycle_at: datetime | None = None
+    runtime_last_cycle_status: str | None = None
     alerts: tuple[dict[str, Any], ...] = ()
     errors: tuple[dict[str, Any], ...] = ()
     updated_at: datetime = field(default_factory=utc_now)
@@ -108,6 +112,23 @@ class OperatorState:
             fills=fills,
             signals=signals,
             strategy_version=strategy_version or self.snapshot.strategy_version,
+            updated_at=utc_now(),
+        )
+
+    def set_runtime(
+        self,
+        status: str,
+        detail: str,
+        *,
+        cycle_status: str | None = None,
+        cycle_at: datetime | None = None,
+    ) -> None:
+        self.snapshot = replace(
+            self.snapshot,
+            runtime_status=status,
+            runtime_detail=detail,
+            runtime_last_cycle_status=cycle_status,
+            runtime_last_cycle_at=cycle_at,
             updated_at=utc_now(),
         )
 
@@ -232,6 +253,12 @@ class OperatorState:
                 if self.scheduled_reconciliation is not None
                 else {"last_result": "not_scheduled"}
             ),
+            "runtime": {
+                "status": snapshot.runtime_status,
+                "detail": snapshot.runtime_detail,
+                "last_cycle_status": snapshot.runtime_last_cycle_status,
+                "last_cycle_at": _iso(snapshot.runtime_last_cycle_at),
+            },
             "portfolio": {
                 "status": snapshot.portfolio_status,
                 "detail": snapshot.portfolio_detail,

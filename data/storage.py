@@ -16,6 +16,8 @@ class CandleStore(Protocol):
 
     def upsert_many(self, candles: tuple[Candle, ...]) -> int: ...
 
+    def latest(self, symbol: str, interval: str, limit: int) -> tuple[Candle, ...]: ...
+
 
 class InMemoryCandleStore:
     """Deterministic store for tests and portable replay archives."""
@@ -49,6 +51,11 @@ class InMemoryCandleStore:
                 key=lambda candle: candle.opened_at,
             )
         )
+
+    def latest(self, symbol: str, interval: str, limit: int) -> tuple[Candle, ...]:
+        if limit <= 0:
+            raise ValueError("candle limit must be positive")
+        return self.read(symbol, interval)[-limit:]
 
 
 class SqlAlchemyCandleStore:
@@ -105,3 +112,35 @@ class SqlAlchemyCandleStore:
                     for name, value in values.items():
                         setattr(record, name, value)
         return inserted
+
+    def latest(self, symbol: str, interval: str, limit: int) -> tuple[Candle, ...]:
+        if limit <= 0:
+            raise ValueError("candle limit must be positive")
+        with self.session_factory() as session:
+            statement = (
+                select(MarketCandleRecord)
+                .where(
+                    MarketCandleRecord.symbol == symbol,
+                    MarketCandleRecord.interval == interval,
+                )
+                .order_by(MarketCandleRecord.opened_at.desc())
+                .limit(limit)
+            )
+            rows = tuple(session.scalars(statement))
+        return tuple(
+            Candle(
+                symbol=row.symbol,
+                interval=row.interval,
+                opened_at=row.opened_at,
+                closed_at=row.closed_at,
+                open=row.open,
+                high=row.high,
+                low=row.low,
+                close=row.close,
+                volume=row.volume,
+                source=row.source,
+                as_of=row.as_of,
+                ingested_at=row.ingested_at,
+            )
+            for row in reversed(rows)
+        )

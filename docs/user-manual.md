@@ -49,13 +49,15 @@ halts trading.
 This draft describes the software as it exists today, not the final planned
 product:
 
-- `app.main` does **not yet start the live market-data ingestor or the automated
-  `TradingCycle`**. A running web service is therefore not proof that a strategy
-  is receiving market data or placing simulated orders.
-- The operator surface can show P/L as unavailable and the primary strategy
-  heartbeat as unknown until those producers are wired into the runtime.
-- Phone-push and email alerts are delivered only when alert sinks are explicitly
-  injected. The default application entry point does not configure those sinks.
+- In `paper` mode, a configured broker plus `PAPER_RUNTIME_ENABLED=1` starts the
+  public Coinbase feed and drives the existing `TradingCycle` from closed
+  five-minute bars. Other modes do not start this runtime, and this feature does
+  not authorize or enable live trading.
+- The operator surface reports the paper runtime, its last cycle outcome, and the
+  primary strategy heartbeat. P/L can still be unavailable.
+- Phone-push through ntfy and email through SMTP are optional. The application
+  configures only the destinations whose complete environment settings are
+  present; partial or insecure configuration stops startup.
 - Owner-run provider evidence is only partly complete. On 2026-09-27 the Gemini
   Sandbox check passed except for a partial fill, and Coinbase read-only
   reconciliation passed. Still required: the adapter contract suite against the
@@ -145,7 +147,7 @@ Review these items from top to bottom:
 | --- | --- | --- |
 | Application | `healthy` when broker refresh succeeds; liveness is separately available at `/health`. | The page cannot load or the service repeatedly restarts. |
 | Trading mode | Matches the owner-approved mode. | It differs from the approved mode or unexpectedly says `live`. |
-| Strategy version | Matches the reviewed release. `unknown` is possible until runtime wiring is complete. | It changed unexpectedly or an active strategy reports an unknown version. |
+| Strategy version | Matches the reviewed release. | It changed unexpectedly or an enabled strategy reports an unknown version. |
 | Broker connectivity | `healthy — broker state refreshed`, or `not_configured` for an intentionally credential-free deployment. The JSON state includes the check time, but the current HTML page does not render it. | `unavailable`, especially if positions or orders could exist. |
 | Risk state | The expected kill-switch state. | It changes without an understood operator action or incident. |
 | Startup recovery | `reconciled`, or `no_broker` when intentionally running without a broker and with no pending orders. | `halted`, or the detail mentions a pending order, missing baseline, unavailable broker, or divergence. |
@@ -153,7 +155,7 @@ Review these items from top to bottom:
 | P/L | May be `unavailable` in the current release. | Do not infer profitability or safety from a missing value. |
 | Balances and positions | Plausible and consistent with the approved environment. | A value is unexpected, duplicated, missing, or clearly belongs to another environment. |
 | Orders, fills, and signals | Counts and recent activity match expectations. | An order is unknown, pending unexpectedly, duplicated, or lacks an expected fill. |
-| Strategies | Expected strategy reports a recent healthy heartbeat. | Heartbeat is absent, stale, unhealthy, or unexpectedly changes version. The current runtime may show `unknown`; treat that as not proven active. |
+| Strategies | An enabled paper strategy reports a recent healthy heartbeat and runtime cycle result. | Heartbeat is absent, stale, unhealthy, or unexpectedly changes version. |
 | Errors and alerts | Empty, or a previously reviewed condition. | Any new critical alert, broker error, reconciliation divergence, or repeated error. |
 
 `/health` proves only that the web process responds. It does not prove that the
@@ -440,6 +442,23 @@ yourself.
 | `TRADING_KILL_SWITCH` | empty | Independent external request for `paused` or `halted`. `running` never re-arms. Invalid content halts. |
 | `STRATEGY_VERSION` | `unknown` | Version displayed on the operator surface. |
 | `RECONCILE_INTERVAL_SECONDS` | `300` | Broker reconciliation interval; must be greater than 0 and no more than 3600. |
+| `PAPER_RUNTIME_ENABLED` | `0` (`1` in the VPS override) | Starts the live Coinbase market-data runtime only in `paper` mode and only with a configured broker. |
+| `PAPER_SYMBOLS` | `BTC-USD` | One to ten comma-separated Coinbase `*-USD` products. |
+| `PAPER_STRATEGY_FAST_BARS` / `PAPER_STRATEGY_SLOW_BARS` | `3` / `8` | Moving-average windows; slow must exceed fast. |
+| `PAPER_HISTORY_BARS` | `50` | Closed five-minute bars retained in each strategy state; between `slow + 1` and `300`. |
+| `PAPER_ORDER_QUANTITY` | `0.0001` | Positive base-asset quantity requested by the reference strategy. |
+| `PAPER_MIN_NOTIONAL` | `1` | Positive minimum notional supplied to the exchange-constraint risk gate. |
+| `PAPER_ESTIMATED_SLIPPAGE` | `0.005` | Non-negative estimate no greater than the 1% default risk limit. |
+| `PAPER_COOLDOWN_SECONDS` | `300` | Non-negative per-symbol order cooldown. |
+| `TRADING_KILL_SWITCH_FILE` | unset | Optional plain-text external flag read on every paper cycle; `paused` and `halted` can tighten state, while `running` cannot re-arm. |
+| `LOSS_STATE_FILE` | next to `KILL_SWITCH_FILE` | Persists opening/peak equity so daily-loss and drawdown checks survive restart. |
+| `ALERT_NTFY_TOPIC_URL` | empty | Full HTTPS ntfy topic URL for phone push. Treat a private topic URL as a secret. |
+| `ALERT_NTFY_TOKEN` | empty | Optional ntfy bearer token. Secret. |
+| `ALERT_SMTP_HOST` / `ALERT_SMTP_PORT` | empty / `587` | SMTP server; host, from-address, and to-address are required together. |
+| `ALERT_SMTP_USERNAME` / `ALERT_SMTP_PASSWORD` | empty | Optional SMTP credentials; configure both or neither. Secret. |
+| `ALERT_SMTP_STARTTLS` | `1` | Require STARTTLS after connecting. |
+| `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO` | empty | Sender and operator recipient for email alerts. Recipient data stays out of logs and repository files. |
+| `ALERT_TIMEOUT_SECONDS` | `10` | Positive network timeout for each configured alert sink. |
 
 Startup must fail rather than silently correcting an invalid mode, scope,
 provider, credential, live confirmation, or reconciliation interval.
@@ -637,7 +656,7 @@ Never restore a drill backup over the production database.
 | Reconciliation interval is rejected | Value is non-numeric, zero/negative, or above 3600 seconds. | Set a valid bounded interval. |
 | Kill switch halts after reading a flag | Flag was `halted`, invalid, or unreadable. | Fix the external flag source, investigate, then manually re-arm. |
 | `/health` is OK but dashboard is degraded | Liveness does not include broker or strategy health. | Investigate detailed authenticated state. |
-| Strategy remains `unknown` | Runtime has not registered and heartbeated the strategy. | Treat strategy activity as unproven; complete runtime wiring. |
+| Strategy remains `unknown` | The paper runtime is disabled, lacks a broker, or has not started. | Check `runtime` in `/operator/state`, configuration, startup logs, and the kill switch before re-arming. |
 
 ## Related documents
 

@@ -15,7 +15,7 @@ from decimal import Decimal
 import httpx
 import pytest
 from data.backfill import HistoricalCandleBackfiller
-from data.coinbase import CoinbaseRESTClient
+from data.coinbase import CoinbaseRESTClient, normalize_coinbase_candle
 from data.replay import JsonlReplayRecorder
 from data.storage import InMemoryCandleStore
 from data.stream import CoinbaseWebSocketIngestor
@@ -23,6 +23,24 @@ from data.validation import MarketDataValidator
 
 BUCKET = timedelta(minutes=5)
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_candle_store_returns_latest_window_in_time_order() -> None:
+    store = InMemoryCandleStore()
+    candles = tuple(
+        normalize_coinbase_candle(
+            "BTC-USD",
+            ohlcv(index),
+            interval="FIVE_MINUTE",
+            received_at=bucket(index + 1),
+        )
+        for index in range(5)
+    )
+    store.upsert_many(candles)
+
+    assert store.latest("BTC-USD", "FIVE_MINUTE", 3) == candles[-3:]
+    with pytest.raises(ValueError, match="positive"):
+        store.latest("BTC-USD", "FIVE_MINUTE", 0)
 
 
 def bucket(k: int) -> datetime:
