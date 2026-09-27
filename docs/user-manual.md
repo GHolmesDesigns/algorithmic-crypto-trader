@@ -121,7 +121,10 @@ select **PAUSE** and contact the administrator. If it unexpectedly shows
 | `halted` | The system or an operator identified a critical condition. Automatic processes cannot re-arm it, and an operator cannot lower it to `paused`. | Escalate and keep it halted until the re-arm checklist is complete. |
 
 The kill-switch state is stored across application and host restarts when the
-deployment uses the configured persistent volume.
+deployment uses the configured persistent volume. Every change is also saved in
+the database with its previous and new state, who or what made it (an operator,
+an administrator, or the system), whether it was automatic, the reason, and the
+UTC time.
 
 ## Sign in
 
@@ -134,9 +137,17 @@ deployment uses the configured persistent volume.
 
 The browser receives a protected session cookie that lasts up to eight hours.
 The dashboard does not refresh itself: select **Refresh** in its header for a
-new snapshot. There is currently no sign-out button, so close the browser
-session on a shared device. Never use the `?token=` query parameter even though the server accepts
-it for compatibility: URLs are often recorded in history and logs.
+new snapshot.
+
+The server refuses a token in the address (`?token=`) with `400`, because
+addresses are recorded in history and logs. Sign in through the form only.
+
+## Sign out
+
+Select **Sign out** in the header of any operator page. The server ends that
+session and clears its cookie, and the next request with it is refused, even
+from a copy of the cookie. Other sessions stay signed in. Always sign out on a
+shared device, then close the tab.
 
 ## Read the dashboard
 
@@ -145,8 +156,9 @@ no outside scripts, fonts, or stylesheets. It shows everything that the
 authenticated `/operator/state` returns:
 
 - **Header:** trading mode, credential scope, the role the server granted you
-  (**Operator** or **Administrator**), the snapshot time, and **Refresh**. When
-  only `OPERATOR_TOKEN` is configured, that token has the administrator role.
+  (**Operator** or **Administrator**), the snapshot time, **Refresh**, and
+  **Sign out**. When only `OPERATOR_TOKEN` is configured, that token has the
+  administrator role.
 - **Section links:** Overview, Portfolio, Activity, Alerts & errors, Risk &
   safety, and System health. A wide screen shows them in a left rail; a phone
   shows a row that scrolls sideways.
@@ -185,11 +197,15 @@ The page keeps these cases apart:
 
 ### The cause of a pause or halt
 
-The kill switch stores only its state, not why it changed. The safety bar lists
-each cause it can find in the current state: a halted startup recovery, a
-diverged or unavailable scheduled reconciliation, or a failed or halted paper
-runtime. Otherwise it says the cause is not recorded. An operator control and
-the kill-switch file or environment flag leave no cause on the page, so check
+The safety bar lists each cause it can find in the current state: a halted
+startup recovery, a diverged or unavailable scheduled reconciliation, or a
+failed or halted paper runtime. It also shows the **Last change**: the saved
+transition into the current state, with who or what made it, whether it was
+automatic, the time, and the reason. That covers an operator control and the
+kill-switch file or environment flag too.
+
+When no saved transition explains the state, for example one set before
+transitions were saved, the bar says the cause is not recorded. Check
 **Alerts & errors** and the application log.
 
 ### What to check
@@ -236,6 +252,10 @@ Do not mark the system healthy solely because `/health` returns a success.
 
 ## Controls
 
+Every control ends on a result page that works without JavaScript. It shows the
+action, the resulting kill-switch state, whether anything changed, the UTC time,
+the role that acted, the next safe step, and a link back to the dashboard.
+
 ### Pause
 
 Use **PAUSE** when you need time to investigate, when expected data is missing,
@@ -264,13 +284,24 @@ again while halted changes nothing.
 
 ### Re-arm
 
-Only an administrator can see and use **RE-ARM** when a separate administrator
-token is configured. It appears under **Risk & safety** while the system is
-paused or halted. Re-arming changes the kill switch to `running`; it does
-not repair a broker, database, data feed, strategy, or unresolved order. It is
-the only control that lowers the kill switch.
+Only an administrator can re-arm when a separate administrator token is
+configured. Re-arming changes the kill switch to `running`; it does not repair
+a broker, database, data feed, strategy, or unresolved order. It is the only
+control that lowers the kill switch.
 
-Complete every item before re-arming:
+While the system is paused or halted, **Risk & safety** shows the checklist and
+a **Review and re-arm** link for an administrator. The review page repeats the
+active warnings before you decide:
+
+- startup recovery status and detail;
+- the last scheduled reconciliation result;
+- pending or unknown orders this process holds; and
+- the strategy heartbeat.
+
+It also shows the kill switch's recent saved changes.
+
+Complete every item before re-arming. Each is a required checkbox on the review
+page, and the server refuses a re-arm with any item unconfirmed:
 
 1. Identify and document the original cause.
 2. Confirm the approved mode and credential scope.
@@ -281,8 +312,23 @@ Complete every item before re-arming:
 5. Confirm startup recovery and reconciliation are clean.
 6. Confirm required market data and risk inputs are current.
 7. Obtain the incident owner's approval when the operating procedure requires it.
-8. Select **RE-ARM**, then confirm the dashboard reports `running` and no new
-   error or divergence appears.
+
+Then enter the **cause and approval reference**, for example an incident or
+ticket reference and who approved. It is required and limited to 500
+characters. Do not include tokens, account identifiers, addresses, or provider
+payloads: the server removes secrets, URLs, email addresses, and long
+identifiers before it saves the reference with the transition.
+
+Select **RE-ARM**. The result page reports `running`; then confirm on the
+dashboard that no new error or divergence appears.
+
+The server refuses a re-arm, and leaves the kill switch unchanged, when:
+
+- any checklist item or the reference is missing (`422`; the review page shows
+  what is missing and keeps what you entered);
+- the caller is not an administrator (`403`); or
+- the transition cannot be saved to the database (`503`). A re-arm that cannot
+  be audited does not happen.
 
 If any item is unknown, leave the system paused or halted.
 
@@ -398,8 +444,12 @@ portfolio, or reconciliation contracts around one venue.
 - The broker is authoritative during reconciliation.
 - Divergence alerts the operator and trips the configured safety response before
   new entries.
-- `HALTED` persists and requires authenticated manual re-arm. Operator stops
-  only raise severity; a pause never lowers a halt.
+- `HALTED` persists and requires an authenticated administrator re-arm with the
+  complete checklist and a cause-and-approval reference. Operator stops only
+  raise severity; a pause never lowers a halt.
+- Every kill-switch transition is saved to `system_events`. A stop takes effect
+  even when the database is down and is saved once it returns; a re-arm is saved
+  first and refused if it cannot be.
 - Automated tests never contact an exchange or place a real order.
 - Credentials may never allow withdrawals or transfers.
 
@@ -534,17 +584,47 @@ provider, credential, live confirmation, or reconciliation interval.
 | `GET /health/strategies` | Operator | Strategy heartbeat list. |
 | `GET /operator/login` | None | Browser login form. |
 | `POST /operator/login` | Token in form body | Establishes an HttpOnly, SameSite=Strict session lasting up to eight hours. |
+| `POST /operator/logout` | None | Ends the session: revokes it on the server and clears the cookie. |
 | `GET /operator` | Operator | Server-rendered dashboard. |
 | `GET /operator/fragment` | Operator | The dashboard body without the page shell or styles. The page does not refresh itself. |
 | `GET /operator/state` | Operator | Full operator snapshot as JSON. |
 | `GET /operator/kill-switch` | Operator | Current kill-switch state. |
 | `POST /operator/pause` | Operator | Persist `paused` from `running`. Never lowers `halted`; returns the unchanged state instead. |
 | `POST /operator/emergency-stop` | Operator | Persist `halted`. Unchanged if already halted. |
-| `POST /operator/rearm` | Administrator | Persist `running` after manual review. The only route that lowers the kill switch. |
+| `GET /operator/rearm` | Administrator | Re-arm review page: active warnings, recent kill-switch changes, and the checklist form. |
+| `POST /operator/rearm` | Administrator | Persist `running` after the review. Requires every checklist item and a reason. The only route that lowers the kill switch. |
 
-For programmatic access, send the token in the `x-operator-token` header. Do
-not put it in a URL. Cookie authentication is intended for the browser. The
-current API does not implement a general trading-command endpoint.
+For programmatic access, send the token in the `x-operator-token` header. The
+server refuses any request with a `token` query parameter (`400`). Cookie
+authentication is intended for the browser, and header requests receive no
+cookie. The current API does not implement a general trading-command endpoint.
+
+A control returns its result as JSON unless the request accepts `text/html`:
+
+```json
+{"action": "pause", "state": "paused", "changed": true, "role": "operator", "at": "2026-09-27T21:00:00+00:00"}
+```
+
+`POST /operator/rearm` takes a form body, repeating `checklist` once per item,
+or JSON:
+
+```json
+{
+  "checklist": [
+    "cause_documented",
+    "mode_and_scope_confirmed",
+    "orders_resolved",
+    "broker_state_confirmed",
+    "recovery_and_reconciliation_clean",
+    "inputs_current",
+    "approval_obtained"
+  ],
+  "reason": "INC-42: sandbox check ended and reconciliation is clean; approved by the owner"
+}
+```
+
+A refused re-arm returns `{"detail": {"errors": [...], "missing_checklist": [...], "state": "halted"}}`
+with `422`, or `503` when the transition cannot be saved.
 
 FastAPI also exposes its generated API documentation by default. A production
 reverse proxy should apply the deployment's access policy to `/docs`,
@@ -710,8 +790,11 @@ Never restore a drill backup over the production database.
 | Service refuses non-live startup with trade scope | Non-live modes reject `CREDENTIAL_SCOPE=trade`. | Correct the scope; do not weaken the guard. |
 | Live startup refuses explicit configuration | Confirmation, broker choice, declared scope, or Coinbase-reported permissions failed. | Keep live disabled; review every guard and provider permission. |
 | `503 operator authentication is not configured` | `OPERATOR_TOKEN` is absent. | Configure it through approved secret handling and restart. |
-| Operator gets `401` | Token/session is missing or invalid. | Use the login form or correct header; do not put the token in the URL. |
+| Operator gets `400` | The request carried a `token` query parameter. | Sign in through the form, or send the `x-operator-token` header. Treat a token that appeared in a URL as exposed and rotate it. |
+| Operator gets `401` | Token/session is missing, invalid, expired, or signed out. | Use the login form or correct header; do not put the token in the URL. |
 | Operator gets `403` on re-arm | Operator token lacks administrator role. | Obtain deliberate administrator authorization; do not bypass the route. |
+| Re-arm returns `422` | A checklist item or the cause-and-approval reference is missing, or the reference exceeds 500 characters. | Complete the review; the kill switch is unchanged. |
+| Re-arm returns `503` | The transition could not be saved to the database. | Leave the system stopped and restore the database first. |
 | Startup recovery is `no_broker` | No broker is configured and no pending order exists. | Expected only for an intentionally credential-free environment. |
 | Startup recovery halts | Pending order, provider outage, missing baseline, database read failure, or divergence. | Keep halted and reconcile against the broker. |
 | Broker says unavailable but old balances remain visible | Last-known values are retained only for diagnosis. | Do not treat them as current; pause or halt as risk requires. |

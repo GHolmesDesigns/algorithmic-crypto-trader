@@ -3,9 +3,15 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlencode
 
+import httpx
 import pytest
 import yaml
+from api.controls import REARM_CHECKLIST
+from core.models import KillSwitchState
+
+from tests.operator_support import journaled_app
 
 ROOT = Path(__file__).parents[1]
 SH = shutil.which("sh")
@@ -328,7 +334,9 @@ case "$1" in
       "POST /operator/pause")
         [ "$(cat "$state_file")" = halted ] || echo paused > "$state_file"; cat "$state_file" ;;
       "POST /operator/rearm")
-        echo "$9" > "$STUB_DIR/rearm-role"; echo running > "$state_file"; echo running ;;
+        echo "$9" > "$STUB_DIR/rearm-role"
+        shift 10; printf '%s\\n' "$@" > "$STUB_DIR/rearm-form"
+        echo running > "$state_file"; echo running ;;
       "GET /operator/state") echo "${FAKE_RECOVERY:-no_broker}" ;;
     esac ;;
 esac
@@ -386,6 +394,42 @@ def test_drill_restart_and_reboot_phases_pass_and_restore_kill_switch(tmp_path) 
     assert "INFO kill switch left running (was running before the drill)" in after.stdout
     assert (tmp_path / "rearm-role").read_text().strip() == "admin"
     assert "never-printed" not in before.stdout + after.stdout + before.stderr + after.stderr
+
+
+@needs_sh
+@pytest.mark.asyncio
+async def test_drill_rearm_passes_the_servers_review(tmp_path, monkeypatch) -> None:
+    env = drill_env(tmp_path)
+    assert run_script("drill.sh", env, "before-reboot").returncode == 0
+    assert run_script("drill.sh", env, "after-reboot").returncode == 0
+    # Replay the exact form the drill sent against the real application.
+    sent = (tmp_path / "rearm-form").read_text(encoding="utf-8").splitlines()
+    form = [tuple(pair.split("=", 1)) for pair in sent]
+    assert {value for name, value in form if name == "checklist"} == {
+        key for key, _ in REARM_CHECKLIST
+    }
+    monkeypatch.setenv("OPERATOR_TOKEN", "operator-secret")
+    monkeypatch.setenv("OPERATOR_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("KILL_SWITCH_FILE", str(tmp_path / "app-kill-switch.json"))
+    application = journaled_app(tmp_path)
+    application.state.kill_switch.tighten(KillSwitchState.PAUSED, reason="drill marker")
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/operator/rearm",
+            content=urlencode(form),
+            headers={
+                "x-operator-token": "admin-secret",
+                "accept": "application/json",
+                "content-type": "application/x-www-form-urlencoded",
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "running"
+    rearm = application.state.kill_switch.audit_events[-1]
+    assert rearm["actor"] == "admin"
+    assert rearm["reason"].startswith("Restart drill 20")
+    assert "every drill check passed" in rearm["reason"]
 
 
 @needs_sh
@@ -527,6 +571,8 @@ def test_restart_rehearsal_is_manual_uses_no_secrets_and_proves_fail_closed_rest
     assert "sudo systemctl restart docker" in script
     assert "'pending_submit'" in script
     assert "grep -qx 'kill_switch=halted'" in script
+    assert "system_events=1" in script
+    assert "INFO kill switch left running (was running before the drill)" in script
     assert "grep -qx 'restore_verified=1'" in script
     assert job["steps"][-1]["if"] == "always()"
 

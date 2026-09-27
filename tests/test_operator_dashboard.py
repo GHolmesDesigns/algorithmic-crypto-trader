@@ -26,6 +26,7 @@ from core.models import (
     utc_now,
 )
 from portfolio.scheduler import ReconciliationStatus
+from risk.kill_switch import KillSwitch
 
 OPERATOR = {"x-operator-token": "operator-secret"}
 ADMIN = {"x-operator-token": "admin-secret"}
@@ -152,9 +153,9 @@ async def test_header_shows_the_role_the_server_granted(monkeypatch):
     admin = await page(application, ADMIN)
     assert "<dt>Signed in as</dt>\n        <dd>Operator</dd>" in operator
     assert "<dt>Signed in as</dt>\n        <dd>Administrator</dd>" in admin
-    assert 'action="/operator/rearm"' not in operator
+    assert "/operator/rearm" not in operator
     assert "Your operator role cannot re-arm" in operator
-    assert 'action="/operator/rearm"' in section(admin, "safety")
+    assert 'href="/operator/rearm"' in section(admin, "safety")
 
 
 @pytest.mark.asyncio
@@ -337,16 +338,34 @@ async def test_running_kill_switch_offers_pause_and_stop_without_a_cause(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_paused_kill_switch_without_a_recorded_cause_says_so(monkeypatch):
+async def test_paused_kill_switch_shows_the_recorded_change_as_its_cause(monkeypatch):
     application = dashboard_app(monkeypatch, broker=HealthyBroker())
-    application.state.kill_switch.set_state(KillSwitchState.PAUSED, reason="operator pause")
+    application.state.kill_switch.tighten(
+        KillSwitchState.PAUSED, reason="operator pause", actor="operator"
+    )
     html = await page(application)
     bar = safety_bar(html)
     assert has_pill(bar, "paused", "warn")
-    assert "<p>Not recorded. The kill switch stores only its state" in bar
+    assert "<li>Last change: running to paused by Operator (manual), <time datetime=" in bar
+    assert "operator pause</li>" in bar
+    assert "Not recorded" not in bar
     assert 'action="/operator/pause"' in bar
     assert 'action="/operator/emergency-stop"' in bar
     assert "<title>paused · paper · Operator dashboard</title>" in html
+
+
+@pytest.mark.asyncio
+async def test_paused_kill_switch_without_a_recorded_change_says_so(monkeypatch, tmp_path):
+    # The state file says paused, but no saved transition explains it.
+    switch_path = tmp_path / "kill-switch.json"
+    switch_path.write_text('{"state": "paused"}', encoding="utf-8")
+    application = dashboard_app(monkeypatch, broker=HealthyBroker())
+    monkeypatch.setenv("KILL_SWITCH_FILE", str(switch_path))
+    application.state.operator_state.kill_switch = KillSwitch(switch_path)
+    bar = safety_bar(await page(application))
+    assert has_pill(bar, "paused", "warn")
+    assert "<p>Not recorded. No saved kill-switch change explains this state" in bar
+    assert "Last change" not in bar
 
 
 @pytest.mark.asyncio

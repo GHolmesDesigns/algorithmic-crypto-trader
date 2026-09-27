@@ -871,6 +871,125 @@ time,
   font-size: 0.875rem;
 }
 
+/* One-column pages: sign-in, control results, and the re-arm review. */
+
+.page {
+  min-height: 100vh;
+}
+
+.page main {
+  max-width: 56rem;
+  margin-inline: auto;
+}
+
+.page .panel h2 {
+  font-size: 1.125rem;
+}
+
+.panel.tone-warn,
+.panel.tone-crit {
+  border-top: 4px solid var(--tone-fg);
+}
+
+.page-name {
+  font-weight: 700;
+}
+
+.signout {
+  display: flex;
+  margin: 0;
+}
+
+.result {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--tone-fg);
+}
+
+.result h1,
+.block-head h1 {
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+.notice ul,
+.causes {
+  padding-left: 1.25rem;
+}
+
+.rearm-form fieldset {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.rearm-form legend {
+  padding: 0;
+  font-weight: 700;
+}
+
+.check-list {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0;
+  list-style: none;
+}
+
+.check-list label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line-soft);
+  cursor: pointer;
+}
+
+.check-list input {
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0.125rem 0 0;
+  accent-color: var(--text);
+}
+
+.field {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.field label {
+  font-weight: 700;
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: 0;
+  color: var(--text);
+  font: inherit;
+}
+
+.field input:focus-visible,
+.field textarea:focus-visible {
+  border-color: var(--focus);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 /* Motion and forced colours */
 
 @media (prefers-reduced-motion: no-preference) {

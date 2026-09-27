@@ -1,0 +1,22 @@
+{%- extends "_operator_page.html" -%}
+{%- import "_operator_macros.html" as ui -%}
+{% block title %}{{ result.heading }}{% endblock %}
+{% block page_name %}Control result{% endblock %}
+{% block content %}
+        <section class="result tone-{{ result.tone }}" aria-labelledby="result-heading">
+          <p class="eyebrow">Control result</p>
+          <h1 id="result-heading">{{ result.heading }}</h1>
+          <dl class="facts">
+            <div><dt>Action</dt><dd>{{ result.label }}</dd></div>
+            <div><dt>Resulting state</dt><dd>
+              {%- if result.action == "sign_out" %}Signed out. The session cookie is cleared.
+              {%- else %}Kill switch {{ ui.pill(state_status, "pill-large") }}{% endif -%}
+            </dd></div>
+            <div><dt>Changed</dt><dd>{{ result.change }}</dd></div>
+            <div><dt>Time (UTC)</dt><dd><time datetime="{{ result.at.isoformat() }}">{{ result.at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</time></dd></div>
+            <div><dt>Acting role</dt><dd>{{ acting_role }}</dd></div>
+          </dl>
+          <p class="next-step"><strong>Next safe step:</strong> {{ result.next_step }}</p>
+          <p><a class="button button-quiet" href="{{ result.return_link[0] }}">{{ result.return_link[1] }}</a></p>
+        </section>
+{% endblock %}

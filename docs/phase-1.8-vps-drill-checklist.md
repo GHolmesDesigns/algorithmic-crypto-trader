@@ -78,7 +78,12 @@ exits non-zero on any failure. The drill:
   checks that the halt survives instead);
 - compares the migration version and every state table's row count across the
   app restart and the reboot;
-- restores the original kill-switch state only if every check passed.
+- restores the original kill-switch state only if every check passed. The
+  restore goes through the administrator re-arm review: the drill confirms the
+  seven checklist items and records a dated reason saying it lifted its own
+  pause marker after every check passed. The pause and the re-arm are saved as
+  kill-switch transitions in `system_events`, so its row count rises by one
+  between deploy and `before-reboot`, and again after the re-arm.
 
 On GitHub, the agent then runs the **Restore drill** workflow, either from the
 Actions tab or by adding the `restore-drill` label to the pull request. The

@@ -72,7 +72,8 @@ persisted database state:
    snapshot.
 3. Any unreadable database, unavailable broker, order the broker has no record
    of, missing portfolio baseline, or divergence trips the kill switch to
-   `HALTED`. Only an operator can re-arm it.
+   `HALTED`. Only an administrator re-arm, after the re-arm review, lowers it.
+   The halt is saved as a kill-switch transition in `system_events`.
 
 The result is shown as "Startup recovery" on the operator dashboard and under
 `recovery` in `/operator/state`. It runs in the server's startup phase, on the
