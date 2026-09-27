@@ -158,11 +158,14 @@ class CoinbaseWebSocketIngestor:
                     product_id = raw.get("product_id")
                     if not product_id:
                         continue
+                    observed_at = raw.get("time", payload.get("timestamp"))
+                    if not isinstance(observed_at, str):
+                        raise StaleMarketData("Coinbase ticker omitted its timestamp")
                     quote = Quote(
                         symbol=product_id,
                         bid=Decimal(str(raw["best_bid"])),
                         ask=Decimal(str(raw["best_ask"])),
-                        as_of=datetime.fromisoformat(raw["time"].replace("Z", "+00:00")),
+                        as_of=datetime.fromisoformat(observed_at.replace("Z", "+00:00")),
                         source="coinbase-advanced-trade",
                         received_at=received_at,
                     )
