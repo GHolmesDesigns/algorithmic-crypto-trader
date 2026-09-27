@@ -7,7 +7,7 @@ into a hidden prompt. Claude records each result in this file afterwards.
 
 | Check | What it proves | Who runs it | Status |
 | --- | --- | --- | --- |
-| 1. Gemini Sandbox lifecycle and trading loop | Orders placed through our Gemini code behave as expected on Gemini's test exchange, and one pass of the trading loop completes there | Owner | Tried 2026-09-24 and 2026-09-27; every order step passed on 2026-09-27; findings fixed in #33, #35, and #37; to run again |
+| 1. Gemini Sandbox lifecycle and trading loop | Orders placed through our Gemini code behave as expected on Gemini's test exchange, and one pass of the trading loop completes there | Owner | **Passed 2026-09-27**, except the partial fill: the Sandbox's best offer stayed above the script's size cap. Findings fixed in #33, #35, and #37. It can be run again any time to try the partial fill. |
 | 2. Coinbase read-only reconciliation | Our Coinbase code reads your real account correctly and reconciles cleanly | Owner | Not yet run |
 | 3. Coinbase sandbox capture | Our Coinbase code reads Coinbase's real response formats | Claude, with the owner's approval | Done 2026-09-24 |
 
@@ -85,6 +85,8 @@ What the steps check (any refusal also names Gemini's own reason code, such as `
 | 2026-09-24 23:26 UTC | 1. Gemini Sandbox | Owner | `ce4a81a` | **NEEDS REVIEW.** The dollar check passed, but the first capped order was refused with Gemini's reason `InsufficientFunds`. The Sandbox website refused a $4 buy and a small sell the same way while showing $96,603 and 1,000 BTC available, so that Sandbox account could not trade at all. The owner opened a new Sandbox account. |
 | 2026-09-27 | 1. Gemini Sandbox | Owner | `ce4a81a` | **Crashed** at the restart-recovery step: looked up by our own order ID, Gemini returns a list of orders, which the adapter did not expect. The cleanup used the same lookup, so one resting test order was left for manual cancellation. Fixed in #35. |
 | 2026-09-27 13:12 UTC | 1. Gemini Sandbox | Owner | `362adeb` | **NEEDS REVIEW.** New Sandbox account. The capped market order filled (1 fill); a resting limit was found by our own order ID through a restarted adapter and cancelled; a too-small order was refused (`InvalidQuantity`). The partial fill was skipped because the best offer was then larger than the 0.01 BTC cap. The trading loop was refused at `trade_notional` because the account's BCH and ZEC had no buyers on the Sandbox and could not be priced. Nothing was left open; 16 of 80 requests. Addressed in #37. |
+| 2026-09-27 13:43 UTC | 1. Gemini Sandbox | Owner | `362adeb` | **Older code, same result as 13:12.** #37 had merged a minute earlier, but the project folder had not yet downloaded it. |
+| 2026-09-27 13:45 UTC | 1. Gemini Sandbox | Owner | `26f2eba` | **PASS except the partial fill.** The capped market order filled, and its trade was read back (1 fill). A resting limit was found by our own order ID through a restarted adapter and cancelled, and a too-small order was refused (`InvalidQuantity`). One trading-loop pass submitted a buy that filled, with the order linked to its signal, strategy version, approved risk decision, and fills; BCH-USD and ZEC-USD were left out because the Sandbox cannot price them. The partial fill was skipped: on all 5 reads the best offer was larger than the 0.01 BTC cap. Nothing was left open; 30 of 80 requests. |
 
 What the Gemini attempts showed, and what #33 and #35 changed:
 
