@@ -8,7 +8,7 @@ import pytest
 from brokers.coinbase import CoinbaseBroker
 from brokers.gemini import GeminiBroker
 from brokers.simulated import SimulatedBroker
-from core.models import Balance, Position, utc_now
+from core.models import Balance, KillSwitchState, Position, utc_now
 from core.resilience import TokenBucketRateLimiter
 from db.models import (
     BalanceSnapshotRecord,
@@ -18,6 +18,7 @@ from db.models import (
 )
 from portfolio.ledger import apply_fills
 from portfolio.reconciliation import PortfolioState, Reconciler
+from portfolio.scheduler import ScheduledReconciler
 from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
 from sqlalchemy import create_engine, select
@@ -159,10 +160,61 @@ async def test_a_resting_sell_is_not_a_position_divergence_from_the_fill_ledger(
         ("BTC-USD", Decimal("1"))
     ]
     # The ledger does not model holds, so the moved balance still halts (fail closed).
+    # The owner chose to keep this halt and document it (#43).
     assert [(item.entity_type, item.entity_key) for item in result.discrepancies] == [
         ("balance", "BTC")
     ]
     assert switch.state.value == "halted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("venue", [gemini_venue, coinbase_venue])
+async def test_an_order_the_app_did_not_place_halts_as_it_rests_fills_and_is_canceled(
+    venue: Callable[[VenueState], GeminiBroker | CoinbaseBroker],
+) -> None:
+    # The runbook behaviour the owner chose in #43: every change halts until re-armed.
+    state = {"BTC": ("1", "0"), "USD": ("1000", "0")}
+    broker = venue(state)
+    switch = KillSwitch()
+
+    async def discrepancies_after(change: VenueState) -> list[tuple[str, str]]:
+        switch.set_state(KillSwitchState.RUNNING, reason="operator re-arm")
+        state.update(change)
+        result = await scheduler.run_once()
+        assert result is not None
+        return [(item.entity_type, item.entity_key) for item in result.discrepancies]
+
+    try:
+        baseline = PortfolioState(
+            balances=await broker.get_balances(), positions=await broker.get_positions()
+        )
+        scheduler = ScheduledReconciler(
+            Reconciler(broker, switch), baseline=baseline, interval_seconds=60
+        )
+        # A manual 0.01 BTC buy limit at 40,000 rests: the venue holds 400 USD.
+        assert await discrepancies_after({"USD": ("600", "400")}) == [("balance", "USD")]
+        assert switch.state is KillSwitchState.HALTED
+        # The broker's record is now the baseline, so the unchanged order passes.
+        assert await discrepancies_after({}) == []
+        assert switch.state is KillSwitchState.RUNNING
+        # 0.004 BTC fills: the coins arrive and 160 USD leaves the hold.
+        assert await discrepancies_after({"BTC": ("1.004", "0"), "USD": ("600", "240")}) == [
+            ("position", "BTC-USD"),
+            ("balance", "BTC"),
+            ("balance", "USD"),
+        ]
+        assert switch.state is KillSwitchState.HALTED
+        # The rest is canceled: the remaining 240 USD returns to available.
+        assert await discrepancies_after({"USD": ("840", "0")}) == [("balance", "USD")]
+        assert switch.state is KillSwitchState.HALTED
+        # Once the order is gone, the next run is clean and trading stays re-armed.
+        assert await discrepancies_after({}) == []
+        assert switch.state is KillSwitchState.RUNNING
+    finally:
+        await broker.close()
+
+    assert scheduler.status.diverged_runs == 3
+    assert scheduler.status.clean_runs == 2
 
 
 def test_portfolio_store_persists_position_balance_and_equity_snapshots() -> None:

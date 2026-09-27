@@ -25,6 +25,12 @@ Open a terminal in the project folder, `C:\Users\garni\Documents\algorithmic-cry
 
 ## Check 1: Gemini Sandbox
 
+**If the paper app on the server trades on this same Sandbox account** (`BROKER_PROVIDER=gemini-sandbox`), this check will stop the app's trading. The check buys on that account and leaves orders waiting for a few seconds. The app did not place those orders, so its next reconciliation halts trading and sends a "reconciliation divergence" alert. Reconciliation runs every five minutes by default. The halt is expected and nothing is wrong ([why](phase-1.5-risk-execution-portfolio-reconciliation.md#orders-the-app-did-not-place)).
+
+- **To resume:** once the check has finished with nothing left open, wait for one more reconciliation (a little over five minutes by default), then re-arm trading on the operator page.
+- **If it halts again after re-arming:** something else changed the account. Tell Claude before re-arming again.
+- **During the 30-day soak (#12):** do not run this check against that account.
+
 1. Sign in to the **Gemini Sandbox** website with the Sandbox account from Phase 0. It is separate from any real Gemini account.
 2. Check that the Sandbox **Primary** account holds some US dollars; the run needs roughly 1% of one bitcoin's price, about $700 of test money. If it holds none, add test funds on the Sandbox website. The script's first step checks this and stops before placing anything if there is not enough.
 3. Under **Settings → API**, create a new API key for the **Primary** account with the **Trader** role only.
