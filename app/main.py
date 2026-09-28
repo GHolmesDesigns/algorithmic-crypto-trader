@@ -18,6 +18,11 @@ from api.research_routes import router as research_router
 from api.routes import router
 from api.soak import SqlAlchemySoak
 from api.soak_routes import router as soak_router
+from api.system_events import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    RESTART_EVENT,
+    SqlAlchemySystemEventJournal,
+)
 from api.trends import SqlAlchemyTrends
 from core.guards import (
     StartupGuardError,
@@ -36,6 +41,7 @@ from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
 from risk.kill_switch_journal import SqlAlchemyKillSwitchJournal
 
+from app.heartbeat import HeartbeatScheduler
 from app.paper_runtime import start_paper_runtime
 from app.recovery import StartupRecoveryResult, recover_on_startup
 from app.startup_broker import assert_live_key_scope, build_startup_broker
@@ -86,8 +92,10 @@ def create_app(
 async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
     broker = application.state.operator_state.broker
     stop_reconciliation: Callable[[], Awaitable[None]] | None = None
+    stop_heartbeat: Callable[[], Awaitable[None]] | None = None
     close_journal: Callable[[], None] | None = None
     close_history: Callable[[], None] | None = None
+    close_system_events: Callable[[], None] | None = None
     paper_runtime = None
     try:
         # Reject a bad interval before recovery does any work.
@@ -95,6 +103,7 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
         await assert_live_key_scope(application.state.startup_settings, broker)
         close_journal = attach_kill_switch_journal(application)
         close_history = attach_history(application)
+        close_system_events = attach_system_events(application)
         recovery = await run_startup_recovery(application)
         logger.info(
             "startup recovery %s: %s (kill switch %s)",
@@ -103,6 +112,7 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
             application.state.kill_switch.state.value,
         )
         stop_reconciliation = start_scheduled_reconciliation(application, interval_seconds=interval)
+        stop_heartbeat = start_heartbeat_scheduler(application)
         paper_runtime = await start_paper_runtime(application)
         yield
     finally:
@@ -118,19 +128,27 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
                         await stop_reconciliation()
                 finally:
                     try:
-                        await application.state.operator_state.alert_router.close()
+                        if stop_heartbeat is not None:
+                            await stop_heartbeat()
                     finally:
                         try:
-                            close = getattr(broker, "close", None)
-                            if close is not None:
-                                await close()
+                            await application.state.operator_state.alert_router.close()
                         finally:
                             try:
-                                if close_journal is not None:
-                                    close_journal()
+                                close = getattr(broker, "close", None)
+                                if close is not None:
+                                    await close()
                             finally:
-                                if close_history is not None:
-                                    close_history()
+                                try:
+                                    if close_journal is not None:
+                                        close_journal()
+                                finally:
+                                    try:
+                                        if close_history is not None:
+                                            close_history()
+                                    finally:
+                                        if close_system_events is not None:
+                                            close_system_events()
 
 
 def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
@@ -162,6 +180,39 @@ def attach_history(application: FastAPI) -> Callable[[], None]:
     application.state.trends = SqlAlchemyTrends(session_factory)
     application.state.soak = SqlAlchemySoak(session_factory)
     return engine.dispose
+
+
+def attach_system_events(application: FastAPI) -> Callable[[], None]:
+    """Persist restart, disconnect, gap-fill, and heartbeat events; return a close callback.
+
+    Attached before startup recovery, so the restart this process is making gets
+    its own row before recovery can halt the kill switch.
+    """
+
+    settings: StartupSettings = application.state.startup_settings
+    engine = create_database_engine(settings.database_url, settings.trading_mode)
+    application.state.system_events = SqlAlchemySystemEventJournal(create_session_factory(engine))
+    return engine.dispose
+
+
+def start_heartbeat_scheduler(
+    application: FastAPI, *, interval_seconds: float = HEARTBEAT_INTERVAL_SECONDS
+) -> Callable[[], Awaitable[None]]:
+    """Sample the heartbeat onto ``system_events`` every interval; return a stop callback."""
+
+    scheduler = HeartbeatScheduler(
+        application.state.operator_state,
+        application.state.system_events,
+        interval_seconds=interval_seconds,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(stop))
+
+    async def stop_scheduler() -> None:
+        stop.set()
+        await task
+
+    return stop_scheduler
 
 
 def start_scheduled_reconciliation(
@@ -261,7 +312,13 @@ def _reconcile_interval() -> float:
 
 
 async def run_startup_recovery(application: FastAPI, *, broker=None) -> StartupRecoveryResult:
-    """Recover persisted state before the HTTP server accepts any request."""
+    """Recover persisted state before the HTTP server accepts any request.
+
+    Also records one ``restart`` system event: ``recovered`` when a pending order
+    from a previous run had to be resolved, ``clean`` otherwise. Recorded on this
+    call's own engine so it lands even when ``attach_system_events`` never ran,
+    such as a caller that only wants the recovery result.
+    """
 
     settings: StartupSettings = application.state.startup_settings
     recovery_broker = broker if broker is not None else application.state.operator_state.broker
@@ -273,6 +330,13 @@ async def run_startup_recovery(application: FastAPI, *, broker=None) -> StartupR
             order_store=SqlAlchemyOrderStore(session_factory),
             portfolio_store=SqlAlchemyPortfolioStore(session_factory),
             broker=recovery_broker,
+        )
+        SqlAlchemySystemEventJournal(session_factory).record(
+            RESTART_EVENT,
+            {
+                "kind": "recovered" if result.pending_orders > 0 else "clean",
+                "status": result.status,
+            },
         )
     finally:
         engine.dispose()

@@ -29,6 +29,7 @@ from db.models import (
     OrderRecord,
     PortfolioSnapshotRecord,
     PositionSnapshotRecord,
+    SystemEventRecord,
 )
 from execution.engine import ExecutionEngine
 from execution.persistence import SqlAlchemyOrderStore
@@ -45,6 +46,7 @@ TABLES = (
     PositionSnapshotRecord.__table__,
     BalanceSnapshotRecord.__table__,
     EquitySnapshotRecord.__table__,
+    SystemEventRecord.__table__,
 )
 
 
@@ -353,6 +355,62 @@ async def test_service_startup_uses_the_configured_app_broker(tmp_path, monkeypa
 
     assert result.status == "reconciled"
     assert application.state.operator_state.to_dict()["recovery"]["status"] == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_a_restart_with_no_pending_orders_is_recorded_as_clean(tmp_path, monkeypatch) -> None:
+    engine, session_factory = database(tmp_path)
+    broker = SimulatedBroker()
+    SqlAlchemyPortfolioStore(session_factory).save_snapshot(
+        PortfolioState(balances=await broker.get_balances()), source="broker"
+    )
+    engine.dispose()
+    monkeypatch.setenv("KILL_SWITCH_FILE", str(tmp_path / "kill-switch.json"))
+    monkeypatch.setenv("APP_ENV", "test")
+    settings = StartupSettings(
+        TradingMode.PAPER,
+        CredentialScope.NONE,
+        "",
+        f"sqlite+pysqlite:///{tmp_path / 'trader.db'}",
+        "INFO",
+    )
+    application = create_app(settings, broker=broker)
+
+    await run_startup_recovery(application)
+
+    reread = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trader.db'}", future=True)
+    with sessionmaker(bind=reread, expire_on_commit=False)() as session:
+        events = session.scalars(select(SystemEventRecord)).all()
+    reread.dispose()
+    [restart] = [event for event in events if event.event_type == "restart"]
+    assert restart.payload["kind"] == "clean"
+
+
+@pytest.mark.asyncio
+async def test_a_restart_with_a_pending_order_is_recorded_as_recovered(
+    tmp_path, monkeypatch
+) -> None:
+    engine, session_factory = database(tmp_path)
+    reserve_pending(session_factory)
+    engine.dispose()
+    monkeypatch.setenv("KILL_SWITCH_FILE", str(tmp_path / "kill-switch.json"))
+    settings = StartupSettings(
+        TradingMode.BACKTEST,
+        CredentialScope.NONE,
+        "",
+        f"sqlite+pysqlite:///{tmp_path / 'trader.db'}",
+        "INFO",
+    )
+    application = create_app(settings)
+
+    await run_startup_recovery(application)
+
+    reread = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trader.db'}", future=True)
+    with sessionmaker(bind=reread, expire_on_commit=False)() as session:
+        events = session.scalars(select(SystemEventRecord)).all()
+    reread.dispose()
+    [restart] = [event for event in events if event.event_type == "restart"]
+    assert restart.payload["kind"] == "recovered"
 
 
 def test_latest_snapshot_batch_includes_an_empty_position_set(tmp_path) -> None:

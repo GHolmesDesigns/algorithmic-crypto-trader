@@ -681,4 +681,4 @@ def test_drill_expects_the_checkout_migration_head_not_a_fixed_revision() -> Non
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == [migration_head()] == ["0007_evidence_records"]
+    assert result.stdout.split() == [migration_head()] == ["0008_incident_records"]

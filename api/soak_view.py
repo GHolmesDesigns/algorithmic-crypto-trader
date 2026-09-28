@@ -25,6 +25,8 @@ from api.soak import CRITERIA, EVIDENCE_KINDS, EVIDENCE_STATUSES, NOTE_LIMIT
 
 SOAK_PATH = PATHS["soak"]
 EVIDENCE_PATH = f"{SOAK_PATH}/evidence"
+INCIDENT_OPEN_PATH = f"{SOAK_PATH}/incidents"
+INCIDENT_CLOSE_PATH = f"{SOAK_PATH}/incidents/close"
 INTRO = (
     "A 30-day digest from the persisted records, and the #12 soak and #13 readiness "
     "criteria. Everything defaults to incomplete until evidence exists: a day never shows "
@@ -34,8 +36,7 @@ _DAY_STATUS = {"incomplete": "unknown", "pass": "ok"}
 _CRITERION_STATUS = {"incomplete": "unknown", "pass": "ok", "fail": "crit"}
 _MISSING_LABELS = {
     "equity": "Equity",
-    "uptime_restarts_disconnects": "Uptime, restarts, and disconnects",
-    "backup_restore": "Backup and restore",
+    "uptime": "Uptime",
     "incidents": "Incidents",
 }
 
@@ -49,18 +50,26 @@ def build_soak_view(
     evidence_form: Mapping[str, str] | None = None,
     evidence_errors: Sequence[str] = (),
     evidence_saved: bool = False,
+    incident_open_form: Mapping[str, str] | None = None,
+    incident_open_errors: Sequence[str] = (),
+    incident_close_form: Mapping[str, str] | None = None,
+    incident_close_errors: Sequence[str] = (),
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Everything the Soak & readiness page shows; ``payload`` is absent when nothing was read."""
 
     now = now or datetime.now(UTC)
     form = evidence_form or {}
+    open_form = incident_open_form or {}
+    close_form = incident_close_form or {}
     view: dict[str, Any] = {
         "kind": "soak",
         "title": "Soak & readiness",
         "intro": INTRO,
         "path": SOAK_PATH,
         "evidence_path": EVIDENCE_PATH,
+        "incident_open_path": INCIDENT_OPEN_PATH,
+        "incident_close_path": INCIDENT_CLOSE_PATH,
         "nav": [
             {"href": PATHS[item], "label": label, "current": item == "soak"}
             for item, _, label in NAV
@@ -71,7 +80,9 @@ def build_soak_view(
         "days": [],
         "digest_gaps": [],
         "criteria": {"soak": [], "readiness": []},
+        "open_incidents": [],
         "can_record_evidence": role == "admin",
+        "can_manage_incidents": role == "admin",
         "evidence_kinds": list(EVIDENCE_KINDS),
         "evidence_statuses": list(EVIDENCE_STATUSES),
         "evidence_form": {
@@ -82,6 +93,13 @@ def build_soak_view(
         },
         "evidence_errors": list(evidence_errors),
         "evidence_saved": evidence_saved,
+        "incident_open_form": {"cause": open_form.get("cause", "")},
+        "incident_open_errors": list(incident_open_errors),
+        "incident_close_form": {
+            "incident_id": close_form.get("incident_id", ""),
+            "note": close_form.get("note", ""),
+        },
+        "incident_close_errors": list(incident_close_errors),
         "note_limit": NOTE_LIMIT,
     }
     if payload is None:
@@ -101,6 +119,7 @@ def build_soak_view(
         "soak": [_criterion(item, now) for item in payload["criteria"]["soak"]],
         "readiness": [_criterion(item, now) for item in payload["criteria"]["readiness"]],
     }
+    view["open_incidents"] = [_open_incident(item, now) for item in payload["open_incidents"]]
     return view
 
 
@@ -113,9 +132,24 @@ def _day(day: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "reconciliation_runs": int(day["reconciliation_runs"]),
         "divergences": int(day["divergences"]),
         "kill_switch_events": int(day["kill_switch_events"]),
+        "heartbeats": int(day["heartbeats"]),
+        "restarts": int(day["restarts"]),
+        "recovered_restarts": int(day["recovered_restarts"]),
+        "disconnects": int(day["disconnects"]),
+        "gap_fills": int(day["gap_fills"]),
+        "open_incidents": int(day["open_incidents"]),
         "equity": day.get("equity"),
         "status": _status(day["status"], _DAY_STATUS),
         "missing": [_MISSING_LABELS.get(key, key) for key in day.get("missing", ())],
+    }
+
+
+def _open_incident(item: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    return {
+        "incident_id": str(item["incident_id"]),
+        "cause": str(item["cause"]),
+        "opened_by": str(item["opened_by"]),
+        "opened_at": _stamp(item.get("opened_at"), now),
     }
 
 

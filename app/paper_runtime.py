@@ -15,6 +15,7 @@ from typing import Protocol
 
 from api.alerts import Alert
 from api.operator import OperatorState
+from api.system_events import DISCONNECT_EVENT, GAP_FILL_EVENT, SystemEventJournal
 from core.guards import StartupGuardError
 from core.models import Candle, MarketState, Quote, TradingMode, utc_now
 from data.backfill import HistoricalCandleBackfiller
@@ -60,6 +61,7 @@ class RestCloser(Protocol):
 class StreamRunner(Protocol):
     on_candle: Callable[[Candle], Awaitable[None]] | None
     gap_fill: Callable[[str, datetime | None, datetime], Awaitable[None]] | None
+    on_disconnect: Callable[[datetime], Awaitable[None]] | None
     last_candle_at: dict[str, datetime]
 
     async def run(self, stop: asyncio.Event, *, max_connections: int | None = None) -> None: ...
@@ -139,6 +141,7 @@ class PaperRuntime:
         rest_client: RestCloser,
         ingestor: StreamRunner,
         engine: DisposableEngine,
+        system_events: SystemEventJournal | None = None,
     ) -> None:
         self.config = config
         self.operator = operator
@@ -148,11 +151,13 @@ class PaperRuntime:
         self.rest_client = rest_client
         self.ingestor = ingestor
         self.engine = engine
+        self.system_events = system_events
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task[None] | None = None
         self._active_alerts: set[str] = set()
         self.ingestor.on_candle = self.on_candle
         self.ingestor.gap_fill = self.gap_fill
+        self.ingestor.on_disconnect = self.on_disconnect
         self.cycle.on_halt = self.on_halt
 
     async def start(self) -> None:
@@ -211,6 +216,10 @@ class PaperRuntime:
                 self.engine.dispose()
                 self.operator.set_runtime("stopped", "paper runtime stopped")
 
+    async def on_disconnect(self, at: datetime) -> None:
+        if self.system_events is not None:
+            self.system_events.record(DISCONNECT_EVENT, {"at": at.isoformat()}, now=at)
+
     async def gap_fill(self, symbol: str, last_closed: datetime | None, end: datetime) -> None:
         self.operator.heartbeat("primary", status="degraded", detail="market-data reconnecting")
         await self._alert_once(
@@ -223,6 +232,16 @@ class PaperRuntime:
             if last_closed is not None
             else end - INTERVAL * self.config.history_bars
         )
+        if self.system_events is not None:
+            self.system_events.record(
+                GAP_FILL_EVENT,
+                {
+                    "symbol": symbol,
+                    "from": start.isoformat() if last_closed is not None else None,
+                    "to": end.isoformat(),
+                },
+                now=end,
+            )
         if start < end:
             await self.backfiller.run(symbol, start, end, granularity=WEBSOCKET_CANDLE_INTERVAL)
 
@@ -390,6 +409,7 @@ async def start_paper_runtime(
         rest_client=public_rest,
         ingestor=stream,
         engine=engine,
+        system_events=getattr(application.state, "system_events", None),
     )
     try:
         await runtime.start()

@@ -208,3 +208,22 @@ class EvidenceRecord(Base):
     note: Mapped[str] = mapped_column(Text, nullable=False)
     recorded_by: Mapped[str] = mapped_column(String(32), nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class IncidentRecord(Base):
+    """An administrator-opened and -closed incident, for the soak digest and #12's exit bar.
+
+    ``cause`` is required at open, so an incident can never exist without a documented
+    cause. Both it and ``closed_note`` are redacted free text before they are stored,
+    the same as ``EvidenceRecord.note``. An incident with ``closed_at`` unset is open.
+    """
+
+    __tablename__ = "incident_records"
+    __table_args__ = (Index("ix_incident_records_opened_at", "opened_at"),)
+    incident_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    cause: Mapped[str] = mapped_column(Text, nullable=False)
+    opened_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closed_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -28,6 +28,7 @@ from db.models import (
     PositionSnapshotRecord,
     RiskDecisionRecord,
     SignalRecord,
+    SystemEventRecord,
 )
 from execution.audit import AuditStore
 from execution.engine import ExecutionEngine, OrderStore
@@ -51,6 +52,7 @@ SQLITE_TABLES = (
     PositionSnapshotRecord.__table__,
     BalanceSnapshotRecord.__table__,
     EquitySnapshotRecord.__table__,
+    SystemEventRecord.__table__,
 )
 
 CONSTRAINTS = ExchangeConstraints(
