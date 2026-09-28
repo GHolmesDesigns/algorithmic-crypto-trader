@@ -68,6 +68,11 @@
                     <th scope="col" class="num">Reconciliation runs</th>
                     <th scope="col" class="num">Divergences</th>
                     <th scope="col" class="num">Kill-switch events</th>
+                    <th scope="col" class="num">Heartbeats</th>
+                    <th scope="col" class="num">Restarts</th>
+                    <th scope="col" class="num">Disconnects</th>
+                    <th scope="col" class="num">Gap fills</th>
+                    <th scope="col" class="num">Open incidents</th>
                     <th scope="col" class="num">Equity</th>
                     <th scope="col">Status</th>
                   </tr>
@@ -81,6 +86,11 @@
                     <td class="num"><span class="count">{{ day.reconciliation_runs }}</span></td>
                     <td class="num"><span class="count">{{ day.divergences }}</span></td>
                     <td class="num"><span class="count">{{ day.kill_switch_events }}</span></td>
+                    <td class="num"><span class="count">{{ day.heartbeats }}</span></td>
+                    <td class="num"><span class="count">{{ day.restarts }}</span>{% if day.recovered_restarts %} <span class="age">({{ day.recovered_restarts }} recovered)</span>{% endif %}</td>
+                    <td class="num"><span class="count">{{ day.disconnects }}</span></td>
+                    <td class="num"><span class="count">{{ day.gap_fills }}</span></td>
+                    <td class="num"><span class="count">{{ day.open_incidents }}</span></td>
                     <td class="num">{% if day.equity %}{{ day.equity }}{% else %}{{ ui.absent("not recorded") }}{% endif %}</td>
                     <td>{{ ui.pill(day.status) }}</td>
                   </tr>
@@ -89,6 +99,81 @@
               </table>
             </div>
             <p class="note">A day's status is incomplete unless every field is recorded, including the fields with no producer above. It is never shown as pass on partial data.</p>
+            <p class="note">Backup and restore drill results are not a daily field: drills run periodically, not once a day. They are tracked as the <strong>backup_restore_verified</strong> soak criterion below.</p>
+          </section>
+
+          <section class="panel" aria-labelledby="incidents-heading">
+            <h2 id="incidents-heading">Open incidents</h2>
+            <p class="note">An incident is administrator-only to open or close, and its cause and closing note are redacted the same way evidence notes are.</p>
+            {%- if view.open_incidents %}
+            <div class="table-wrap" role="region" aria-labelledby="incidents-heading" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr>
+                    <th scope="col">Cause</th>
+                    <th scope="col">Opened</th>
+                    {%- if view.can_manage_incidents %}<th scope="col">Close</th>{%- endif %}
+                  </tr>
+                </thead>
+                <tbody>
+                  {%- for incident in view.open_incidents %}
+                  <tr>
+                    <td class="note">{{ incident.cause }}</td>
+                    <td class="event-meta">{{ incident.opened_by }} · {{ ui.stamp(incident.opened_at) }}</td>
+                    {%- if view.can_manage_incidents %}
+                    <td>
+                      <form method="post" action="{{ view.incident_close_path }}">
+                        <input type="hidden" name="incident_id" value="{{ incident.incident_id }}">
+                        <div class="field">
+                          <label for="close-note-{{ incident.incident_id }}">Resolution</label>
+                          <textarea id="close-note-{{ incident.incident_id }}" name="note" rows="2" required maxlength="{{ view.note_limit }}"></textarea>
+                        </div>
+                        <div class="actions">
+                          <button class="button button-rearm" type="submit">Close incident</button>
+                        </div>
+                      </form>
+                    </td>
+                    {%- endif %}
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- else %}
+            {{ ui.absent("No open incident.") }}
+            {%- endif %}
+            {%- if view.incident_close_errors %}
+            <div class="notice tone-crit" role="alert">
+              <p><span class="mark" aria-hidden="true">■</span> The incident could not be closed.</p>
+              <ul class="errors">
+                {%- for error in view.incident_close_errors %}
+                <li>{{ error }}</li>
+                {%- endfor %}
+              </ul>
+            </div>
+            {%- endif %}
+            {%- if view.can_manage_incidents %}
+            <h3>Open a new incident</h3>
+            {%- if view.incident_open_errors %}
+            <div class="notice tone-crit" role="alert">
+              <p><span class="mark" aria-hidden="true">■</span> The incident could not be opened.</p>
+              <ul class="errors">
+                {%- for error in view.incident_open_errors %}
+                <li>{{ error }}</li>
+                {%- endfor %}
+              </ul>
+            </div>
+            {%- endif %}
+            <form method="post" action="{{ view.incident_open_path }}">
+              <div class="field">
+                <label for="incident-cause">Cause</label>
+                <textarea id="incident-cause" name="cause" rows="3" required maxlength="{{ view.note_limit }}">{{ view.incident_open_form.cause }}</textarea>
+              </div>
+              <div class="actions">
+                <button class="button button-rearm" type="submit">Open incident</button>
+              </div>
+            </form>
+            {%- endif %}
           </section>
 
           <section class="panel" aria-labelledby="soak-criteria-heading">

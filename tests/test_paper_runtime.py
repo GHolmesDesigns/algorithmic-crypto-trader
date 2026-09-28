@@ -97,6 +97,14 @@ class FakeEngine:
         return None
 
 
+class FakeSystemEvents:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def record(self, event_type: str, payload, *, now=None) -> None:
+        self.events.append((event_type, dict(payload)))
+
+
 def operator(tmp_path, sink: RecordingSink) -> OperatorState:
     return OperatorState(
         settings=StartupSettings(
@@ -111,7 +119,7 @@ def operator(tmp_path, sink: RecordingSink) -> OperatorState:
     )
 
 
-def runtime(tmp_path, *, quote: Quote | None):
+def runtime(tmp_path, *, quote: Quote | None, system_events=None):
     store = InMemoryCandleStore()
     store.upsert_many(tuple(candle(index) for index in range(8)))
     cycle = RecordingCycle()
@@ -137,6 +145,7 @@ def runtime(tmp_path, *, quote: Quote | None):
         rest_client=FakeRest(),
         ingestor=ingestor,
         engine=FakeEngine(),
+        system_events=system_events,
     )
     return instance, cycle, sink
 
@@ -221,6 +230,33 @@ async def test_disconnect_gap_fill_alert_is_deduplicated(tmp_path) -> None:
 
     assert len(instance.backfiller.calls) == 2
     assert [alert.condition for alert in sink.alerts] == ["market_data_disconnected"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_and_gap_fill_each_persist_one_system_event(tmp_path) -> None:
+    events = FakeSystemEvents()
+    instance, _cycle, _sink = runtime(tmp_path, quote=None, system_events=events)
+    end = T0 + INTERVAL * 12
+
+    await instance.on_disconnect(T0)
+    await instance.gap_fill("BTC-USD", T0 + INTERVAL * 8, end)
+
+    assert [event_type for event_type, _ in events.events] == ["disconnect", "gap_fill"]
+    disconnect_payload = events.events[0][1]
+    gap_fill_payload = events.events[1][1]
+    assert disconnect_payload["at"] == T0.isoformat()
+    assert gap_fill_payload["symbol"] == "BTC-USD"
+    assert gap_fill_payload["to"] == end.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_ingestor_disconnect_hook_is_wired_to_the_runtime(tmp_path) -> None:
+    events = FakeSystemEvents()
+    instance, _cycle, _sink = runtime(tmp_path, quote=None, system_events=events)
+
+    await instance.ingestor.on_disconnect(T0)
+
+    assert [event_type for event_type, _ in events.events] == ["disconnect"]
 
 
 @pytest.mark.asyncio

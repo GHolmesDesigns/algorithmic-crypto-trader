@@ -215,6 +215,36 @@ async def test_websocket_reconnects_gap_fills_and_records_raw_stream(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_websocket_reports_a_disconnect_once_before_gap_filling_every_product() -> None:
+    heartbeat = json.dumps({"channel": "heartbeats", "events": []})
+    transport = FakeTransport([heartbeat])
+    disconnects: list[datetime] = []
+    gap_fills: list[str] = []
+
+    async def connect(_: str) -> FakeTransport:
+        return transport
+
+    async def on_disconnect(at: datetime) -> None:
+        disconnects.append(at)
+
+    async def gap_fill(symbol: str, _start: datetime | None, _end: datetime) -> None:
+        gap_fills.append(symbol)
+        stop.set()
+
+    stop = asyncio.Event()
+    ingestor = CoinbaseWebSocketIngestor(
+        ("BTC-USD", "ETH-USD"),
+        connect=connect,
+        on_disconnect=on_disconnect,
+        gap_fill=gap_fill,
+        reconnect_base_seconds=0.001,
+    )
+    await ingestor.run(stop, max_connections=2)
+    assert len(disconnects) == 1
+    assert gap_fills == ["BTC-USD", "ETH-USD"]
+
+
+@pytest.mark.asyncio
 async def test_ticker_uses_the_live_envelope_timestamp() -> None:
     quotes: list[Quote] = []
 

@@ -39,6 +39,7 @@ class CoinbaseWebSocketIngestor:
         on_candle: Callable[[Candle], Awaitable[None]] | None = None,
         on_quote: Callable[[Quote], Awaitable[None]] | None = None,
         gap_fill: Callable[[str, datetime | None, datetime], Awaitable[None]] | None = None,
+        on_disconnect: Callable[[datetime], Awaitable[None]] | None = None,
         recorder: JsonlReplayRecorder | None = None,
         heartbeat_timeout_seconds: float = 30.0,
         reconnect_base_seconds: float = 1.0,
@@ -54,6 +55,7 @@ class CoinbaseWebSocketIngestor:
         self.on_candle = on_candle
         self.on_quote = on_quote
         self.gap_fill = gap_fill
+        self.on_disconnect = on_disconnect
         self.recorder = recorder
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.reconnect_base_seconds = reconnect_base_seconds
@@ -87,6 +89,8 @@ class CoinbaseWebSocketIngestor:
             except Exception:
                 # The bucket in progress at the disconnect never closed on the stream.
                 self._open_buckets.clear()
+                if self.on_disconnect is not None and not stop.is_set():
+                    await self.on_disconnect(self.clock())
                 if self.gap_fill is not None and not stop.is_set():
                     # Backfill closed buckets only: stop at the start of the current one.
                     gap_end = _bucket_start(self.clock())
