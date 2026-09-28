@@ -461,12 +461,13 @@ def _daily_restart_counts(
     ).all()
     total = [0] * (len(edges) - 1)
     recovered = [0] * (len(edges) - 1)
-    for created_at, payload in rows:
-        ts = _aware(created_at)
+    for row in rows:
+        ts = _aware(row[0])
+        payload: dict[str, Any] = row[1]
         for index, (start, end) in enumerate(zip(edges, edges[1:], strict=False)):
             if start <= ts < end:
                 total[index] += 1
-                if dict(payload).get("kind") == "recovered":
+                if payload.get("kind") == "recovered":
                     recovered[index] += 1
                 break
     return total, recovered
@@ -484,9 +485,7 @@ def _daily_open_incidents(session: Session, edges: tuple[datetime, ...]) -> list
     counts = [0] * (len(edges) - 1)
     for index, end in enumerate(edges[1:]):
         counts[index] = sum(
-            1
-            for opened_at, closed_at in rows
-            if _aware(opened_at) < end and (closed_at is None or _aware(closed_at) >= end)
+            1 for row in rows if _aware(row[0]) < end and (row[1] is None or _aware(row[1]) >= end)
         )
     return counts
 
