@@ -155,6 +155,52 @@ async def get(application, path: str, headers=OPERATOR, params=None) -> httpx.Re
         return await client.get(path, headers=headers, params=params)
 
 
+def test_market_activity_returns_linked_buy_sell_markers_and_excludes_watch_only(tmp_path):
+    application = history_app(tmp_path)
+    now = utc_now()
+    buy = lineage(now - timedelta(minutes=4))
+    sell = lineage(now - timedelta(minutes=2), symbol="ETH-USD")
+    sell[0].side = "sell"
+    sell[2].side = "sell"
+    add(tmp_path, *buy, *sell)
+
+    activity = application.state.history.market_activity(
+        ("BTC-USD", "ETH-USD", "ADA-USD"),
+        now - timedelta(hours=1),
+        now + timedelta(minutes=1),
+        trading_symbols=("BTC-USD",),
+    )
+
+    btc, eth, ada = activity["symbols"]
+    assert [row["kind"] for row in btc["rows"]] == ["signal", "order", "fill"]
+    assert all(row["side"] == "buy" for row in btc["rows"])
+    assert all(row["href"].startswith("/operator/history/orders/") for row in btc["rows"])
+    assert eth["total"] == eth["shown"] == 0 and not eth["rows"]
+    assert ada["total"] == ada["shown"] == 0 and not ada["rows"]
+    assert activity["max_days"] == 31 and activity["max_rows"] == 100
+
+
+def test_market_activity_reports_the_100_row_cap_and_31_day_boundary(tmp_path):
+    application = history_app(tmp_path)
+    now = utc_now()
+    rows = []
+    for index in range(34):
+        rows.extend(lineage(now - timedelta(minutes=index), symbol="BTC-USD"))
+    add(tmp_path, *rows)
+
+    activity = application.state.history.market_activity(
+        ("BTC-USD",), now - timedelta(days=1), now + timedelta(minutes=1)
+    )
+    tile = activity["symbols"][0]
+    assert tile["total"] == 34 * 3
+    assert tile["shown"] == 100 and tile["truncated"]
+    wide = application.state.history.market_activity(
+        ("BTC-USD",), now - timedelta(days=32), now + timedelta(minutes=1)
+    )
+    assert wide["status"] == "unavailable"
+    assert "31 days" in wide["reason"]
+
+
 # Bounds
 
 

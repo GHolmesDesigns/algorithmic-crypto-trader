@@ -1433,6 +1433,52 @@ time,
   vector-effect: non-scaling-stroke;
 }
 
+.market-marker {
+  fill: var(--surface);
+  stroke: var(--chart-ink);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+
+.market-marker-link:focus .market-marker,
+.market-marker-link:hover .market-marker {
+  fill: var(--chart-ink);
+}
+
+.market-activity {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.market-activity h3 {
+  font-size: 1rem;
+}
+
+.market-activity-empty,
+.market-activity-unavailable {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 0.875rem;
+}
+
+.market-activity-unavailable {
+  color: var(--unknown);
+}
+
+.market-activity-symbol {
+  width: 3rem;
+  font-size: 1.25rem;
+  text-align: center !important;
+}
+
+.market-activity-symbol a {
+  display: inline-block;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding-top: 0.375rem;
+}
+
 .market-empty {
   min-height: 10rem;
   padding: 2rem 1rem;

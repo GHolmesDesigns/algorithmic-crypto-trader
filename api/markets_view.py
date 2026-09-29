@@ -122,7 +122,20 @@ def build_markets_view(
         {"value": key, "label": label, "selected": key == view["interval"]}
         for key, label in INTERVAL_LABELS.items()
     ]
-    tiles = [_tile(item, query) for item in payload.get("symbols", ())]
+    activity_payload = payload.get("activity") or {}
+    if activity_payload.get("status") == "available":
+        activity_by_symbol = {
+            str(item["symbol"]): {"status": "available", **item}
+            for item in activity_payload.get("symbols", ())
+        }
+    else:
+        activity_by_symbol = {
+            str(item["symbol"]): activity_payload for item in payload.get("symbols", ())
+        }
+    tiles = [
+        _tile(item, query, activity_by_symbol.get(str(item["symbol"])))
+        for item in payload.get("symbols", ())
+    ]
     view["tiles"] = tiles
     view["columns"] = 3 if len(tiles) > 4 else 2 if len(tiles) > 1 else 1
     view["query"] = query
@@ -134,7 +147,11 @@ def build_markets_view(
     return view
 
 
-def _tile(item: Mapping[str, Any], query: Mapping[str, Any]) -> dict[str, Any]:
+def _tile(
+    item: Mapping[str, Any],
+    query: Mapping[str, Any],
+    activity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     symbol = str(item["symbol"])
     freshness = item.get("freshness") or {}
     raw_state = str(freshness.get("state", "not_collected"))
@@ -150,6 +167,7 @@ def _tile(item: Mapping[str, Any], query: Mapping[str, Any]) -> dict[str, Any]:
     source = str(item.get("source") or "none recorded")
     as_of = freshness.get("last_candle_at") or "none yet"
     has_chart = bool(values) and state in {"drawn", "stale"}
+    activity_view = _activity_view(activity, bars, values, highs, lows)
     chart_label = _chart_summary(symbol, state, first, last, change, highs, lows, as_of)
     return {
         "symbol": symbol,
@@ -169,6 +187,8 @@ def _tile(item: Mapping[str, Any], query: Mapping[str, Any]) -> dict[str, Any]:
         "summary": chart_label,
         "has_chart": has_chart,
         "segments": _segments(bars) if has_chart else (),
+        "markers": activity_view["markers"] if has_chart else (),
+        "activity": activity_view,
         "points": len(values),
         "table": _table_rows(
             last=last,
@@ -190,6 +210,124 @@ def _tile(item: Mapping[str, Any], query: Mapping[str, Any]) -> dict[str, Any]:
             },
         ),
     }
+
+
+def _activity_view(
+    activity: Mapping[str, Any] | None,
+    bars: Sequence[Mapping[str, Any]],
+    values: Sequence[tuple[int, Decimal]],
+    highs: Sequence[Decimal],
+    lows: Sequence[Decimal],
+) -> dict[str, Any]:
+    """Turn persisted activity into linked SVG markers and a table alternative."""
+
+    activity = activity or {
+        "status": "available",
+        "total": 0,
+        "shown": 0,
+        "truncated": False,
+        "rows": [],
+    }
+    if activity.get("status") != "available":
+        return {
+            "status": "unavailable",
+            "reason": str(activity.get("reason") or "activity history is unavailable"),
+            "total": 0,
+            "shown": 0,
+            "truncated": False,
+            "markers": (),
+            "rows": (),
+        }
+
+    markers: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    low = min(lows) if lows else None
+    high = max(highs) if highs else None
+    for row in activity.get("rows", ()):
+        side = "sell" if str(row.get("side", "")).lower() == "sell" else "buy"
+        at = _parse_moment(row.get("at"))
+        price = _decimal(row.get("price"))
+        marker = None
+        if at is not None:
+            index = _bar_index(bars, at)
+            if index is not None:
+                value = price or _value_at(values, index)
+                if value is not None and low is not None and high is not None:
+                    x = (
+                        Decimal(50)
+                        if len(bars) == 1
+                        else Decimal(index * 100) / Decimal(len(bars) - 1)
+                    )
+                    y = (
+                        Decimal(50)
+                        if high == low
+                        else Decimal(100) - ((value - low) * Decimal(100) / (high - low))
+                    )
+                    y = max(Decimal(8), min(Decimal(92), y))
+                    marker = {
+                        "x": _coordinate(x),
+                        "y": _coordinate(y),
+                        "points": _marker_points(x, y, side),
+                        "side": side,
+                        "kind": str(row.get("kind") or "activity"),
+                        "label": str(row.get("label") or "Activity"),
+                        "at": _moment(row.get("at")),
+                        "price": _price(price or value),
+                        "href": str(row.get("href") or ""),
+                    }
+                    markers.append(marker)
+        rows.append(
+            {
+                "kind": str(row.get("label") or row.get("kind") or "Activity"),
+                "marker": "▼" if side == "sell" else "▲",
+                "side": "Sell" if side == "sell" else "Buy",
+                "at": _moment(row.get("at")),
+                "price": _price(price),
+                "href": str(row.get("href") or ""),
+            }
+        )
+    return {
+        "status": "available",
+        "reason": "",
+        "total": int(activity.get("total", len(rows))),
+        "shown": int(activity.get("shown", len(rows))),
+        "truncated": bool(activity.get("truncated")),
+        "markers": tuple(markers),
+        "rows": tuple(rows),
+    }
+
+
+def _bar_index(bars: Sequence[Mapping[str, Any]], at: datetime) -> int | None:
+    for index, bar in enumerate(bars):
+        opened = _parse_moment(bar.get("opened_at"))
+        closed = _parse_moment(bar.get("closed_at"))
+        if opened is not None and closed is not None and opened <= at < closed:
+            return index
+    return None
+
+
+def _value_at(values: Sequence[tuple[int, Decimal]], index: int) -> Decimal | None:
+    if not values:
+        return None
+    return min(values, key=lambda item: abs(item[0] - index))[1]
+
+
+def _marker_points(x: Decimal, y: Decimal, side: str) -> str:
+    if side == "sell":
+        points = ((x - 4, y - 3), (x + 4, y - 3), (x, y + 5))
+    else:
+        points = ((x, y - 5), (x - 4, y + 3), (x + 4, y + 3))
+    return " ".join(f"{_coordinate(point_x)},{_coordinate(point_y)}" for point_x, point_y in points)
+
+
+def _parse_moment(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def _values(bars: Sequence[Mapping[str, Any]]) -> list[tuple[int, Decimal]]:

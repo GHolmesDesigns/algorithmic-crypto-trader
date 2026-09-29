@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import SQLAlchemyError
 
+from api.history import HistoryUnavailable
 from api.markets import (
     CandleQueryRefused,
     CandlesUnavailable,
@@ -50,6 +51,7 @@ def market_candles(request: Request) -> Response:
         payload = reads.read(query, feed_states=_feed_states(request))
     except CandlesUnavailable as exc:
         return _unavailable(str(exc))
+    payload["activity"] = _activity(request, query)
     return JSONResponse(payload)
 
 
@@ -65,6 +67,44 @@ def _feed_states(request: Request) -> dict[str, dict[str, Any]]:
     if feed is None:
         return {}
     return {item["symbol"]: item for item in feed.to_dict()["symbols"]}
+
+
+def _activity(request: Request, query) -> dict[str, Any]:
+    """Read persisted trading activity, excluding watch-only symbols."""
+
+    history = getattr(request.app.state, "history", None)
+    if history is None:
+        return {
+            "status": "unavailable",
+            "reason": "the activity history is not configured in this process",
+            "max_days": 31,
+            "max_rows": 100,
+            "symbols": [],
+        }
+    feed = getattr(request.app.state, "watch_feed", None)
+    if feed is None:
+        state = getattr(request.app.state, "operator_state", None)
+        feed = getattr(state, "watch_feed", None)
+    trading_symbols = (
+        tuple(feed.trading_symbols)
+        if feed is not None and hasattr(feed, "trading_symbols")
+        else None
+    )
+    try:
+        return history.market_activity(
+            query.symbols,
+            query.since,
+            query.until,
+            trading_symbols=trading_symbols,
+        )
+    except HistoryUnavailable as exc:
+        return {
+            "status": "unavailable",
+            "reason": str(exc),
+            "max_days": 31,
+            "max_rows": 100,
+            "symbols": [],
+        }
 
 
 def _unavailable(reason: str) -> Response:

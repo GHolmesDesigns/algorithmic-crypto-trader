@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 from core.logging import redact_free_text
@@ -52,6 +53,8 @@ WINDOWS = {
 }
 DEFAULT_WINDOW = "24h"
 MAX_WINDOW = WINDOWS["31d"]
+ACTIVITY_MAX_ROWS = MAX_LIMIT
+ACTIVITY_MAX_WINDOW = MAX_WINDOW
 FILLS_PER_ORDER = 50
 TEXT_LIMIT = 128
 
@@ -477,6 +480,56 @@ class SqlAlchemyHistory:
             raise HistoryUnavailable("order lineage could not be read") from exc
         return rows[0] if rows else None
 
+    def market_activity(
+        self,
+        symbols: Sequence[str],
+        since: datetime,
+        until: datetime,
+        *,
+        trading_symbols: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        """Read bounded signal, order, and fill markers for each traded symbol.
+
+        Activity is deliberately narrower than the candle windows: a tile can show
+        90 days of prices, but markers are only offered for the history read model's
+        31-day and 100-row limits. Each tile has its own 100-row cap, and the exact
+        total is returned so a busy tile never looks complete when it was truncated.
+        """
+
+        if until - since > ACTIVITY_MAX_WINDOW:
+            return {
+                "status": "unavailable",
+                "reason": (
+                    f"activity markers are available for windows up to "
+                    f"{ACTIVITY_MAX_WINDOW.days} days; choose a shorter chart window"
+                ),
+                "max_days": ACTIVITY_MAX_WINDOW.days,
+                "max_rows": ACTIVITY_MAX_ROWS,
+                "symbols": [],
+            }
+
+        allowed = set(trading_symbols) if trading_symbols is not None else None
+        try:
+            with self.session_factory() as session:
+                result = [
+                    _market_activity_for_symbol(
+                        session,
+                        symbol,
+                        since,
+                        until,
+                        allowed=allowed,
+                    )
+                    for symbol in symbols
+                ]
+        except SQLAlchemyError as exc:
+            raise HistoryUnavailable("activity history could not be read") from exc
+        return {
+            "status": "available",
+            "max_days": ACTIVITY_MAX_WINDOW.days,
+            "max_rows": ACTIVITY_MAX_ROWS,
+            "symbols": result,
+        }
+
     def _page(
         self,
         query: HistoryQuery,
@@ -509,6 +562,155 @@ class SqlAlchemyHistory:
             last = records[-1][0]
             next_before = Cursor(_utc(getattr(last, at.key)), getattr(last, key.key)).encode()
         return Page(rows, int(total or 0), next_before)
+
+
+def _market_activity_for_symbol(
+    session: Session,
+    symbol: str,
+    since: datetime,
+    until: datetime,
+    *,
+    allowed: set[str] | None,
+) -> dict[str, Any]:
+    """Read one tile's activity, retaining no provider payloads."""
+
+    if allowed is not None and symbol not in allowed:
+        return {"symbol": symbol, "total": 0, "shown": 0, "truncated": False, "rows": []}
+
+    signal_window = (
+        SignalRecord.symbol == symbol,
+        SignalRecord.created_at >= since,
+        SignalRecord.created_at < until,
+    )
+    order_window = (
+        OrderRecord.symbol == symbol,
+        OrderRecord.created_at >= since,
+        OrderRecord.created_at < until,
+    )
+    fill_window = (
+        OrderRecord.symbol == symbol,
+        FillRecord.occurred_at >= since,
+        FillRecord.occurred_at < until,
+    )
+    signal_total = int(
+        session.scalar(select(func.count()).select_from(SignalRecord).where(*signal_window)) or 0
+    )
+    order_total = int(
+        session.scalar(select(func.count()).select_from(OrderRecord).where(*order_window)) or 0
+    )
+    fill_total = int(
+        session.scalar(
+            select(func.count())
+            .select_from(FillRecord)
+            .join(OrderRecord, OrderRecord.order_id == FillRecord.order_id)
+            .where(*fill_window)
+        )
+        or 0
+    )
+
+    signals = session.scalars(
+        select(SignalRecord)
+        .where(*signal_window)
+        .order_by(SignalRecord.created_at.desc(), SignalRecord.signal_id.desc())
+        .limit(ACTIVITY_MAX_ROWS + 1)
+    ).all()
+    orders = session.scalars(
+        select(OrderRecord)
+        .where(*order_window)
+        .order_by(OrderRecord.created_at.desc(), OrderRecord.order_id.desc())
+        .limit(ACTIVITY_MAX_ROWS + 1)
+    ).all()
+    fills = session.execute(
+        select(FillRecord, OrderRecord)
+        .join(OrderRecord, OrderRecord.order_id == FillRecord.order_id)
+        .where(*fill_window)
+        .order_by(FillRecord.occurred_at.desc(), FillRecord.fill_id.desc())
+        .limit(ACTIVITY_MAX_ROWS + 1)
+    ).all()
+    signal_orders = {
+        order.signal_id: order
+        for order in session.scalars(
+            select(OrderRecord).where(OrderRecord.signal_id.in_([row.signal_id for row in signals]))
+        ).all()
+    }
+
+    rows: list[dict[str, Any]] = []
+    for signal_record in signals:
+        order = signal_orders.get(signal_record.signal_id)
+        client_order_id = str(order.client_order_id) if order is not None else None
+        rows.append(
+            {
+                "id": str(signal_record.signal_id),
+                "kind": "signal",
+                "label": "Signal",
+                "at": _iso(signal_record.created_at),
+                "_at": _utc(signal_record.created_at),
+                "symbol": symbol,
+                "side": _activity_side(signal_record.side),
+                "price": None,
+                "client_order_id": client_order_id,
+                "href": (
+                    f"/operator/history/orders/{client_order_id}"
+                    if client_order_id
+                    else _signal_href(symbol, signal_record.created_at, until)
+                ),
+            }
+        )
+    for order_record in orders:
+        rows.append(
+            {
+                "id": str(order_record.order_id),
+                "kind": "order",
+                "label": "Order",
+                "at": _iso(order_record.created_at),
+                "_at": _utc(order_record.created_at),
+                "symbol": symbol,
+                "side": _activity_side(order_record.side),
+                "price": _decimal(order_record.limit_price),
+                "client_order_id": str(order_record.client_order_id),
+                "href": f"/operator/history/orders/{order_record.client_order_id}",
+            }
+        )
+    for fill_record, order in fills:
+        rows.append(
+            {
+                "id": str(fill_record.fill_id),
+                "kind": "fill",
+                "label": "Fill",
+                "at": _iso(fill_record.occurred_at),
+                "_at": _utc(fill_record.occurred_at),
+                "symbol": symbol,
+                "side": _activity_side(order.side),
+                "price": _decimal(fill_record.price),
+                "client_order_id": str(order.client_order_id),
+                "href": f"/operator/history/orders/{order.client_order_id}",
+            }
+        )
+
+    priority = {"signal": 0, "order": 1, "fill": 2}
+    rows.sort(key=lambda row: (row["_at"], priority[row["kind"]], row["id"]))
+    total = signal_total + order_total + fill_total
+    truncated = total > ACTIVITY_MAX_ROWS
+    visible = rows[-ACTIVITY_MAX_ROWS:] if truncated else rows
+    for row in visible:
+        row.pop("_at", None)
+    return {
+        "symbol": symbol,
+        "total": total,
+        "shown": len(visible),
+        "truncated": truncated,
+        "rows": visible,
+    }
+
+
+def _activity_side(value: object) -> str:
+    return "sell" if str(value or "").lower() == "sell" else "buy"
+
+
+def _signal_href(symbol: str, at: datetime, until: datetime) -> str:
+    return "/operator/history/signals?" + urlencode(
+        {"symbol": symbol, "since": _iso(at), "until": _iso(until)}
+    )
 
 
 def _window(query: HistoryQuery, at: Any) -> ColumnElement[bool]:
