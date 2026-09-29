@@ -6,7 +6,7 @@ Lightweight Charts for the Markets page only.
 - Version: `5.2.1`
 - Release: <https://github.com/tradingview/lightweight-charts/releases/tag/v5.2.1>
 - Build source: <https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js>
-- SHA-256: `43EF24A8B85A2A1636C9DD3CD6E209E361F099E134C74465CBA7A3148D4290C6`
+- SHA-256: `E21CC5CAA0226EF30BD8549C50B9EF926615F2A4EE6B4E486353477A55F598CF`
 - License and attribution: `lightweight-charts.LICENSE` and `lightweight-charts.NOTICE`
 
 Update this library only through a reviewed pull request. The pull request must
