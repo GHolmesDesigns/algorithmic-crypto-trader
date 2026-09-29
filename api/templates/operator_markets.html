@@ -1,0 +1,96 @@
+{%- extends "_operator_page.html" -%}
+{#- Markets: server-drawn SVG lines with no JavaScript, remote chart embed, or provider call. -#}
+{%- import "_operator_macros.html" as ui -%}
+{% block title %}{{ view.title }}{% endblock %}
+{% block page_name %}Markets{% endblock %}
+{% block page_class %} page-wide{% endblock %}
+
+{% macro tile(item) -%}
+        <article class="market-tile" aria-labelledby="{{ item.symbol|lower }}-heading">
+          <header class="market-tile-head">
+            <div>
+              <h2 id="{{ item.symbol|lower }}-heading" class="mono">{{ item.symbol }}</h2>
+              <p class="market-state market-state-{{ item.state }}"><span aria-hidden="true">{{ item.state_mark }}</span> {{ item.state_label }}</p>
+            </div>
+            <a class="button button-quiet market-external" href="{{ item.tradingview }}" target="_blank" rel="noopener noreferrer">TradingView<span class="visually-hidden"> for {{ item.symbol }}</span></a>
+          </header>
+          <p class="source">Source: <code>{{ item.source }}</code>; as of <time>{{ item.as_of }}</time>.</p>
+          {% if item.detail %}<p class="note">{{ item.detail }}</p>{% endif %}
+          {% if item.has_chart %}
+          <figure class="market-chart">
+            <svg class="market-line-svg" viewBox="0 0 100 100" role="img" aria-label="{{ item.summary }}" focusable="false">
+              {% for segment in item.segments %}<path class="market-line" d="{{ segment }}"/>{% endfor %}
+            </svg>
+            <figcaption class="note">{{ item.interval }} · {{ item.window }} · {{ item.points }} plotted points; gaps are not connected.</figcaption>
+          </figure>
+          {% else %}
+          <p class="market-empty" role="status"><span aria-hidden="true">{{ item.state_mark }}</span> {{ item.summary }}</p>
+          {% endif %}
+          <dl class="market-metrics">
+            <div><dt>Last price</dt><dd class="count">{{ item.last }}</dd></div>
+            <div><dt>Change</dt><dd class="count">{{ item.change }} ({{ item.change_percent }})</dd></div>
+            <div><dt>High</dt><dd class="count">{{ item.high }}</dd></div>
+            <div><dt>Low</dt><dd class="count">{{ item.low }}</dd></div>
+          </dl>
+          <details class="market-table">
+            <summary>Accessible data table for {{ item.symbol }}</summary>
+            <div class="table-wrap" role="region" aria-label="{{ item.symbol }} market values" tabindex="0">
+              <table class="data">
+                <caption class="visually-hidden">{{ item.symbol }} market values for {{ item.window }}</caption>
+                <thead><tr><th scope="col">Measure</th><th scope="col">Value</th></tr></thead>
+                <tbody>{% for row in item.table %}<tr><th scope="row">{{ row.label }}</th><td class="num">{{ row.value }}</td></tr>{% endfor %}</tbody>
+              </table>
+            </div>
+          </details>
+        </article>
+{%- endmacro %}
+
+{% block content %}
+        <nav class="history-nav" aria-label="Operator views">
+          <ul>
+            <li><a href="/operator">Dashboard</a></li>
+            <li><a href="{{ view.path }}" aria-current="page">Markets</a></li>
+            <li><a href="{{ view.watchlist_path }}">Watchlist editor</a></li>
+            <li><a href="/operator/history/orders">History</a></li>
+          </ul>
+        </nav>
+        <section class="block" aria-labelledby="markets-heading">
+          <div class="block-head">
+            <h1 id="markets-heading">{{ view.title }}</h1>
+            <p class="block-note">{{ view.intro }}</p>
+          </div>
+          {% if view.errors %}
+          <div class="notice tone-crit" role="alert">
+            <p><span class="mark" aria-hidden="true">■</span> This layout was refused. Nothing was read.</p>
+            <ul class="errors">{% for error in view.errors %}<li>{{ error }}</li>{% endfor %}</ul>
+          </div>
+          {% elif view.unavailable %}
+          <div class="notice tone-unknown" role="status">
+            <p><span class="mark" aria-hidden="true">○</span> Not available: {{ view.unavailable }}.</p>
+            <p>Nothing could be read, so this is not an empty chart. Check System health and the application log.</p>
+          </div>
+          {% elif view.query %}
+          <form class="panel market-form" method="get" action="{{ view.path }}" aria-labelledby="market-options-heading">
+            <h2 id="market-options-heading">Chart options</h2>
+            <div class="filter-grid">
+              <div class="field"><label for="market-coins">Coins in this layout</label><input id="market-coins" name="c" value="{{ view.query.symbols|join(',') }}" maxlength="90" pattern="[A-Za-z0-9,-]+" spellcheck="false" autocomplete="off"><p class="note">Up to nine <code>*-USD</code> symbols. This URL is shareable and does not change the saved watchlist.</p></div>
+              <div class="field"><label for="market-window">Window</label><select id="market-window" name="window">{% for option in view.windows %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></div>
+              <div class="field"><label for="market-interval">Bar interval</label><select id="market-interval" name="interval">{% for option in view.intervals %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></div>
+            </div>
+            <div class="actions"><button class="button button-rearm" type="submit">Refresh charts</button><a href="{{ view.watchlist_path }}">Edit saved watchlist</a></div>
+            <p class="note">The server caps each series at 300 points. Missing candles remain gaps; a state never stands in for a price.</p>
+          </form>
+          <p class="note">Share this layout: <a href="{{ view.share_href }}">{{ view.share_href }}</a>. The link is read-only.</p>
+          <div class="market-grid" style="--market-columns: {{ view.columns }};" aria-label="Market charts">
+            {% for item in view.tiles %}{{ tile(item) }}{% endfor %}
+          </div>
+          <p class="note">Watching is not trading. These tiles read stored candles only; the watchlist never changes <code>PAPER_SYMBOLS</code>.</p>
+          {% else %}
+          <section class="panel" aria-labelledby="empty-markets-heading">
+            <h2 id="empty-markets-heading">No coins selected</h2>
+            <p>Add a coin to the saved watchlist, or provide a shareable <code>c=BTC-USD,ETH-USD</code> layout.</p>
+            <p><a class="button button-rearm" href="{{ view.watchlist_path }}">Open watchlist editor</a></p>
+          </section>
+          {% endif %}
+        </section>
+{% endblock %}
