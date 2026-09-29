@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 from api.markets import CandleQuery, parse_candles_query
 
 MARKETS_PATH = "/operator/markets"
+MARKET_CANDLES_PATH = "/operator/markets/candles"
 WATCHLIST_PATH = "/operator/watchlist"
 INTRO = (
     "Read-only Coinbase candles from the saved watchlist. These charts never add a coin "
@@ -180,6 +181,14 @@ def _tile(item: Mapping[str, Any], query: Mapping[str, Any]) -> dict[str, Any]:
             state=STATE_LABELS[state],
         ),
         "tradingview": _tradingview(symbol),
+        "candles_url": _href(
+            MARKET_CANDLES_PATH,
+            {
+                "symbols": symbol,
+                "window": str(query["window"]),
+                "interval": str(query["interval"]),
+            },
+        ),
     }
 
 

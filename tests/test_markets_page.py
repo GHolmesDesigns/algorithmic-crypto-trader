@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -155,12 +156,71 @@ async def test_page_is_server_rendered_with_metrics_table_and_only_tradingview_e
     assert "Accessible data table for BTC-USD" in body
     assert 'href="https://www.tradingview.com/chart/?symbol=COINBASE:BTCUSD"' in body
     assert 'target="_blank"' in body and 'rel="noopener noreferrer"' in body
-    assert "<script" not in body.lower()
+    assert '<script src="/operator/static/lightweight-charts.js" defer></script>' in body
+    assert '<script src="/operator/static/markets.js" defer></script>' in body
+    assert "<script>" not in body.lower()
     assert "<iframe" not in body.lower()
     assert "<img" not in body.lower()
-    assert "https://" not in body.replace(
-        "https://www.tradingview.com/chart/?symbol=COINBASE:BTCUSD", ""
+    assert "https://" not in body.replace("https://www.tradingview.com/", "")
+
+
+def test_vendored_lightweight_charts_build_has_the_recorded_checksum_and_notices():
+    root = Path(__file__).resolve().parents[1] / "api" / "static" / "markets"
+    library = root / "lightweight-charts.standalone.production.js"
+    digest = hashlib.sha256(library.read_bytes()).hexdigest().upper()
+    metadata = (root / "README.md").read_text(encoding="utf-8")
+    assert "Version: `5.2.1`" in metadata
+    assert f"SHA-256: `{digest}`" in metadata
+    assert "Apache License" in (root / "lightweight-charts.LICENSE").read_text(encoding="utf-8")
+    assert "TradingView Lightweight Charts" in (root / "lightweight-charts.NOTICE").read_text(
+        encoding="utf-8"
     )
+
+
+@pytest.mark.asyncio
+async def test_local_library_route_has_javascript_content_type_and_immutable_cache_headers(
+    tmp_path,
+):
+    application = app_with_watchlist(tmp_path, "BTC-USD")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get("/operator/static/lightweight-charts.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert b"LightweightCharts" in response.content
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        module = await client.get("/operator/static/markets.js")
+    assert module.status_code == 200
+    assert module.headers["content-type"].startswith("application/javascript")
+    assert b"data-market-tile" in module.content
+
+
+@pytest.mark.asyncio
+async def test_markets_page_has_same_origin_csp_and_keeps_the_svg_fallback(tmp_path):
+    response = await get_page(app_with_watchlist(tmp_path, "BTC-USD"))
+    assert response.headers["content-security-policy"] == (
+        "default-src 'none'; script-src 'self'; connect-src 'self'; "
+        "style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; "
+        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+    )
+    assert 'class="market-line-svg"' in response.text
+    assert "data-market-enhancement" in response.text
+
+
+@pytest.mark.asyncio
+async def test_other_operator_pages_remain_javascript_free(tmp_path):
+    application = app_with_watchlist(tmp_path, "BTC-USD")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get("/operator", headers=HTML)
+    assert response.status_code == 200
+    assert "<script" not in response.text.lower()
 
 
 @pytest.mark.asyncio
