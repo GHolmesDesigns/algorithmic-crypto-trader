@@ -24,8 +24,14 @@
           <figure class="market-chart">
             <svg class="market-line-svg" viewBox="0 0 100 100" role="img" aria-label="{{ item.summary }}" focusable="false">
               {% for segment in item.segments %}<path class="market-line" d="{{ segment }}"/>{% endfor %}
+              {% for marker in item.markers %}
+              {% if marker.href %}<a class="market-marker-link" href="{{ marker.href }}">{% endif %}
+                <title>{{ marker.label }}: {{ marker.side }} at {{ marker.at }}{% if marker.price != "none" %}, {{ marker.price }}{% endif %}</title>
+                <polygon class="market-marker market-marker-{{ marker.side }}" points="{{ marker.points }}" aria-label="{{ marker.label }} {{ marker.side }} at {{ marker.at }}"/>
+              {% if marker.href %}</a>{% endif %}
+              {% endfor %}
             </svg>
-            <figcaption class="note">{{ item.interval }} · {{ item.window }} · {{ item.points }} plotted points; gaps are not connected.</figcaption>
+            <figcaption class="note">{{ item.interval }} · {{ item.window }} · {{ item.points }} plotted points; gaps are not connected. Activity markers link to persisted history.</figcaption>
           </figure>
           <div class="market-enhancement" data-market-enhancement hidden>
             <div class="market-chart-toolbar" role="group" aria-label="Interactive chart controls for {{ item.symbol }}">
@@ -54,6 +60,23 @@
                 <tbody>{% for row in item.table %}<tr><th scope="row">{{ row.label }}</th><td class="num">{{ row.value }}</td></tr>{% endfor %}</tbody>
               </table>
             </div>
+            <section class="market-activity" aria-labelledby="{{ item.symbol|lower }}-activity-heading">
+              <h3 id="{{ item.symbol|lower }}-activity-heading">Bot activity markers</h3>
+              {% if item.activity.status != "available" %}
+              <p class="market-activity-unavailable" role="status">Activity markers unavailable: {{ item.activity.reason }}.</p>
+              {% elif not item.activity.rows %}
+              <p class="market-activity-empty" role="status">No bot activity was recorded for this symbol in this window.</p>
+              {% else %}
+              {% if item.activity.truncated %}<p class="note">Showing {{ item.activity.shown }} of {{ item.activity.total }} records; the oldest activity is outside the 100-marker cap.</p>{% endif %}
+              <div class="table-wrap" role="region" aria-label="{{ item.symbol }} bot activity" tabindex="0">
+                <table class="data market-activity-table">
+                  <caption class="visually-hidden">{{ item.symbol }} bot activity markers</caption>
+                  <thead><tr><th scope="col">Marker</th><th scope="col">Kind</th><th scope="col">Time</th><th scope="col">Price</th></tr></thead>
+                  <tbody>{% for row in item.activity.rows %}<tr><td class="market-activity-symbol">{% if row.href %}<a href="{{ row.href }}">{{ row.marker }}</a>{% else %}{{ row.marker }}{% endif %}</td><th scope="row">{{ row.kind }} · {{ row.side }}</th><td><time>{{ row.at }}</time></td><td class="num">{{ row.price }}</td></tr>{% endfor %}</tbody>
+                </table>
+              </div>
+              {% endif %}
+            </section>
           </details>
         </article>
 {%- endmacro %}

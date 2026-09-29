@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from sqlalchemy.exc import SQLAlchemyError
 
 from api.markets import CandleQueryRefused, CandlesUnavailable
-from api.markets_routes import _feed_states
+from api.markets_routes import _activity, _feed_states
 from api.markets_view import MARKETS_PATH, build_markets_view, parse_markets_query
 from api.routes import _authorize, _page, _wants_html, templates
 
@@ -95,6 +95,7 @@ def markets_page(request: Request) -> Response:
         return _render(
             request, role, build_markets_view(None, form=form, unavailable=str(exc)), 503
         )
+    payload["activity"] = _activity(request, query)
     view = build_markets_view(payload, form=form)
     if not _wants_html(request):
         return JSONResponse({"kind": "markets", "status": "available", **payload})

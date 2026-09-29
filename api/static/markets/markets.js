@@ -66,6 +66,22 @@
     }, []);
   }
 
+  function activityRecords(activity, color) {
+    return ((activity && activity.rows) || []).reduce(function (result, row) {
+      var timestamp = time(row.at);
+      if (timestamp === null) return result;
+      var sell = String(row.side || "").toLowerCase() === "sell";
+      result.push({
+        time: timestamp,
+        position: sell ? "aboveBar" : "belowBar",
+        shape: sell ? "arrowDown" : "arrowUp",
+        color: color,
+        text: String(row.label || row.kind || "A").slice(0, 1),
+      });
+      return result;
+    }, []);
+  }
+
   function enhance(tile) {
     var mount = tile.querySelector("[data-chart-mount]");
     var enhancement = tile.querySelector("[data-market-enhancement]");
@@ -85,6 +101,7 @@
         var symbol = tile.dataset.symbol;
         var series = (payload.symbols || []).find(function (item) { return item.symbol === symbol; });
         if (!series || !records(series, "line").length) throw new Error("chart data empty");
+        var activity = (payload.activity && payload.activity.symbols || []).find(function (item) { return item.symbol === symbol; });
 
         var colors = palette();
         enhancement.hidden = false;
@@ -124,6 +141,9 @@
                 lineWidth: 2,
               });
               activeSeries.setData(records(series, "line"));
+            }
+            if (activeSeries && charts.createSeriesMarkers) {
+              charts.createSeriesMarkers(activeSeries, activityRecords(activity, colors.ink));
             }
             if (volume.checked) {
               volumeSeries = chart.addSeries(charts.HistogramSeries, {

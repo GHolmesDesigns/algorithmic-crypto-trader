@@ -143,6 +143,87 @@ def test_view_breaks_the_svg_line_at_gaps_and_keeps_state_words_distinct():
     )
 
 
+def test_view_places_linked_buy_and_sell_markers_and_preserves_unavailable_activity():
+    payload = {
+        "query": {
+            "window": "24h",
+            "interval": "15m",
+            "symbols": ["BTC-USD"],
+        },
+        "symbols": [
+            {
+                "symbol": "BTC-USD",
+                "source": "coinbase_advanced_trade",
+                "freshness": {"state": "fresh", "last_candle_at": "2026-09-27T14:15:00+00:00"},
+                "bars": [
+                    {
+                        "opened_at": "2026-09-27T14:00:00+00:00",
+                        "closed_at": "2026-09-27T14:15:00+00:00",
+                        "close": "100",
+                        "high": "101",
+                        "low": "99",
+                    },
+                    {
+                        "opened_at": "2026-09-27T14:15:00+00:00",
+                        "closed_at": "2026-09-27T14:30:00+00:00",
+                        "close": "102",
+                        "high": "103",
+                        "low": "101",
+                    },
+                ],
+            }
+        ],
+        "activity": {
+            "status": "available",
+            "symbols": [
+                {
+                    "symbol": "BTC-USD",
+                    "total": 2,
+                    "shown": 2,
+                    "truncated": False,
+                    "rows": [
+                        {
+                            "id": "signal",
+                            "kind": "signal",
+                            "label": "Signal",
+                            "at": "2026-09-27T14:05:00+00:00",
+                            "side": "buy",
+                            "price": None,
+                            "href": "/operator/history/orders/buy",
+                        },
+                        {
+                            "id": "fill",
+                            "kind": "fill",
+                            "label": "Fill",
+                            "at": "2026-09-27T14:20:00+00:00",
+                            "side": "sell",
+                            "price": "102",
+                            "href": "/operator/history/orders/sell",
+                        },
+                    ],
+                }
+            ],
+        },
+    }
+    view = build_markets_view(payload, form={})
+    tile = view["tiles"][0]
+    assert [marker["side"] for marker in tile["markers"]] == ["buy", "sell"]
+    assert [row["marker"] for row in tile["activity"]["rows"]] == ["▲", "▼"]
+    assert all(
+        row["href"].startswith("/operator/history/orders/") for row in tile["activity"]["rows"]
+    )
+
+    unavailable = dict(payload)
+    unavailable["activity"] = {
+        "status": "unavailable",
+        "reason": "activity history could not be read",
+        "symbols": [],
+    }
+    tile = build_markets_view(unavailable, form={})["tiles"][0]
+    assert tile["activity"]["status"] == "unavailable"
+    assert "could not be read" in tile["activity"]["reason"]
+
+
 @pytest.mark.asyncio
 async def test_page_is_server_rendered_with_metrics_table_and_only_tradingview_external_links(
     tmp_path,
