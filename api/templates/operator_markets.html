@@ -1,12 +1,16 @@
 {%- extends "_operator_page.html" -%}
-{#- Markets: server-drawn SVG lines with no JavaScript, remote chart embed, or provider call. -#}
+{#- Markets: server-drawn SVG fallback, with an optional local chart enhancement. -#}
 {%- import "_operator_macros.html" as ui -%}
 {% block title %}{{ view.title }}{% endblock %}
 {% block page_name %}Markets{% endblock %}
 {% block page_class %} page-wide{% endblock %}
+{% block head_extra %}
+    <script src="/operator/static/lightweight-charts.js" defer></script>
+    <script src="/operator/static/markets.js" defer></script>
+{% endblock %}
 
 {% macro tile(item) -%}
-        <article class="market-tile" aria-labelledby="{{ item.symbol|lower }}-heading">
+        <article class="market-tile" data-market-tile data-symbol="{{ item.symbol }}" data-candles-url="{{ item.candles_url }}" aria-labelledby="{{ item.symbol|lower }}-heading">
           <header class="market-tile-head">
             <div>
               <h2 id="{{ item.symbol|lower }}-heading" class="mono">{{ item.symbol }}</h2>
@@ -23,6 +27,15 @@
             </svg>
             <figcaption class="note">{{ item.interval }} · {{ item.window }} · {{ item.points }} plotted points; gaps are not connected.</figcaption>
           </figure>
+          <div class="market-enhancement" data-market-enhancement hidden>
+            <div class="market-chart-toolbar" role="group" aria-label="Interactive chart controls for {{ item.symbol }}">
+              <label>View <select data-chart-type><option value="line">Line</option><option value="candles">Candles</option></select></label>
+              <label><input type="checkbox" data-volume> Volume</label>
+              <button class="button button-quiet" type="button" data-reset-chart>Reset zoom</button>
+            </div>
+            <div class="market-interactive-chart" data-chart-mount role="img" aria-label="Interactive {{ item.symbol }} chart"></div>
+            <p class="note">Interactive chart: use the crosshair, mouse wheel, pinch, or drag to inspect the stored bars. The accessible table remains below.</p>
+          </div>
           {% else %}
           <p class="market-empty" role="status"><span aria-hidden="true">{{ item.state_mark }}</span> {{ item.summary }}</p>
           {% endif %}
@@ -85,6 +98,7 @@
             {% for item in view.tiles %}{{ tile(item) }}{% endfor %}
           </div>
           <p class="note">Watching is not trading. These tiles read stored candles only; the watchlist never changes <code>PAPER_SYMBOLS</code>.</p>
+          <p class="note market-attribution">Interactive charts use <a href="https://www.tradingview.com/" rel="noopener noreferrer">TradingView Lightweight Charts</a>, served locally. No TradingView account, feed, or runtime request is used.</p>
           {% else %}
           <section class="panel" aria-labelledby="empty-markets-heading">
             <h2 id="empty-markets-heading">No coins selected</h2>

@@ -1,8 +1,8 @@
 # Algorithmic Crypto Trader user manual
 
 - **Manual version:** Draft 1
-- **Applies to:** application version `0.1.0` at repository commit `b101344`
-- **Last reviewed:** 2026-09-27
+- **Applies to:** application version `0.1.0` at repository commit `52d016a`
+- **Last reviewed:** 2026-09-29
 
 <!-- markdown-only-note:start -->
 Open the [styled HTML manual](user-manual.html) for audience filters, responsive
@@ -365,8 +365,22 @@ source, and the time of the newest stored candle. The server draws the price
 line as SVG, and missing candles break the line rather than becoming zero or
 being carried forward. The **Accessible data table** under each tile repeats
 the values in text. The page works with JavaScript disabled and embeds no
-TradingView script, iframe, image, or data feed. A **TradingView** link opens
-the corresponding hosted chart in a new tab only.
+ TradingView script, iframe, image, or data feed. A **TradingView** link opens
+ the corresponding hosted chart in a new tab only.
+
+When the locally served chart library and same-origin data request both
+succeed, a tile may add crosshair, zoom, pan, line/candle, and volume controls;
+the table remains the accessible alternative. A visible TradingView attribution
+link is required by the library license. No TradingView account, feed, or
+runtime request is used. If the library is blocked, the JSON request fails, or
+the response is malformed, the server-drawn SVG stays in place.
+
+The interactive enhancement is limited to this page. Its Content-Security-Policy
+permits scripts and chart data only from the app's own origin, disallows inline
+script, and prevents framing. Every other operator page and every safety
+control remains JavaScript-free. The pinned library, checksum, license, and
+notice are in `api/static/markets/`; update them only in a reviewed pull request
+that records the new release and SHA-256.
 
 The tile states are deliberately different:
 

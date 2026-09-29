@@ -63,8 +63,8 @@
         <h1>Algorithmic Crypto Trader</h1>
         <p class="deck">One safety-first manual, organized for operators, engineers, and AI agents.</p>
         <dl class="stats">
-          <div class="stat"><dt>Application</dt><dd>0.1.0<small>source commit b101344</small></dd></div>
-          <div class="stat"><dt>Reviewed</dt><dd>2026-09-27<small>verify against current source</small></dd></div>
+          <div class="stat"><dt>Application</dt><dd>0.1.0<small>source commit 52d016a</small></dd></div>
+          <div class="stat"><dt>Reviewed</dt><dd>2026-09-29<small>verify against current source</small></dd></div>
           <div class="stat is-ok"><dt>Default mode</dt><dd>Backtest<small>no external orders</small></dd></div>
           <div class="stat is-warn"><dt>Live trading</dt><dd>Not authorized<small>later phase with separate approval</small></dd></div>
         </dl>
@@ -88,7 +88,7 @@
 
 <div class="shead"><span class="num">00</span><h2>Manual status</h2></div>
 <div class="lanes"><article class="lane" data-lane="operator engineer agent"><span class="chip">Everyone</span>
-<ul><li><strong>Manual version:</strong> Draft 1</li><li><strong>Applies to:</strong> application version <code>0.1.0</code> at repository commit <code>b101344</code></li><li><strong>Last reviewed:</strong> 2026-09-27</li></ul>
+<ul><li><strong>Manual version:</strong> Draft 1</li><li><strong>Applies to:</strong> application version <code>0.1.0</code> at repository commit <code>52d016a</code></li><li><strong>Last reviewed:</strong> 2026-09-29</li></ul>
 <aside class="note is-crit"><strong>Safety notice</strong> This project is experimental software, not financial advice. The current repository does not authorize live trading. Never paste exchange credentials, operator tokens, account details, database exports, or unredacted operational logs into this repository, an issue, a pull request, a chat, or an AI prompt.</aside>
 </article></div>
 </section><section id="choose-your-path" data-lanes="operator engineer agent">
@@ -214,6 +214,8 @@
 <p>The <strong>Markets</strong> page draws the saved coins side by side from the app's stored five-minute candles. Open it from the operator navigation or go to <code>/operator/markets</code>. It is read-only: it never changes the watchlist, adds a symbol to <code>PAPER_SYMBOLS</code>, or submits an order.</p>
 <p>Choose a window and bar interval, then select <strong>Refresh charts</strong>. The server keeps each series within 300 points. The <code>c</code> field in the URL is a shareable layout, for example <code>/operator/markets?c=BTC-USD,ETH-USD</code>; it does not save anything. A layout may contain at most nine unique <code>*-USD</code> symbols. Invalid, duplicate, or oversized layouts are refused with a reason before candles are read. Use <strong>Watchlist editor</strong> to change the saved set.</p>
 <p>Each tile shows the last price, change over the selected window, high, low, source, and the time of the newest stored candle. The server draws the price line as SVG, and missing candles break the line rather than becoming zero or being carried forward. The <strong>Accessible data table</strong> under each tile repeats the values in text. The page works with JavaScript disabled and embeds no TradingView script, iframe, image, or data feed. A <strong>TradingView</strong> link opens the corresponding hosted chart in a new tab only.</p>
+<p>When the locally served chart library and same-origin data request both succeed, a tile may add crosshair, zoom, pan, line/candle, and volume controls; the table remains the accessible alternative. A visible TradingView attribution link is required by the library license. No TradingView account, feed, or runtime request is used. If the library is blocked, the JSON request fails, or the response is malformed, the server-drawn SVG stays in place.</p>
+<p>The interactive enhancement is limited to this page. Its Content-Security-Policy permits scripts and chart data only from the app's own origin, disallows inline script, and prevents framing. Every other operator page and every safety control remains JavaScript-free. The pinned library, checksum, license, and notice are in <code>api/static/markets/</code>; update them only in a reviewed pull request that records the new release and SHA-256.</p>
 <p>The tile states are deliberately different:</p>
 <div class="tablewrap"><table><thead><tr><th>Tile state</th><th>Meaning</th></tr></thead><tbody><tr><td><strong>Drawn</strong></td><td>Recent stored candles produced a server-drawn line.</td></tr><tr><td><strong>Stale</strong></td><td>Stored candles exist, but the newest one is outside the freshness limit.</td></tr><tr><td><strong>Not yet collected</strong></td><td>No candle has been stored for the coin, or the watch-only feed is off.</td></tr><tr><td><strong>Unavailable</strong></td><td>The watch-only feed reported a failure; the reason is shown and no line is drawn.</td></tr></tbody></table></div>
 <p>States do not change the dashboard's runtime, heartbeat, kill switch, alerts, or trading symbols. A tile with no candles in the selected window says so instead of showing an empty axis.</p>
