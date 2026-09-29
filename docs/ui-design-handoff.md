@@ -36,6 +36,10 @@
 >   - Iteration D → #63.
 >
 >   Delivery 5 (controlled-live support) stays with #13 until it is separately authorized.
+> - **Roadmap Rev. C (2026-09-29) adds Phase 4: multi-coin market charts** (planning document §9; cards #87–#91). It is **Backlog**.
+>   - A Markets page at `/operator/markets` will show up to nine coins the operator chooses in the app. Its charts are drawn from the app's own stored Coinbase candles, never from TradingView's hosted widgets.
+>   - Every tile is server-drawn SVG with a table alternative. A pinned, vendored copy of TradingView's open-source Lightweight Charts library, served from the app's own origin, may add zoom, pan, and crosshair on that page only.
+>   - This is the one exception to "no JavaScript" on the operator surface. The other pages, and every safety control, stay JavaScript-free, and nothing loads from a CDN.
 
 ## 1. How to read this report
 
