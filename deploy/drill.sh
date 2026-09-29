@@ -102,7 +102,14 @@ rearm_after_drill() {
     "reason=Restart drill $(date -u +%Y-%m-%d): every drill check passed; lifting the drill's own pause marker under the owner's standing drill authorization"
 }
 
-# Cover every table backup-postgres.sh backs up.
+# Cover every table backup-postgres.sh backs up. Every process start records one
+# `restart` system event (#76), so a restart legitimately adds that row. They are
+# counted apart (restart_events, printed but never compared) and system_events
+# counts every other event, so any other new row still fails the drill.
+same_rows() {
+  [ "$(grep -v '^restart_events=' "$1")" = "$(grep -v '^restart_events=' "$2")" ]
+}
+
 counts() {
   compose exec -T db sh -c \
     'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1' <<'SQL' | LC_ALL=C sort
@@ -111,7 +118,8 @@ UNION ALL SELECT 'signals=' || count(*) FROM signals
 UNION ALL SELECT 'risk_decisions=' || count(*) FROM risk_decisions
 UNION ALL SELECT 'orders=' || count(*) FROM orders
 UNION ALL SELECT 'fills=' || count(*) FROM fills
-UNION ALL SELECT 'system_events=' || count(*) FROM system_events
+UNION ALL SELECT 'system_events=' || count(*) FROM system_events WHERE event_type <> 'restart'
+UNION ALL SELECT 'restart_events=' || count(*) FROM system_events WHERE event_type = 'restart'
 UNION ALL SELECT 'audit_notes=' || count(*) FROM audit_notes
 UNION ALL SELECT 'market_candles=' || count(*) FROM market_candles
 UNION ALL SELECT 'portfolio_snapshots=' || count(*) FROM portfolio_snapshots
@@ -192,7 +200,7 @@ case "${1:-}" in
     state=$(api GET /operator/kill-switch operator state || echo unavailable)
     check app-restart-kill-switch "$(ok test "$state" = "$marker" -a "$marker" != running)" "state=$state"
     counts > "$state_dir/after-app-restart.txt"
-    check app-restart-rows "$(ok cmp -s "$state_dir/before.txt" "$state_dir/after-app-restart.txt")" "row counts unchanged"
+    check app-restart-rows "$(ok same_rows "$state_dir/before.txt" "$state_dir/after-app-restart.txt")" "row counts unchanged"
     record_recovery app-restart
     finish before-reboot
     ;;
@@ -207,7 +215,7 @@ case "${1:-}" in
     state=$(api GET /operator/kill-switch operator state || echo unavailable)
     check reboot-kill-switch "$(ok test "$state" = "$marker" -a "$marker" != running)" "state=$state"
     counts > "$state_dir/after-reboot.txt"
-    check reboot-rows "$(ok cmp -s "$state_dir/before.txt" "$state_dir/after-reboot.txt")" "row counts unchanged"
+    check reboot-rows "$(ok same_rows "$state_dir/before.txt" "$state_dir/after-reboot.txt")" "row counts unchanged"
     record_recovery reboot
     original=$(cat "$state_dir/original-kill-switch")
     if [ "$failures" -eq 0 ] && [ "$original" = running ]; then
