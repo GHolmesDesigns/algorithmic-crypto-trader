@@ -13,6 +13,7 @@ from api.alerts import Alert, AlertRouter, build_alert_router
 from api.history import SqlAlchemyHistory
 from api.history_routes import router as history_router
 from api.markets import SqlAlchemyCandleReads
+from api.markets_page_routes import router as markets_page_router
 from api.markets_routes import router as markets_router
 from api.operator import OperatorState
 from api.research import ResearchWorkspace
@@ -80,6 +81,7 @@ def create_app(
     application.router.routes.extend(router.routes)
     application.router.routes.extend(history_router.routes)
     application.router.routes.extend(markets_router.routes)
+    application.router.routes.extend(markets_page_router.routes)
     application.router.routes.extend(research_router.routes)
     application.router.routes.extend(soak_router.routes)
     application.router.routes.extend(watchlist_router.routes)

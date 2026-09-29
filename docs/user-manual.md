@@ -346,6 +346,41 @@ runtime status and heartbeats, so a problem here never changes them:
 | **not yet collected** | Nothing has been collected yet, or the feed is off. |
 | **unavailable** | The last request failed. The reason and the retry delay follow the failure. Trading is unaffected. |
 
+## Read the Markets page
+
+The **Markets** page draws the saved coins side by side from the app's stored
+five-minute candles. Open it from the operator navigation or go to
+`/operator/markets`. It is read-only: it never changes the watchlist, adds a
+symbol to `PAPER_SYMBOLS`, or submits an order.
+
+Choose a window and bar interval, then select **Refresh charts**. The server
+keeps each series within 300 points. The `c` field in the URL is a shareable
+layout, for example `/operator/markets?c=BTC-USD,ETH-USD`; it does not save
+anything. A layout may contain at most nine unique `*-USD` symbols. Invalid,
+duplicate, or oversized layouts are refused with a reason before candles are
+read. Use **Watchlist editor** to change the saved set.
+
+Each tile shows the last price, change over the selected window, high, low,
+source, and the time of the newest stored candle. The server draws the price
+line as SVG, and missing candles break the line rather than becoming zero or
+being carried forward. The **Accessible data table** under each tile repeats
+the values in text. The page works with JavaScript disabled and embeds no
+TradingView script, iframe, image, or data feed. A **TradingView** link opens
+the corresponding hosted chart in a new tab only.
+
+The tile states are deliberately different:
+
+| Tile state | Meaning |
+| --- | --- |
+| **Drawn** | Recent stored candles produced a server-drawn line. |
+| **Stale** | Stored candles exist, but the newest one is outside the freshness limit. |
+| **Not yet collected** | No candle has been stored for the coin, or the watch-only feed is off. |
+| **Unavailable** | The watch-only feed reported a failure; the reason is shown and no line is drawn. |
+
+States do not change the dashboard's runtime, heartbeat, kill switch, alerts,
+or trading symbols. A tile with no candles in the selected window says so
+instead of showing an empty axis.
+
 ## Research and replay
 
 The **Research and replay** page is an authenticated workspace for engineers
@@ -744,6 +779,7 @@ provider, credential, live confirmation, or reconciliation interval.
 | `GET /operator/rearm` | Administrator | Re-arm review page: active warnings, recent kill-switch changes, and the checklist form. |
 | `POST /operator/rearm` | Administrator | Persist `running` after the review. Requires every checklist item and a reason. The only route that lowers the kill switch. |
 | `GET /operator/watchlist` | Operator | The saved watchlist with each coin's feed state, as a page or JSON. Takes no parameters. |
+| `GET /operator/markets` | Operator | Server-drawn one-to-nine-coin grid from stored candles. Parameters: `c` (shareable comma-separated `*-USD` symbols), `window`, and `interval`; invalid, duplicate, or oversized layouts are refused. |
 | `POST /operator/watchlist/add` | Operator | Form or JSON `symbol`. Refuses unknown, delisted, or trading-disabled products, duplicates, and a tenth coin. |
 | `POST /operator/watchlist/remove` | Operator | Form or JSON `symbol`. |
 | `POST /operator/watchlist/reorder` | Operator | JSON `order` (every coin once), or `symbol` with `direction` `up` or `down`. |
