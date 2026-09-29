@@ -12,6 +12,8 @@ from pathlib import Path
 from api.alerts import Alert, AlertRouter, build_alert_router
 from api.history import SqlAlchemyHistory
 from api.history_routes import router as history_router
+from api.markets import SqlAlchemyCandleReads
+from api.markets_routes import router as markets_router
 from api.operator import OperatorState
 from api.research import ResearchWorkspace
 from api.research_routes import router as research_router
@@ -77,6 +79,7 @@ def create_app(
     )
     application.router.routes.extend(router.routes)
     application.router.routes.extend(history_router.routes)
+    application.router.routes.extend(markets_router.routes)
     application.router.routes.extend(research_router.routes)
     application.router.routes.extend(soak_router.routes)
     application.router.routes.extend(watchlist_router.routes)
@@ -183,9 +186,9 @@ def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
 
 
 def attach_history(application: FastAPI) -> Callable[[], None]:
-    """Serve bounded, read-only history, trends, and the soak console from the database.
+    """Serve bounded, read-only history, trends, market candles, and the soak console.
 
-    Returns a close callback. Without it, the history, trends, and soak routes
+    Returns a close callback. Without it, the history, trends, candle, and soak routes
     answer 503: not available, never an empty history or a chart of zeros.
     """
 
@@ -194,6 +197,7 @@ def attach_history(application: FastAPI) -> Callable[[], None]:
     session_factory = create_session_factory(engine)
     application.state.history = SqlAlchemyHistory(session_factory)
     application.state.trends = SqlAlchemyTrends(session_factory)
+    application.state.market_candles = SqlAlchemyCandleReads(session_factory)
     application.state.soak = SqlAlchemySoak(session_factory)
     return engine.dispose
 
