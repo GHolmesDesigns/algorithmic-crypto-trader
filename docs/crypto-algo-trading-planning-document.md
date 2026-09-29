@@ -2,14 +2,14 @@
 
 ## Implementation planning document
 
-**Document revision:** Rev. B — 21 September 2026
-**Supersedes:** Rev. A, 20 September 2026
+**Document revision:** Rev. C — 29 September 2026
+**Supersedes:** Rev. B, 21 September 2026
 **Planning basis:** Feasibility study **Rev. B** (Coinbase live / Gemini sandbox / Kraken second)
 **Primary decision:** Phase 1 uses Coinbase Advanced Trade for the production/live-trading integration and Gemini Sandbox for rehearsal. No unofficial integration is in scope.
 
 ### Phase numbering crosswalk
 
-This document re-scopes the feasibility study's eleven phases into four. Use this mapping whenever the two documents are discussed together.
+This document re-scopes the feasibility study's eleven phases into four. Rev. C adds Phase 4, which has no counterpart in the study. Use this mapping whenever the two documents are discussed together.
 
 | This document | Feasibility study | Content |
 |---|---|---|
@@ -18,6 +18,14 @@ This document re-scopes the feasibility study's eleven phases into four. Use thi
 | Phase 1.5 | (unnamed in the study; implied by the Phase 8 exit criterion) | 30-day unattended paper soak |
 | Phase 2 | Phase 9 | Tiny-value live activation on Coinbase |
 | Phase 3 | Phase 10 | Multi-broker expansion |
+| Phase 4 | (not in the study) | Multi-coin market charts on the operator surface |
+
+### Changes in Rev. C
+
+- Phase 4 added (section 9): a Markets page showing up to nine coins side by side. The operator configures it in the app, and it draws from the app's own stored candles. It adds no trading capability and gates no other phase.
+- The operator surface may now run one locally served chart library, on the Markets page only, as an enhancement over charts that already work without JavaScript. Every safety control stays JavaScript-free (section 9, "Boundaries").
+- Section 8 now points to the Phase 3 cards (#14, #79–#85), which have since re-scoped Phase 3 as a staged plan for four spot venues.
+- Former sections 9–11 are renumbered 10–12.
 
 ### Changes in Rev. B
 
@@ -271,13 +279,115 @@ Two consecutive weeks of Coinbase live operation with zero reconciliation breaks
 
 ## 8. Phase 3 — expansion only after Coinbase is stable
 
+> **Rev. C note.** Phase 3 is now carded as a staged plan for four additional spot venues: Kraken Pro, Binance.US, OKX US, and Robinhood Crypto. The plan runs through read-only capability evidence (#79), a dated decision and sequence (#14), venue and account identity (#80), one adapter per venue (#81–#84), and per-venue staged activation (#85). Where those cards differ from this section, the cards govern. The reasoning below is kept as the Rev. B baseline.
+
 The next adapter should be selected by a separate decision. The research document favors Kraken ahead of Robinhood or Webull on four grounds: availability in every US state except New York and Maine; native OHLCV and L1/L2/L3 order-book depth; a genuinely different rate-limit model (a tier-based decaying counter rather than a fixed rate) that stresses the abstraction usefully; and mature ecosystem support — Kraken is on Freqtrade's officially supported list and in CCXT, which makes independent cross-checking of results possible.
 
 Two costs come with it and must be carried into that decision rather than discovered during it: **Kraken has no spot sandbox** (its demo environment is derivatives only), and **there is no official Kraken Python SDK** — the usable clients are community-maintained and must be pinned deliberately. None of this is a Phase 1 commitment.
 
 Any future adapter must pass the unchanged contract suite and demonstrate capability degradation safely—for example, polling when streaming is unavailable and cancel-and-replace when native order edit is unavailable. Strategy, risk, portfolio, and reconciliation code must not be rewritten for a new venue.
 
-## 9. Initial data model
+## 9. Phase 4 — multi-coin market charts
+
+The operator wants to watch several coins side by side and choose them in the app. An example is BTC, ETH, ADA, ATOM, XTZ, ALGO, XLM, DOGE, and SHIB against USD in a three-by-three grid, as on multicoincharts.com. Phase 4 adds a Markets page for this. It is an operator-surface track. It adds no trading capability, it is not a precondition for Phase 2 or Phase 3, and no gate in those phases depends on it.
+
+### Decision (28 September 2026)
+
+| Approach | Outcome |
+|---|---|
+| Embed TradingView's hosted chart widgets, as multicoincharts.com does | Rejected. It puts third-party code and requests on the surface that holds PAUSE and EMERGENCY STOP, and it shows TradingView's feed rather than the data the bot recorded. |
+| Draw each chart on the server from the app's stored candles | Adopted as the baseline. |
+| The baseline plus TradingView Lightweight Charts, served by the app itself | Adopted by the owner, for zoom, pan, and crosshair. |
+
+Lightweight Charts is TradingView's open-source charting library, licensed under Apache-2.0. The license requires the attribution notice from its NOTICE file and a visible link to tradingview.com; the library's `attributionLogo` chart option satisfies the link. It is not TradingView's hosted charting platform. It involves no TradingView account, no TradingView data feed, and no network request to TradingView.
+
+### Entry and timing
+
+Phase 4 may start now. It may be built during the Phase 1.5 soak because it changes no strategy, risk, execution, or reconciliation code. A Phase 4 deploy to the soak VPS is an ordinary reviewed deploy. Restart recovery is verified afterwards, and any regression the deploy causes is a soak incident like any other.
+
+### Boundaries
+
+1. **Watching is not trading.** The watchlist is separate from `PAPER_SYMBOLS` and from any live symbol list. The trading feed passes every closed candle to the trading cycle, so a watch-only symbol must never join it. Watch-only candles are stored and drawn, nothing more; they never reach strategy, risk, or execution.
+2. **The watch-only feed cannot move trading state.** A failure, a stale symbol, or a rate limit in the watch-only feed changes only its own per-symbol status. It never changes the runtime status, the `primary` heartbeat, the kill switch, or trading alerts.
+3. **Public data, bounded.** The feed uses Coinbase's public market-data endpoints. It uses no credentials, runs through the existing token-bucket limiter and circuit breaker, and keeps to a stated request budget. It is off by default, like `PAPER_RUNTIME_ENABLED`. CI never contacts Coinbase.
+4. **Charts work without JavaScript.** Every tile is a server-drawn SVG with an accessible summary and a table of the same values. The chart library only enhances a tile that already works. It loads on the Markets page only, and no safety control, form, or navigation depends on it.
+5. **Nothing loads from a third party at runtime.** The library is vendored at a pinned version with a recorded checksum and served from the app's own origin. A Content-Security-Policy limits scripts and data requests to that origin. Updating the library takes a reviewed pull request that records the new checksum.
+6. **States stay truthful.** Every tile names its source and "as of" time. Each tile shows exactly one state: drawn, stale, not yet collected, or unavailable, and no state looks like another. Missing candles are drawn as gaps, never interpolated.
+7. **`Decimal` stays authoritative.** Prices leave the server as decimal strings. The browser converts them to numbers only to draw them, and nothing drawn flows back into the service. Prices show significant digits, so a coin priced near $0.00001 stays readable.
+8. **Neutral ink.** Series use the Trends page's neutral ink. Green and red stay reserved for system health, so rising and falling candles differ by fill, not colour.
+9. **Provenance stays explicit.** Charts read Coinbase public candles whichever execution broker is active. A Phase 3 venue change does not silently change the chart source; showing another venue's prices needs its own decision.
+
+### Work packages
+
+#### 4.1 Watch-only market-data feed and saved watchlist (#87)
+
+- A persisted watchlist of up to nine `*-USD` symbols, in display order, edited through an authenticated operator form. Each change is recorded as a system event.
+- A symbol is accepted only after a bounded public lookup confirms that Coinbase lists it and that it is trading.
+- A store-only feed collects five-minute candles for watched symbols the trading feed does not already cover. Adding a symbol triggers a bounded backfill.
+- A documented retention period for watch-only candles.
+
+**Exit:** tests prove that a watch-only candle never reaches the trading cycle. A watch-only feed failure leaves the runtime status, heartbeat, kill switch, and alerts unchanged.
+
+#### 4.2 Bounded candle read model and JSON endpoint (#88)
+
+- The server aggregates stored five-minute candles into 15-minute, hourly, six-hour, and daily bars over bounded windows. It caps the points per series and the symbols per request.
+- One authenticated, read-only JSON endpoint feeds both the server-drawn tiles and the chart library. It returns decimal strings, explicit gaps, freshness, and source.
+
+**Exit:** aggregation is correct against fixtures, including window edges, gaps, and empty windows. The server refuses requests beyond its caps.
+
+#### 4.3 Markets page: server-drawn multi-coin grid (#89)
+
+- `/operator/markets` shows one, four, or nine tiles. Each tile has a price line, last price, change over the window, high and low, "as of" time, and state.
+- A plain form chooses the interval and window. A layout can be shared as a URL that lists its symbols.
+- Each tile links to the same symbol on TradingView in a new tab. Nothing from TradingView is embedded.
+- The grid stacks to one column on narrow screens and stays legible at 320 CSS pixels.
+
+**Exit:** the page is fully usable with JavaScript disabled, and every tile state renders distinctly.
+
+#### 4.4 Interactive charts with locally served Lightweight Charts (#90)
+
+- Vendor a pinned release with its LICENSE and NOTICE, serve it from the app under a checksum test, and show the attribution link.
+- Enhance each tile with a crosshair, zoom, pan, a line or candle view, and optional volume. If the script or its data request fails, the server-drawn tile stays.
+- Add the Content-Security-Policy. Use no inline script, and add no build step or Node toolchain to the service.
+
+**Exit:** the rendered Markets page references no external host. A browser with JavaScript disabled, or one where the library failed to load, still gets working charts. The safety controls are unchanged and JavaScript-free.
+
+#### 4.5 Mark the bot's own activity on market charts (#91)
+
+- For traded symbols, mark signals, orders, and fills from persisted history on both chart forms, each linked to its order's lineage.
+- Buys and sells differ by marker shape, not by colour alone.
+- No average-cost line or per-position P/L until #30 lands.
+
+**Exit:** markers match persisted history for the window, and a symbol with no activity shows none.
+
+### Exit criteria
+
+- The operator chooses up to nine coins in the app, and the choice survives restart.
+- The Markets page works with JavaScript disabled. With JavaScript enabled, it loads nothing from outside the app's origin.
+- Tests prove that watch-only data cannot reach strategy, risk, or execution, and that watch-only feed failures cannot change trading state.
+- Every tile names its source and "as of" time and shows gaps and staleness truthfully.
+- On the paper VPS, the watch-only feed runs for seven consecutive days. Over those days it causes no change to the runtime status, heartbeat, kill switch, or alerts, and its request count stays within budget.
+- Visual checks at 320 and 1440 CSS pixels, in light and dark schemes, are recorded on the pull requests.
+
+### Phase 4 risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| A watch-only symbol reaches the trading cycle | Separate lists and feeds; a store-only handler; a test that fails if the watch-only feed is wired to the cycle |
+| A compromised or tampered chart library | Vendored, pinned, and checksummed; the Content-Security-Policy limits scripts to the app's origin; updates only by reviewed pull request |
+| Stale prices read as current | An "as of" time and a stale state on every tile; gaps drawn as gaps |
+| Public API throttling | At most one candle request per watched symbol every five minutes, plus a bounded backfill, through the existing limiter and circuit breaker; the feed backs off rather than retrying hard |
+| Database and backup growth | Nine symbols add about 2,600 five-minute rows a day; package 4.1 sets retention, and backup size is checked |
+| Chart load on the VPS | Server caps on window, points, and symbols; queries use the existing `market_candles` unique key |
+
+### Open decisions
+
+- The retention period for watch-only candles.
+- Whether to allow more than nine tiles, or several saved layouts.
+- Whether one-minute candles justify the extra public REST polling. The WebSocket candle channel sends five-minute buckets only.
+- Whether to draw the strategy's own indicator lines, such as its moving averages, on traded symbols.
+
+## 10. Initial data model
 
 The minimum audit spine is:
 
@@ -295,7 +405,7 @@ The minimum audit spine is:
 
 Orders require a unique `client_order_id`; fills require a unique broker fill identifier. Raw broker payloads may be retained in JSON form only after headers, signatures, JWTs, and secrets are scrubbed.
 
-## 10. Phase 1 risks and mitigations
+## 11. Phase 1 risks and mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -310,7 +420,7 @@ Orders require a unique `client_order_id`; fills require a unique broker fill id
 | Mode and credential scope drift — a trade-capable key present in `paper`, or a View-only key in `live` | Boot-time assertion that key permissions match `TRADING_MODE`; refuse to start on mismatch |
 | Synthetic Gemini behavior is mistaken for profitability evidence | Use Gemini only for execution correctness; use Coinbase-data simulation and backtests for market-behavior evidence |
 
-## 11. Deferred decisions and open validation items
+## 12. Deferred decisions and open validation items
 
 Before live activation, confirm and record:
 
