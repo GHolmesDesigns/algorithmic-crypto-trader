@@ -345,7 +345,9 @@ def _groups(session: Session, query: CandleQuery) -> dict[str, dict[int, _Group]
         func.sum(rows.c.volume),
     ).group_by(rows.c.symbol, rows.c.bar)
     groups: dict[str, dict[int, _Group]] = {}
-    for symbol, index, count, first, last, high, low, volume in session.execute(statement).all():
+    row: Any
+    for row in session.execute(statement).all():
+        symbol, index, count, first, last, high, low, volume = row
         groups.setdefault(symbol, {})[int(index)] = _Group(
             int(count), _utc(first), _utc(last), Decimal(high), Decimal(low), Decimal(volume)
         )
