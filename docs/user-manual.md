@@ -747,6 +747,7 @@ provider, credential, live confirmation, or reconciliation interval.
 | `POST /operator/watchlist/add` | Operator | Form or JSON `symbol`. Refuses unknown, delisted, or trading-disabled products, duplicates, and a tenth coin. |
 | `POST /operator/watchlist/remove` | Operator | Form or JSON `symbol`. |
 | `POST /operator/watchlist/reorder` | Operator | JSON `order` (every coin once), or `symbol` with `direction` `up` or `down`. |
+| `GET /operator/markets/candles` | Operator | Stored candles as bars for charts, as JSON only. Parameters: `symbols` (up to nine, comma-separated, default the watchlist), `window` (`24h`, `7d`, `30d`, `90d`), `interval` (`15m`, `1h`, `6h`, `1d`; default the finest that keeps a series within 300 points). Each coin returns its bars, gaps, source, and one freshness state: `fresh`, `stale`, `not_collected`, or `unavailable`. Refuses anything beyond the caps with `400`. |
 | `GET /operator/history/orders` | Operator | Orders with their fills and lineage. Filters: `symbol`, `status`, `strategy_version`, `client_order_id`, `correlation_id`. |
 | `GET /operator/history/orders/{client_order_id}` | Operator | One order's lineage: signal, risk decision, order, fills, and any gaps. |
 | `GET /operator/history/signals` | Operator | Signals with their decision and order. Filters: `symbol`, `strategy_version`. |
