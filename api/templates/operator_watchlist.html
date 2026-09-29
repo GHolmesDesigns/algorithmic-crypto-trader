@@ -1,0 +1,102 @@
+{%- extends "_operator_page.html" -%}
+{#- Watchlist: coins to chart, never to trade. -#}
+{%- import "_operator_macros.html" as ui -%}
+{% block title %}{{ view.title }}{% endblock %}
+{% block page_name %}Watchlist{% endblock %}
+{% block page_class %} page-wide{% endblock %}
+
+{% block content %}
+        <nav class="history-nav" aria-label="Operator views">
+          <ul>
+            <li><a href="/operator">Dashboard</a></li>
+            <li><a href="{{ view.path }}" aria-current="page">Watchlist</a></li>
+          </ul>
+        </nav>
+        <section class="block" aria-labelledby="watchlist-heading">
+          <div class="block-head">
+            <h1 id="watchlist-heading">{{ view.title }}</h1>
+            <p class="block-note">{{ view.intro }}</p>
+          </div>
+          {%- if view.errors %}
+          <div class="notice tone-crit" role="alert">
+            <p><span class="mark" aria-hidden="true">■</span> That change was refused. The watchlist is unchanged.</p>
+            <ul class="errors">
+              {%- for error in view.errors %}
+              <li>{{ error }}</li>
+              {%- endfor %}
+            </ul>
+          </div>
+          {%- endif %}
+          {%- if view.unavailable %}
+          <div class="notice tone-unknown" role="status">
+            <p><span class="mark" aria-hidden="true">○</span> Not available: {{ view.unavailable }}.</p>
+            <p>Nothing could be read, so this is not an empty list. Check System health on the dashboard and the application log.</p>
+          </div>
+          {%- else %}
+          {%- if not view.feed_enabled %}
+          <p class="note">The watch-only feed is off (WATCH_FEED_ENABLED), so saved coins are listed but no candles are collected.</p>
+          {%- endif %}
+          <section class="panel" aria-labelledby="watched-heading">
+            <h2 id="watched-heading">Watched coins ({{ view.rows|length }} of {{ view.limit }})</h2>
+            {%- if view.rows %}
+            <div class="table-wrap" role="region" aria-labelledby="watched-heading" tabindex="0">
+              <table class="data">
+                <thead>
+                  <tr>
+                    <th scope="col">Coin</th>
+                    <th scope="col">Feed</th>
+                    <th scope="col">Last candle</th>
+                    <th scope="col">Added</th>
+                    <th scope="col">Order</th>
+                    <th scope="col">Remove</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {%- for row in view.rows %}
+                  <tr>
+                    <th scope="row" class="mono">{{ row.symbol }}</th>
+                    <td>{{ ui.pill(row.status) }}{% if row.detail %}<p class="note">{{ row.detail }}</p>{% endif %}</td>
+                    <td>{{ ui.stamp(row.last_candle) }}</td>
+                    <td>{{ ui.stamp(row.added) }}<p class="event-meta">{{ row.added_by }}</p></td>
+                    <td>
+                      <form method="post" action="{{ view.path }}/reorder">
+                        <input type="hidden" name="symbol" value="{{ row.symbol }}">
+                        <button class="button button-quiet" type="submit" name="direction" value="up"{% if row.first %} disabled{% endif %} aria-label="Move {{ row.symbol }} up">Up</button>
+                        <button class="button button-quiet" type="submit" name="direction" value="down"{% if row.last %} disabled{% endif %} aria-label="Move {{ row.symbol }} down">Down</button>
+                      </form>
+                    </td>
+                    <td>
+                      <form method="post" action="{{ view.path }}/remove">
+                        <input type="hidden" name="symbol" value="{{ row.symbol }}">
+                        <button class="button button-quiet" type="submit" aria-label="Remove {{ row.symbol }}">Remove</button>
+                      </form>
+                    </td>
+                  </tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- else %}
+            <p>{{ ui.absent("No coins are watched yet.") }}</p>
+            {%- endif %}
+          </section>
+          <section class="panel" aria-labelledby="add-heading">
+            <h2 id="add-heading">Add a coin</h2>
+            {%- if view.full %}
+            <p class="note">The watchlist is full ({{ view.limit }} coins). Remove one to add another.</p>
+            {%- else %}
+            <form method="post" action="{{ view.path }}/add">
+              <div class="field">
+                <label for="watch-symbol">Coinbase product</label>
+                <input id="watch-symbol" name="symbol" type="text" required maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ETH-USD" pattern="[A-Za-z0-9]+-[Uu][Ss][Dd]" value="{{ view.add_symbol }}">
+              </div>
+              <p class="note">Coinbase is asked, without any credentials, whether the product exists and is trading before it is saved.</p>
+              <div class="actions">
+                <button class="button button-rearm" type="submit">Add to watchlist</button>
+              </div>
+            </form>
+            {%- endif %}
+          </section>
+          {%- endif %}
+        </section>
+{% endblock %}

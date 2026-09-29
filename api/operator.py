@@ -68,6 +68,7 @@ class OperatorState:
         self.alert_router = alert_router or AlertRouter()
         self.startup_recovery: Any = None
         self.scheduled_reconciliation: Any = None
+        self.watch_feed: Any = None
         strategy = StrategyHeartbeat(name="primary", version=strategy_version)
         self.snapshot = OperatorSnapshot(
             strategy_version=strategy_version,
@@ -273,6 +274,13 @@ class OperatorState:
                 "last_cycle_status": snapshot.runtime_last_cycle_status,
                 "last_cycle_at": _iso(snapshot.runtime_last_cycle_at),
             },
+            # Kept apart from runtime and the heartbeats: a watch-only symbol's trouble
+            # is never the trading feed's.
+            "watch_feed": (
+                self.watch_feed.to_dict()
+                if self.watch_feed is not None
+                else {"enabled": False, "symbols": []}
+            ),
             "portfolio": {
                 "status": snapshot.portfolio_status,
                 "detail": snapshot.portfolio_detail,
