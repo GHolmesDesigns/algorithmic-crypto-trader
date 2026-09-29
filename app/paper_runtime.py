@@ -36,6 +36,21 @@ INTERVAL = timedelta(seconds=GRANULARITY_SECONDS[WEBSOCKET_CANDLE_INTERVAL])
 _SYMBOL = re.compile(r"^[A-Z0-9]+-USD$")
 
 
+def parse_paper_symbols(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """The trading symbols: ``PAPER_SYMBOLS``, the only list the trading path uses."""
+
+    symbols = tuple(
+        dict.fromkeys(
+            item.strip().upper()
+            for item in environ.get("PAPER_SYMBOLS", "BTC-USD").split(",")
+            if item.strip()
+        )
+    )
+    if not symbols or len(symbols) > 10 or any(not _SYMBOL.fullmatch(item) for item in symbols):
+        raise StartupGuardError("PAPER_SYMBOLS must contain 1-10 comma-separated *-USD symbols")
+    return symbols
+
+
 class CycleRunner(Protocol):
     on_halt: Callable[[str], Awaitable[None]] | None
 
@@ -87,15 +102,7 @@ class PaperRuntimeConfig:
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> PaperRuntimeConfig:
-        symbols = tuple(
-            dict.fromkeys(
-                item.strip().upper()
-                for item in environ.get("PAPER_SYMBOLS", "BTC-USD").split(",")
-                if item.strip()
-            )
-        )
-        if not symbols or len(symbols) > 10 or any(not _SYMBOL.fullmatch(item) for item in symbols):
-            raise StartupGuardError("PAPER_SYMBOLS must contain 1-10 comma-separated *-USD symbols")
+        symbols = parse_paper_symbols(environ)
         fast = _integer(environ, "PAPER_STRATEGY_FAST_BARS", 3, minimum=1)
         slow = _integer(environ, "PAPER_STRATEGY_SLOW_BARS", 8, minimum=2)
         if slow <= fast:

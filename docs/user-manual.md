@@ -302,6 +302,50 @@ Read the states the same way as the history:
 A gap in **Reconciliation runs** is a period without a completed run. Check
 **Alerts & errors** and the application log for that time.
 
+## Choose coins to watch
+
+The **Watchlist** page saves up to nine coins you want to chart without
+trading them. Open it from the dashboard's navigation or go to
+`/operator/watchlist`.
+
+Enter a Coinbase product such as `ETH-USD` and select **Add to watchlist**.
+Before saving, the service asks Coinbase's public product list, with no
+credentials, whether the product exists and is trading. It refuses, and says
+why, when the product is unknown, delisted, or trading-disabled; when the list
+already holds nine coins; when the coin is already on it; and when Coinbase
+cannot confirm the product. A coin that could not be confirmed is not saved.
+Use **Up**, **Down**, and **Remove** to reorder or drop a coin. Every change is
+recorded as a `watchlist_change` event, with the role that made it, under
+**System events**.
+
+Watching is not trading. A watched coin is never added to `PAPER_SYMBOLS`, and
+the strategy, risk gates, and execution never see its candles. To trade a coin
+you still change `PAPER_SYMBOLS`, which is a deployment decision.
+
+Saving a coin does not collect anything by itself. The **watch-only feed**
+collects each watched coin's closed five-minute candles when the service starts
+with `WATCH_FEED_ENABLED=1`. It is off by default. With it on:
+
+- Adding a coin backfills 30 days of candles, 29 requests of 300 candles each,
+  then adds one request per coin every five minutes.
+- A coin that is also in `PAPER_SYMBOLS` is collected once, by the trading feed.
+- Requests use Coinbase's public market data only, at most one a second on
+  average, through their own request limiter and circuit breaker, separate from
+  the trading feed's. A failing coin is retried after 1, 2, 4, and up to 30
+  minutes, never faster.
+- Candles older than `WATCH_FEED_RETENTION_DAYS` (default 30) are removed, for
+  watched coins that are not trading symbols only.
+
+Each coin shows its own feed state. It is kept apart from the dashboard's
+runtime status and heartbeats, so a problem here never changes them:
+
+| State | Meaning |
+| --- | --- |
+| **fresh** | The newest closed candle is recent. |
+| **stale** | The newest closed candle is more than 15 minutes old. A coin that rarely trades can show this while healthy. |
+| **not yet collected** | Nothing has been collected yet, or the feed is off. |
+| **unavailable** | The last request failed. The reason and the retry delay follow the failure. Trading is unaffected. |
+
 ## Research and replay
 
 The **Research and replay** page is an authenticated workspace for engineers
@@ -666,6 +710,8 @@ yourself.
 | `PAPER_MIN_NOTIONAL` | `1` | Positive minimum notional supplied to the exchange-constraint risk gate. |
 | `PAPER_ESTIMATED_SLIPPAGE` | `0.005` | Non-negative estimate no greater than the 1% default risk limit. |
 | `PAPER_COOLDOWN_SECONDS` | `300` | Non-negative per-symbol order cooldown. |
+| `WATCH_FEED_ENABLED` | `0` | Starts the store-only feed that collects candles for watchlist coins that are not in `PAPER_SYMBOLS`. Public market data only; it never trades. |
+| `WATCH_FEED_RETENTION_DAYS` | `30` | Days of watch-only candles kept, from 30 to 365. Only watched coins outside `PAPER_SYMBOLS` are pruned. |
 | `TRADING_KILL_SWITCH_FILE` | unset | Optional plain-text external flag read on every paper cycle; `paused` and `halted` can tighten state, while `running` cannot re-arm. |
 | `LOSS_STATE_FILE` | next to `KILL_SWITCH_FILE` | Persists opening/peak equity so daily-loss and drawdown checks survive restart. |
 | `ALERT_NTFY_TOPIC_URL` | empty | Full HTTPS ntfy topic URL for phone push. Treat a private topic URL as a secret. |
@@ -697,6 +743,10 @@ provider, credential, live confirmation, or reconciliation interval.
 | `POST /operator/emergency-stop` | Operator | Persist `halted`. Unchanged if already halted. |
 | `GET /operator/rearm` | Administrator | Re-arm review page: active warnings, recent kill-switch changes, and the checklist form. |
 | `POST /operator/rearm` | Administrator | Persist `running` after the review. Requires every checklist item and a reason. The only route that lowers the kill switch. |
+| `GET /operator/watchlist` | Operator | The saved watchlist with each coin's feed state, as a page or JSON. Takes no parameters. |
+| `POST /operator/watchlist/add` | Operator | Form or JSON `symbol`. Refuses unknown, delisted, or trading-disabled products, duplicates, and a tenth coin. |
+| `POST /operator/watchlist/remove` | Operator | Form or JSON `symbol`. |
+| `POST /operator/watchlist/reorder` | Operator | JSON `order` (every coin once), or `symbol` with `direction` `up` or `down`. |
 | `GET /operator/history/orders` | Operator | Orders with their fills and lineage. Filters: `symbol`, `status`, `strategy_version`, `client_order_id`, `correlation_id`. |
 | `GET /operator/history/orders/{client_order_id}` | Operator | One order's lineage: signal, risk decision, order, fills, and any gaps. |
 | `GET /operator/history/signals` | Operator | Signals with their decision and order. Filters: `symbol`, `strategy_version`. |

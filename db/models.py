@@ -10,8 +10,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -227,3 +229,21 @@ class IncidentRecord(Base):
     closed_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     closed_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WatchlistRecord(Base):
+    """One coin the operator watches for charting only; never a tradable symbol.
+
+    The table holds at most nine rows: ``position`` is unique and limited to 0-8.
+    Nothing here reaches the trading path, which reads ``PAPER_SYMBOLS`` alone.
+    """
+
+    __tablename__ = "watchlist"
+    __table_args__ = (
+        UniqueConstraint("position", name="uq_watchlist_position"),
+        CheckConstraint("position >= 0 AND position < 9", name="ck_watchlist_position"),
+    )
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    added_by: Mapped[str] = mapped_column(String(32), nullable=False)

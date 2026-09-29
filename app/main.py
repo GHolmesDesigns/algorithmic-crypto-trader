@@ -24,6 +24,7 @@ from api.system_events import (
     SqlAlchemySystemEventJournal,
 )
 from api.trends import SqlAlchemyTrends
+from api.watchlist_routes import router as watchlist_router
 from core.guards import (
     StartupGuardError,
     StartupSettings,
@@ -31,6 +32,9 @@ from core.guards import (
     startup_banner,
 )
 from core.logging import configure_logging
+from data.coinbase import CoinbaseRESTClient
+from data.storage import SqlAlchemyCandleStore
+from data.watchlist import SqlAlchemyWatchlist
 from db.session import create_database_engine, create_session_factory
 from execution.engine import ExecutionEngine
 from execution.persistence import SqlAlchemyOrderStore
@@ -42,9 +46,10 @@ from risk.kill_switch import KillSwitch
 from risk.kill_switch_journal import SqlAlchemyKillSwitchJournal
 
 from app.heartbeat import HeartbeatScheduler
-from app.paper_runtime import start_paper_runtime
+from app.paper_runtime import parse_paper_symbols, start_paper_runtime
 from app.recovery import StartupRecoveryResult, recover_on_startup
 from app.startup_broker import assert_live_key_scope, build_startup_broker
+from app.watch_feed import WatchFeedConfig, WatchOnlyFeed, build_watch_client
 
 DEFAULT_RECONCILE_INTERVAL_SECONDS = 300.0
 
@@ -74,6 +79,7 @@ def create_app(
     application.router.routes.extend(history_router.routes)
     application.router.routes.extend(research_router.routes)
     application.router.routes.extend(soak_router.routes)
+    application.router.routes.extend(watchlist_router.routes)
     switch_path = os.environ.get("KILL_SWITCH_FILE")
     application.state.kill_switch = KillSwitch(Path(switch_path) if switch_path else None)
     application.state.startup_settings = startup_settings
@@ -97,6 +103,8 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
     close_history: Callable[[], None] | None = None
     close_system_events: Callable[[], None] | None = None
     paper_runtime = None
+    close_watchlist: Callable[[], Awaitable[None]] | None = None
+    stop_watch_feed: Callable[[], Awaitable[None]] | None = None
     try:
         # Reject a bad interval before recovery does any work.
         interval = _reconcile_interval() if broker is not None else None
@@ -114,8 +122,16 @@ async def _recovery_lifespan(application: FastAPI) -> AsyncIterator[None]:
         stop_reconciliation = start_scheduled_reconciliation(application, interval_seconds=interval)
         stop_heartbeat = start_heartbeat_scheduler(application)
         paper_runtime = await start_paper_runtime(application)
+        close_watchlist = attach_watchlist(application)
+        stop_watch_feed = start_watch_feed(application)
         yield
     finally:
+        try:
+            if stop_watch_feed is not None:
+                await stop_watch_feed()
+        finally:
+            if close_watchlist is not None:
+                await close_watchlist()
         try:
             await application.state.research.close()
         finally:
@@ -193,6 +209,64 @@ def attach_system_events(application: FastAPI) -> Callable[[], None]:
     engine = create_database_engine(settings.database_url, settings.trading_mode)
     application.state.system_events = SqlAlchemySystemEventJournal(create_session_factory(engine))
     return engine.dispose
+
+
+def attach_watchlist(application: FastAPI) -> Callable[[], Awaitable[None]]:
+    """Serve the saved watchlist and its public product lookup; return a close callback.
+
+    Public Coinbase market data only. The client is the watch feed's own, so lookups
+    and the feed share one request budget that the trading feed never draws on.
+    Without it, the watchlist routes answer 503.
+    """
+
+    settings: StartupSettings = application.state.startup_settings
+    engine = create_database_engine(settings.database_url, settings.trading_mode)
+    application.state.watchlist = SqlAlchemyWatchlist(create_session_factory(engine))
+    client = build_watch_client()
+    application.state.watch_client = client
+
+    async def close() -> None:
+        try:
+            await client.close()
+        finally:
+            engine.dispose()
+
+    return close
+
+
+def start_watch_feed(application: FastAPI, *, environ=None) -> Callable[[], Awaitable[None]] | None:
+    """Start the store-only watch feed when WATCH_FEED_ENABLED is set; off by default."""
+
+    values = os.environ if environ is None else environ
+    config = WatchFeedConfig.from_env(values)
+    if not config.enabled:
+        return None
+    settings: StartupSettings = application.state.startup_settings
+    engine = create_database_engine(settings.database_url, settings.trading_mode)
+    client: CoinbaseRESTClient = application.state.watch_client
+    feed = WatchOnlyFeed(
+        watchlist=application.state.watchlist,
+        trading_symbols=parse_paper_symbols(values),
+        store=SqlAlchemyCandleStore(create_session_factory(engine)),
+        source=client,
+        config=config,
+    )
+    application.state.watch_feed = feed
+    application.state.operator_state.watch_feed = feed
+    stop = asyncio.Event()
+    task = asyncio.create_task(feed.run(stop), name="watch-only-feed")
+
+    async def stop_feed() -> None:
+        stop.set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            engine.dispose()
+
+    return stop_feed
 
 
 def start_heartbeat_scheduler(

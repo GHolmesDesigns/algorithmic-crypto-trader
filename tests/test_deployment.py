@@ -201,7 +201,9 @@ def test_drill_counts_every_backed_up_table() -> None:
         r"^tables='([^']+)'", (ROOT / "deploy" / "backup-postgres.sh").read_text(), re.MULTILINE
     )
     drill_tables = re.findall(
-        r"count\(\*\) FROM (\w+);?$", (ROOT / "deploy" / "drill.sh").read_text(), re.MULTILINE
+        r"count\(\*\) FROM (\w+)(?: WHERE [^;\n]+)?;?$",
+        (ROOT / "deploy" / "drill.sh").read_text(),
+        re.MULTILINE,
     )
 
     assert backup_tables is not None
@@ -485,6 +487,24 @@ def test_drill_fails_and_stays_paused_when_rows_change_across_reboot(tmp_path) -
 
 
 @needs_sh
+def test_drill_ignores_restart_events_but_not_other_system_events(tmp_path) -> None:
+    env = drill_env(tmp_path)
+    counts = tmp_path / "counts.txt"
+    counts.write_text(counts.read_text() + "restart_events=1\n", encoding="utf-8")
+    assert run_script("drill.sh", env, "before-reboot").returncode == 0
+    # A restart records one `restart` system event; the drill must not count it as drift.
+    counts.write_text(counts.read_text().replace("restart_events=1", "restart_events=3"))
+    quiet = run_script("drill.sh", env, "after-reboot")
+    assert "CHECK reboot-rows: PASS row counts unchanged" in quiet.stdout
+    # Any other new system event still fails.
+    counts.write_text(counts.read_text().replace("system_events=0", "system_events=1"))
+    noisy = run_script("drill.sh", env, "after-reboot")
+    assert "CHECK reboot-rows: FAIL" in noisy.stdout
+    script = (ROOT / "deploy" / "drill.sh").read_text()
+    assert "event_type <> 'restart'" in script and "restart_events=" in script
+
+
+@needs_sh
 def test_drill_leaves_a_halt_halted_and_checks_it_across_restarts(tmp_path) -> None:
     env = drill_env(tmp_path)
     (tmp_path / "kill-switch").write_text("halted\n", encoding="utf-8")
@@ -681,4 +701,4 @@ def test_drill_expects_the_checkout_migration_head_not_a_fixed_revision() -> Non
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == [migration_head()] == ["0008_incident_records"]
+    assert result.stdout.split() == [migration_head()] == ["0009_watchlist"]

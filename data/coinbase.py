@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -28,6 +29,30 @@ GRANULARITY_SECONDS: dict[str, int] = {
 
 class CoinbaseMarketDataError(RuntimeError):
     """Raised when Coinbase returns an unusable public market-data response."""
+
+
+class CoinbaseProductNotFound(CoinbaseMarketDataError):
+    """Raised when the public product lookup answers 404: no such product."""
+
+
+@dataclass(frozen=True, slots=True)
+class CoinbaseProduct:
+    """The few public product facts a watchlist add is judged on."""
+
+    product_id: str
+    status: str
+    trading_disabled: bool
+    is_disabled: bool
+    product_type: str
+
+    @property
+    def tradable(self) -> bool:
+        return (
+            self.status == "online"
+            and not self.trading_disabled
+            and not self.is_disabled
+            and self.product_type == "SPOT"
+        )
 
 
 def _utc_from_epoch(value: str | int) -> datetime:
@@ -128,6 +153,35 @@ class CoinbaseRESTClient:
             )
             self._circuit_breaker.record_success()
             return tuple(sorted(normalized, key=lambda candle: candle.opened_at))
+        except Exception:
+            self._circuit_breaker.record_failure()
+            raise
+
+    async def get_product(self, product_id: str) -> CoinbaseProduct:
+        """One public product lookup through the same limiter and breaker as candles."""
+
+        self._circuit_breaker.before_request()
+        await self._rate_limiter.acquire()
+        try:
+            response = await self._client.get(f"{self._base_url}/market/products/{product_id}")
+            if response.status_code == 404:
+                self._circuit_breaker.record_success()
+                raise CoinbaseProductNotFound(product_id)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or payload.get("product_id") != product_id:
+                raise CoinbaseMarketDataError("Coinbase product response did not match the request")
+            product = CoinbaseProduct(
+                product_id=product_id,
+                status=str(payload.get("status", "")).lower(),
+                trading_disabled=bool(payload.get("trading_disabled", False)),
+                is_disabled=bool(payload.get("is_disabled", False)),
+                product_type=str(payload.get("product_type", "")).upper(),
+            )
+            self._circuit_breaker.record_success()
+            return product
+        except CoinbaseProductNotFound:
+            raise
         except Exception:
             self._circuit_breaker.record_failure()
             raise

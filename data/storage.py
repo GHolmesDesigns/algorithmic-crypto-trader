@@ -7,7 +7,7 @@ from typing import Protocol
 
 from core.models import Candle
 from db.models import MarketCandleRecord
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 
@@ -144,3 +144,26 @@ class SqlAlchemyCandleStore:
             )
             for row in reversed(rows)
         )
+
+    def prune_before(self, symbol: str, interval: str, cutoff: datetime, limit: int) -> int:
+        """Delete up to ``limit`` of one symbol's oldest candles opened before ``cutoff``."""
+
+        if limit <= 0:
+            raise ValueError("prune limit must be positive")
+        with self.session_factory.begin() as session:
+            ids = list(
+                session.scalars(
+                    select(MarketCandleRecord.candle_id)
+                    .where(
+                        MarketCandleRecord.symbol == symbol,
+                        MarketCandleRecord.interval == interval,
+                        MarketCandleRecord.opened_at < cutoff,
+                    )
+                    .order_by(MarketCandleRecord.opened_at)
+                    .limit(limit)
+                )
+            )
+            if not ids:
+                return 0
+            session.execute(delete(MarketCandleRecord).where(MarketCandleRecord.candle_id.in_(ids)))
+            return len(ids)
