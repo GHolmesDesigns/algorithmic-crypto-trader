@@ -475,7 +475,7 @@ def _daily_last_equity(session: Session, edges: tuple[datetime, ...]) -> list[Da
         ).where(numbered.c.rank == 1)
     ).all()
     holdings: dict[Any, list[tuple[str, str, int | None]]] = {}
-    for row in session.execute(
+    for held in session.execute(
         select(
             EquityHoldingRecord.snapshot_id,
             EquityHoldingRecord.symbol,
@@ -485,10 +485,12 @@ def _daily_last_equity(session: Session, edges: tuple[datetime, ...]) -> list[Da
         .where(EquityHoldingRecord.snapshot_id.in_([row[1] for row in finals]))
         .order_by(EquityHoldingRecord.symbol)
     ):
-        holdings.setdefault(row[0], []).append((row[1], row[2], row[3]))
+        holdings.setdefault(held[0], []).append((held[1], held[2], held[3]))
     values: list[DayEquity | None] = [None] * (len(edges) - 1)
-    for row in finals:  # bucket, snapshot_id, equity, partial
-        values[int(row[0])] = DayEquity(row[2], bool(row[3]), tuple(holdings.get(row[1], ())))
+    for final in finals:  # bucket, snapshot_id, equity, partial
+        values[int(final[0])] = DayEquity(
+            final[2], bool(final[3]), tuple(holdings.get(final[1], ()))
+        )
     return values
 
 
