@@ -50,6 +50,13 @@ from core.models import (
 )
 from execution.audit import AuditStore
 from execution.engine import ExecutionEngine, PersistenceUnavailable
+from portfolio.valuation import (
+    equity_value,
+    held_positions,
+    mark_from_quote,
+    position_value,
+    quote_cash,
+)
 from risk.engine import ExchangeConstraints, RiskInputs, RiskLimits, evaluate
 from risk.kill_switch import KillSwitch
 from strategy.backtest import Strategy
@@ -391,23 +398,20 @@ class BrokerRiskInputs:
     def _cash(self, balances: tuple[Balance, ...]) -> tuple[Decimal, Decimal]:
         """Quote-asset dollars free to spend, and in total with those a resting buy holds."""
 
-        cash = next((item for item in balances if item.asset == self.quote_asset), None)
-        if cash is None:
-            return Decimal("0"), Decimal("0")
-        return cash.available, cash.available + cash.hold
+        return quote_cash(balances, self.quote_asset)
 
     async def _exposure(
         self, positions: tuple[Position, ...], symbol: str, reference: Decimal | None
     ) -> tuple[dict[str, Position], Decimal | None]:
         """Held positions and their market value; ``None`` when any of them cannot be priced."""
 
-        held = {item.symbol: item for item in positions if item.quantity != 0}
+        held = held_positions(positions)
         exposure = Decimal("0")
         for held_symbol, position in held.items():
             mark = reference if held_symbol == symbol else await self._mark(held_symbol)
             if mark is None or mark <= 0:
                 return held, None  # an unpriced position leaves allocation unknown
-            exposure += abs(position.quantity) * mark
+            exposure += position_value(position, mark)
         return held, exposure
 
     async def _mark(self, symbol: str) -> Decimal | None:
@@ -416,14 +420,14 @@ class BrokerRiskInputs:
         except Exception:
             logger.warning("no quote to value the %s holding", symbol)
             return None
-        return quote.bid if quote.symbol == symbol else None
+        return mark_from_quote(quote, symbol)
 
     def _loss_measures(
         self, now: datetime, cash: Decimal, exposure: Decimal | None
     ) -> tuple[Decimal | None, Decimal | None]:
         if exposure is None or self._loss_state_unreadable:
             return None, None
-        equity = cash + exposure
+        equity = equity_value(cash, exposure)
         day = now.date().isoformat()
         if self._day_start is None or self._day_start[0] != day:
             self._day_start = (day, equity)

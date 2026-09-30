@@ -36,6 +36,7 @@ _DAY_STATUS = {"incomplete": "unknown", "pass": "ok"}
 _CRITERION_STATUS = {"incomplete": "unknown", "pass": "ok", "fail": "crit"}
 _MISSING_LABELS = {
     "equity": "Equity",
+    "equity_price_age": "Equity price age",
     "uptime": "Uptime",
     "incidents": "Incidents",
     "reconnect_storm": "Reconnect storm review",
@@ -142,6 +143,8 @@ def _day(day: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "review": day.get("review"),
         "open_incidents": int(day["open_incidents"]),
         "equity": day.get("equity"),
+        "equity_approximate": bool(day.get("equity_approximate", False)),
+        "equity_notes": [str(note) for note in day.get("equity_notes", ())],
         "status": _status(day["status"], _DAY_STATUS),
         "missing": [_MISSING_LABELS.get(key, key) for key in day.get("missing", ())],
     }

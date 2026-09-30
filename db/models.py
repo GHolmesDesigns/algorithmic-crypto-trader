@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    false,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -172,8 +174,41 @@ class BalanceSnapshotRecord(Base):
 class EquitySnapshotRecord(Base):
     __tablename__ = "equity_curve"
     snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    equity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    # NULL only for a partial snapshot: a holding that never had a price is not valued at zero.
+    equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    partial: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+
+
+class EquityHoldingRecord(Base):
+    """A holding a snapshot valued at a last-known price, or could not value at all."""
+
+    __tablename__ = "equity_snapshot_holdings"
+    __table_args__ = (Index("ix_equity_snapshot_holdings_snapshot", "snapshot_id"),)
+    holding_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    snapshot_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("equity_curve.snapshot_id"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    basis: Mapped[str] = mapped_column(String(16), nullable=False)  # last_known | unpriced
+    quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    price_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    price_age_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class LastPriceRecord(Base):
+    """The latest quote seen per symbol; only a newer observation replaces it."""
+
+    __tablename__ = "last_known_prices"
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    bid: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
