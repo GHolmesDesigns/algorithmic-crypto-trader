@@ -219,13 +219,15 @@ async def test_websocket_reports_a_disconnect_once_before_gap_filling_every_prod
     heartbeat = json.dumps({"channel": "heartbeats", "events": []})
     transport = FakeTransport([heartbeat])
     disconnects: list[datetime] = []
+    reasons: list[str] = []
     gap_fills: list[str] = []
 
     async def connect(_: str) -> FakeTransport:
         return transport
 
-    async def on_disconnect(at: datetime) -> None:
+    async def on_disconnect(at: datetime, reason) -> None:
         disconnects.append(at)
+        reasons.append(reason.kind)
 
     async def gap_fill(symbol: str, _start: datetime | None, _end: datetime) -> None:
         gap_fills.append(symbol)
@@ -241,6 +243,7 @@ async def test_websocket_reports_a_disconnect_once_before_gap_filling_every_prod
     )
     await ingestor.run(stop, max_connections=2)
     assert len(disconnects) == 1
+    assert reasons == ["unknown"]
     assert gap_fills == ["BTC-USD", "ETH-USD"]
 
 
