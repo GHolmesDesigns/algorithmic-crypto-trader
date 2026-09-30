@@ -32,7 +32,10 @@ Open a terminal in the project folder, `C:\Users\garni\Documents\algorithmic-cry
 - **During the 30-day soak (#12):** do not run this check against that account.
 
 1. Sign in to the **Gemini Sandbox** website with the Sandbox account from Phase 0. It is separate from any real Gemini account.
-2. Check that the Sandbox **Primary** account holds some US dollars; the run needs roughly 1% of one bitcoin's price, about $700 of test money. If it holds none, add test funds on the Sandbox website. The script's first step checks this and stops before placing anything if there is not enough.
+2. Check that the Sandbox **Primary** account holds some US dollars; the run needs roughly 1% of one bitcoin's price, about $700 of test money. The script's first step checks this and stops before placing anything if there is not enough.
+   - **The Sandbox has no add-funds function.** Gemini's demo-environment documentation (<https://developer.gemini.com/get-started/sandbox>, read 2026-09-30) says deposits and withdrawals are unsupported except Bitcoin Testnet, and the website's funding buttons did not work for the owner that day.
+   - A new Sandbox account is credited automatically with $100,000 USD, 1,000 BTC, and 20,000 each of ETH, BCH, ZEC, and LTC. Its API key is separate from an older account's, so a new account needs a new key (step 3).
+   - To change an existing account's balances, Gemini's documentation says to email trading@gemini.com. Any balance change makes the app's next reconciliation halt trading; see the warning above.
 3. Under **Settings → API**, create a new API key for the **Primary** account with the **Trader** role only.
    - Create it for the Primary account itself, not at the account-group ("Master") level: Gemini refuses a group-level key's requests unless each names an account.
    - Do not tick Fund Manager or Administrator.
