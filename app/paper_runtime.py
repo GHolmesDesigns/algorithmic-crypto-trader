@@ -16,6 +16,7 @@ from typing import Protocol
 from api.alerts import Alert
 from api.operator import OperatorState
 from api.system_events import DISCONNECT_EVENT, GAP_FILL_EVENT, SystemEventJournal
+from core.disconnect import DisconnectReason
 from core.guards import StartupGuardError
 from core.models import Candle, MarketState, Quote, TradingMode, utc_now
 from data.backfill import HistoricalCandleBackfiller
@@ -76,7 +77,7 @@ class RestCloser(Protocol):
 class StreamRunner(Protocol):
     on_candle: Callable[[Candle], Awaitable[None]] | None
     gap_fill: Callable[[str, datetime | None, datetime], Awaitable[None]] | None
-    on_disconnect: Callable[[datetime], Awaitable[None]] | None
+    on_disconnect: Callable[[datetime, DisconnectReason], Awaitable[None]] | None
     last_candle_at: dict[str, datetime]
 
     async def run(self, stop: asyncio.Event, *, max_connections: int | None = None) -> None: ...
@@ -223,9 +224,14 @@ class PaperRuntime:
                 self.engine.dispose()
                 self.operator.set_runtime("stopped", "paper runtime stopped")
 
-    async def on_disconnect(self, at: datetime) -> None:
+    async def on_disconnect(self, at: datetime, reason: DisconnectReason) -> None:
         if self.system_events is not None:
-            self.system_events.record(DISCONNECT_EVENT, {"at": at.isoformat()}, now=at)
+            # A DisconnectReason redacts and bounds itself, so the stored note is safe.
+            self.system_events.record(
+                DISCONNECT_EVENT,
+                {"at": at.isoformat(), "reason_kind": reason.kind, "reason_note": reason.note},
+                now=at,
+            )
 
     async def gap_fill(self, symbol: str, last_closed: datetime | None, end: datetime) -> None:
         self.operator.heartbeat("primary", status="degraded", detail="market-data reconnecting")

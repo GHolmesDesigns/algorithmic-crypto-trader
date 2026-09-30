@@ -149,6 +149,12 @@
               <p class="event-head">{{ ui.pill(row.change.status) }} {{ row.change.text }}</p>
               <p>{{ row.change.reason }}</p>
               <p class="event-meta">{{ row.change.actor }} ({{ row.change.kind }}) · {{ ui.stamp(row.created) }}{% if row.change.checklist %} · {{ row.change.checklist }}{% endif %}</p>
+              {%- elif row.disconnect %}
+              <p class="event-head"><span class="mono">{{ row.event_type }}</span> {{ row.disconnect.label }}</p>
+              {%- if row.disconnect.note %}
+              <p>{{ row.disconnect.note }}</p>
+              {%- endif %}
+              <p class="event-meta">{{ ui.stamp(row.created) }} · correlation {{ copy(row.correlation_id) }}</p>
               {%- else %}
               <p class="event-head"><span class="mono">{{ row.event_type }}</span></p>
               <p>{{ ui.absent("Detail is not shown for this event type.") }}</p>

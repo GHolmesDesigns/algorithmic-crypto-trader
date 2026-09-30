@@ -105,6 +105,16 @@ ORDER_STATUS_MEANINGS = (
 _OUTCOME = {"approved": "ok", "refused": "warn"}
 _SAFETY_ACTION = {"halted": "crit", "none": "neutral"}
 _ACTORS = {"operator": "Operator", "admin": "Administrator", "system": "The system"}
+_DISCONNECT_KINDS = {
+    "connect_failed": "Could not connect",
+    "subscribe_failed": "Subscription failed",
+    "heartbeat_timeout": "Heartbeat timed out",
+    "stale_data": "Data went stale",
+    "parse_error": "Message could not be parsed",
+    "closed_by_peer": "Closed by the exchange",
+    "unknown": "Unknown cause",
+    "not_recorded": "Reason not recorded",
+}
 _GAPS = {
     "signal": "Signal not recorded.",
     "strategy_version": "The signal's strategy version does not match the order's.",
@@ -460,7 +470,16 @@ def _event_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "created": _stamp(row.get("created_at"), now),
         "correlation_id": _copy(row.get("correlation_id")),
         "change": None,
+        "disconnect": None,
     }
+    disconnect = row.get("disconnect")
+    if disconnect is not None:
+        kind = str(disconnect.get("kind"))
+        event["disconnect"] = {
+            "kind": kind,
+            "label": _DISCONNECT_KINDS.get(kind, _DISCONNECT_KINDS["unknown"]),
+            "note": str(disconnect.get("note") or ""),
+        }
     if detail is not None:
         target = str(detail.get("to") or "unknown")
         checklist = detail.get("checklist") or ()

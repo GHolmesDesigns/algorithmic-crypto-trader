@@ -12,6 +12,7 @@ from app.main import create_app
 from app.paper_runtime import INTERVAL, PaperRuntime, PaperRuntimeConfig, start_paper_runtime
 from app.trading import CycleOutcome, CycleStatus
 from brokers.simulated import SimulatedBroker
+from core.disconnect import DisconnectReason
 from core.guards import CredentialScope, StartupGuardError, StartupSettings
 from core.models import Candle, MarketState, Quote, TradingMode
 from data.storage import InMemoryCandleStore
@@ -238,13 +239,17 @@ async def test_disconnect_and_gap_fill_each_persist_one_system_event(tmp_path) -
     instance, _cycle, _sink = runtime(tmp_path, quote=None, system_events=events)
     end = T0 + INTERVAL * 12
 
-    await instance.on_disconnect(T0)
+    await instance.on_disconnect(
+        T0, DisconnectReason("connect_failed", "OSError: no route to 203.0.113.9")
+    )
     await instance.gap_fill("BTC-USD", T0 + INTERVAL * 8, end)
 
     assert [event_type for event_type, _ in events.events] == ["disconnect", "gap_fill"]
     disconnect_payload = events.events[0][1]
     gap_fill_payload = events.events[1][1]
     assert disconnect_payload["at"] == T0.isoformat()
+    assert disconnect_payload["reason_kind"] == "connect_failed"
+    assert disconnect_payload["reason_note"] == "OSError: no route to [REDACTED]"
     assert gap_fill_payload["symbol"] == "BTC-USD"
     assert gap_fill_payload["to"] == end.isoformat()
 
@@ -254,7 +259,7 @@ async def test_ingestor_disconnect_hook_is_wired_to_the_runtime(tmp_path) -> Non
     events = FakeSystemEvents()
     instance, _cycle, _sink = runtime(tmp_path, quote=None, system_events=events)
 
-    await instance.ingestor.on_disconnect(T0)
+    await instance.ingestor.on_disconnect(T0, DisconnectReason("unknown"))
 
     assert [event_type for event_type, _ in events.events] == ["disconnect"]
 

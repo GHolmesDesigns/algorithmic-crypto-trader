@@ -24,6 +24,7 @@ from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
+from core.disconnect import DISCONNECT_REASON_KINDS, redact_diagnostic
 from core.logging import redact_free_text
 from core.models import OrderStatus, utc_now
 from db.models import (
@@ -42,6 +43,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 
 from api.controls import REARM_CHECKLIST
+from api.system_events import (
+    DISCONNECT_EVENT,
+    GAP_FILL_EVENT,
+    HEARTBEAT_EVENT,
+    RESTART_EVENT,
+)
 
 DEFAULT_LIMIT = 25
 MAX_LIMIT = 100
@@ -67,7 +74,13 @@ _CHECKLIST_KEYS = frozenset(key for key, _ in REARM_CHECKLIST)
 ORDER_STATUSES = tuple(status.value for status in OrderStatus)
 UNKNOWN_ORDER_RULE = "Look it up by client order ID. Never resubmit it."
 DISCREPANCY_TYPES = ("order", "fill", "position", "balance")
-EVENT_TYPES = (KILL_SWITCH_EVENT,)
+EVENT_TYPES = (
+    KILL_SWITCH_EVENT,
+    DISCONNECT_EVENT,
+    GAP_FILL_EVENT,
+    HEARTBEAT_EVENT,
+    RESTART_EVENT,
+)
 KINDS = ("orders", "signals", "risk_decisions", "discrepancies", "events", "refusals")
 _PAGING = ("since", "until", "window", "limit", "before")
 
@@ -933,12 +946,21 @@ def _event(record: SystemEventRecord) -> dict[str, Any]:
                 str(item) for item in payload.get("checklist") or () if item in _CHECKLIST_KEYS
             ],
         }
+    disconnect: dict[str, str] | None = None
+    if record.event_type == DISCONNECT_EVENT:
+        payload = record.payload or {}
+        kind = payload.get("reason_kind")
+        disconnect = {
+            "kind": kind if kind in DISCONNECT_REASON_KINDS else "not_recorded",
+            "note": redact_diagnostic(str(payload.get("reason_note") or "")),
+        }
     return {
         "event_id": str(record.event_id),
         "event_type": record.event_type,
         "correlation_id": str(record.correlation_id),
         "created_at": _iso(record.created_at),
         "detail": detail,
+        "disconnect": disconnect,
     }
 
 
