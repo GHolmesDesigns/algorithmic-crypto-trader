@@ -377,7 +377,8 @@ async def test_an_account_without_enough_dollars_stops_before_any_order() -> Non
     assert report.steps[1]["result"] == "fail"
     assert Decimal(report.steps[1]["needed_usd"]) > 5
     assert venue.orders == {} and report.requests_made == 2
-    assert any("Add test funds" in note for note in report.notes)
+    assert any("no add-funds function" in note for note in report.notes)
+    assert not any("Add test funds" in note for note in report.notes)
     assert report.outcome == "needs review"
     assert '"5"' not in report.render()  # only whether it suffices, never the balance
 

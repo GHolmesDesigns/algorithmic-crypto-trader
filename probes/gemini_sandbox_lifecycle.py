@@ -243,8 +243,10 @@ async def _funded_quote(run: SandboxRun, report: ProbeReport) -> Quote | None:
     report.step("usd_available", _check(enough), needed_usd=str(needed))
     if not enough:
         report.notes.append(
-            f"The Sandbox Primary account needs at least {needed} USD for this check. Add "
-            "test funds on the Gemini Sandbox website, then run it again."
+            f"The Sandbox Primary account needs at least {needed} USD for this check. The "
+            "Sandbox has no add-funds function (Gemini's documentation, read 2026-09-30): ask "
+            "Gemini to adjust the balance at trading@gemini.com, or use a new Sandbox account, "
+            "which is credited automatically and needs a new API key. Then run it again."
         )
         return None
     return quote
