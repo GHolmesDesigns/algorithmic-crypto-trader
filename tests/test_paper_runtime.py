@@ -68,6 +68,7 @@ class FakeIngestor:
         self.quote = quote
         self.on_candle: Any = None
         self.gap_fill: Any = None
+        self.on_healthy: Any = None
         self.last_candle_at: dict[str, datetime] = {}
 
     async def run(self, _stop: asyncio.Event, *, max_connections: int | None = None) -> None:
@@ -138,6 +139,10 @@ def runtime(tmp_path, *, quote: Quote | None, system_events=None):
             estimated_slippage=Decimal("0.005"),
             cooldown=timedelta(minutes=5),
             loss_state_path=None,
+            reconnect_storm_threshold=3,
+            reconnect_storm_window=timedelta(minutes=5),
+            reconnect_storm_alert_interval=timedelta(seconds=60),
+            reconnect_healthy_period=timedelta(seconds=60),
         ),
         operator=state,
         cycle=cycle,
@@ -234,6 +239,50 @@ async def test_disconnect_gap_fill_alert_is_deduplicated(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconnect_storm_alerts_at_threshold_repeats_and_clears_on_health(tmp_path) -> None:
+    instance, _cycle, sink = runtime(tmp_path, quote=None)
+    reason = DisconnectReason("heartbeat_timeout", "heartbeat stopped")
+
+    await instance.on_disconnect(T0, reason)
+    await instance.on_disconnect(T0 + timedelta(seconds=30), reason)
+    assert sink.alerts == []
+
+    await instance.on_disconnect(T0 + timedelta(seconds=60), reason)
+    assert [alert.condition for alert in sink.alerts] == ["market_data_reconnect_storm"]
+    assert "heartbeat_timeout" in sink.alerts[0].message
+
+    await instance.on_disconnect(T0 + timedelta(seconds=90), reason)
+    assert len(sink.alerts) == 1
+    await instance.on_disconnect(T0 + timedelta(seconds=120), reason)
+    assert [alert.condition for alert in sink.alerts] == [
+        "market_data_reconnect_storm",
+        "market_data_reconnect_storm",
+    ]
+
+    await instance.on_stream_healthy(T0 + timedelta(seconds=180))
+    await instance.on_disconnect(T0 + timedelta(seconds=200), reason)
+    await instance.on_disconnect(T0 + timedelta(seconds=230), reason)
+    assert len(sink.alerts) == 2
+    await instance.on_disconnect(T0 + timedelta(seconds=260), reason)
+    assert len(sink.alerts) == 3
+
+
+@pytest.mark.asyncio
+async def test_reconnect_storm_alert_delivery_failure_does_not_escape(tmp_path) -> None:
+    instance, _cycle, _sink = runtime(tmp_path, quote=None)
+
+    async def fail(_alert) -> None:
+        raise RuntimeError("notification unavailable")
+
+    instance.operator.emit_alert = fail
+    reason = DisconnectReason("connect_failed", "connection refused")
+    for index in range(3):
+        await instance.on_disconnect(T0 + timedelta(seconds=index), reason)
+
+    assert "market_data_reconnect_storm" not in instance._active_alerts
+
+
+@pytest.mark.asyncio
 async def test_disconnect_and_gap_fill_each_persist_one_system_event(tmp_path) -> None:
     events = FakeSystemEvents()
     instance, _cycle, _sink = runtime(tmp_path, quote=None, system_events=events)
@@ -279,6 +328,20 @@ def test_paper_runtime_configuration_is_bounded_and_fail_closed() -> None:
     config = PaperRuntimeConfig.from_env({})
     assert config.symbols == ("BTC-USD",)
     assert config.history_bars == 50
+    assert config.reconnect_storm_threshold == 3
+    assert config.reconnect_storm_window == timedelta(minutes=5)
+    configured = PaperRuntimeConfig.from_env(
+        {
+            "PAPER_RECONNECT_STORM_THRESHOLD": "4",
+            "PAPER_RECONNECT_STORM_WINDOW_SECONDS": "120",
+            "PAPER_RECONNECT_STORM_ALERT_INTERVAL_SECONDS": "30",
+            "PAPER_RECONNECT_HEALTHY_SECONDS": "45",
+        }
+    )
+    assert configured.reconnect_storm_threshold == 4
+    assert configured.reconnect_storm_window == timedelta(seconds=120)
+    assert configured.reconnect_storm_alert_interval == timedelta(seconds=30)
+    assert configured.reconnect_healthy_period == timedelta(seconds=45)
     with pytest.raises(StartupGuardError, match="exceed"):
         PaperRuntimeConfig.from_env(
             {"PAPER_STRATEGY_FAST_BARS": "8", "PAPER_STRATEGY_SLOW_BARS": "8"}
@@ -287,6 +350,8 @@ def test_paper_runtime_configuration_is_bounded_and_fail_closed() -> None:
         PaperRuntimeConfig.from_env({"PAPER_HISTORY_BARS": "301"})
     with pytest.raises(StartupGuardError, match="finite"):
         PaperRuntimeConfig.from_env({"PAPER_ORDER_QUANTITY": "NaN"})
+    with pytest.raises(StartupGuardError, match="between"):
+        PaperRuntimeConfig.from_env({"PAPER_RECONNECT_STORM_THRESHOLD": "1"})
 
 
 @pytest.mark.asyncio

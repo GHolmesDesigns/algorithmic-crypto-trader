@@ -36,6 +36,7 @@ from uuid import UUID, uuid4
 
 from core.logging import redact_free_text
 from core.models import utc_now
+from core.reconnect import DEFAULT_RECONNECT_STORM_THRESHOLD, DEFAULT_RECONNECT_STORM_WINDOW_SECONDS
 from db.models import (
     DiscrepancyRecord,
     EquityHoldingRecord,
@@ -198,8 +199,20 @@ class SqlAlchemySoak:
     Holds a session factory and nothing that can trade.
     """
 
-    def __init__(self, session_factory: Callable[[], Session]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        *,
+        reconnect_storm_threshold: int = DEFAULT_RECONNECT_STORM_THRESHOLD,
+        reconnect_storm_window: timedelta = timedelta(
+            seconds=DEFAULT_RECONNECT_STORM_WINDOW_SECONDS
+        ),
+    ) -> None:
+        if reconnect_storm_threshold < 2 or reconnect_storm_window <= timedelta(0):
+            raise ValueError("reconnect storm settings must be bounded and positive")
         self.session_factory = session_factory
+        self.reconnect_storm_threshold = reconnect_storm_threshold
+        self.reconnect_storm_window = reconnect_storm_window
 
     def read(self, *, now: datetime | None = None) -> dict[str, Any]:
         as_of = now or utc_now()
@@ -240,6 +253,12 @@ class SqlAlchemySoak:
                     SystemEventRecord.created_at,
                     SystemEventRecord.event_type == DISCONNECT_EVENT,
                 )
+                reconnect_storms = _daily_reconnect_storms(
+                    session,
+                    query.edges,
+                    threshold=self.reconnect_storm_threshold,
+                    window=self.reconnect_storm_window,
+                )
                 gap_fills = _daily_counts(
                     session,
                     query.edges,
@@ -268,6 +287,7 @@ class SqlAlchemySoak:
                 recovered_restarts=recovered_restarts[index],
                 disconnects=disconnects[index],
                 gap_fills=gap_fills[index],
+                reconnect_storm=reconnect_storms[index],
                 open_incidents=open_incidents[index],
             )
             for index in range(query.buckets)
@@ -378,6 +398,44 @@ def _daily_counts(
     for row in session.execute(select(rows.c.bucket, func.count()).group_by(rows.c.bucket)).all():
         counts[int(row[0])] = int(row[1])
     return counts
+
+
+def _daily_reconnect_storms(
+    session: Session,
+    edges: tuple[datetime, ...],
+    *,
+    threshold: int,
+    window: timedelta,
+) -> list[bool]:
+    """Flag each UTC day containing ``threshold`` disconnects in the rolling window."""
+
+    moments = session.scalars(
+        select(SystemEventRecord.created_at)
+        .where(
+            SystemEventRecord.event_type == DISCONNECT_EVENT,
+            SystemEventRecord.created_at >= edges[0],
+            SystemEventRecord.created_at < edges[-1],
+        )
+        .order_by(SystemEventRecord.created_at)
+    ).all()
+    storms = [False] * (len(edges) - 1)
+    recent: list[datetime] = []
+    for raw_moment in moments:
+        moment = _utc(raw_moment)
+        cutoff = moment - window
+        recent = [item for item in recent if item >= cutoff]
+        recent.append(moment)
+        if len(recent) < threshold:
+            continue
+        for index, edge in enumerate(edges[1:]):
+            if moment < edge:
+                storms[index] = True
+                break
+    return storms
+
+
+def _utc(moment: datetime) -> datetime:
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +615,7 @@ def _day(
     recovered_restarts: int,
     disconnects: int,
     gap_fills: int,
+    reconnect_storm: bool,
     open_incidents: int,
 ) -> dict[str, Any]:
     missing: list[str] = []
@@ -565,6 +624,8 @@ def _day(
         missing.append("uptime")
     if open_incidents > 0:
         missing.append("incidents")
+    if reconnect_storm:
+        missing.append("reconnect_storm")
     return {
         "date": start.date().isoformat(),
         "in_progress": in_progress,
@@ -578,6 +639,8 @@ def _day(
         "recovered_restarts": recovered_restarts,
         "disconnects": disconnects,
         "gap_fills": gap_fills,
+        "reconnect_storm": reconnect_storm,
+        "review": "reconnect storm" if reconnect_storm else None,
         "open_incidents": open_incidents,
         "equity": _decimal(value),
         # The asterisk and footnotes come from the stored holdings, not from display logic.

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from api.system_events import DISCONNECT_EVENT, GAP_FILL_EVENT, SystemEventJourn
 from core.disconnect import DisconnectReason
 from core.guards import StartupGuardError
 from core.models import Candle, MarketState, Quote, TradingMode, utc_now
+from core.reconnect import ReconnectSettings
 from data.backfill import HistoricalCandleBackfiller
 from data.coinbase import GRANULARITY_SECONDS, CoinbaseRESTClient
 from data.storage import CandleStore, SqlAlchemyCandleStore
@@ -78,6 +80,7 @@ class StreamRunner(Protocol):
     on_candle: Callable[[Candle], Awaitable[None]] | None
     gap_fill: Callable[[str, datetime | None, datetime], Awaitable[None]] | None
     on_disconnect: Callable[[datetime, DisconnectReason], Awaitable[None]] | None
+    on_healthy: Callable[[datetime], Awaitable[None]] | None
     last_candle_at: dict[str, datetime]
 
     async def run(self, stop: asyncio.Event, *, max_connections: int | None = None) -> None: ...
@@ -100,6 +103,10 @@ class PaperRuntimeConfig:
     estimated_slippage: Decimal
     cooldown: timedelta
     loss_state_path: Path | None
+    reconnect_storm_threshold: int
+    reconnect_storm_window: timedelta
+    reconnect_storm_alert_interval: timedelta
+    reconnect_healthy_period: timedelta
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> PaperRuntimeConfig:
@@ -122,6 +129,7 @@ class PaperRuntimeConfig:
         else:
             kill_switch = environ.get("KILL_SWITCH_FILE", "").strip()
             loss_path = Path(kill_switch).with_name("loss-limits.json") if kill_switch else None
+        reconnect = ReconnectSettings.from_env(environ)
         return cls(
             symbols=symbols,
             history_bars=history,
@@ -132,6 +140,10 @@ class PaperRuntimeConfig:
             estimated_slippage=slippage,
             cooldown=timedelta(seconds=cooldown_seconds),
             loss_state_path=loss_path,
+            reconnect_storm_threshold=reconnect.storm_threshold,
+            reconnect_storm_window=reconnect.storm_window,
+            reconnect_storm_alert_interval=reconnect.storm_alert_interval,
+            reconnect_healthy_period=reconnect.healthy_connection_period,
         )
 
 
@@ -163,9 +175,12 @@ class PaperRuntime:
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task[None] | None = None
         self._active_alerts: set[str] = set()
+        self._alerted_at: dict[str, datetime] = {}
+        self._disconnects: deque[datetime] = deque()
         self.ingestor.on_candle = self.on_candle
         self.ingestor.gap_fill = self.gap_fill
         self.ingestor.on_disconnect = self.on_disconnect
+        self.ingestor.on_healthy = self.on_stream_healthy
         self.cycle.on_halt = self.on_halt
 
     async def start(self) -> None:
@@ -232,6 +247,28 @@ class PaperRuntime:
                 {"at": at.isoformat(), "reason_kind": reason.kind, "reason_note": reason.note},
                 now=at,
             )
+        cutoff = at - self.config.reconnect_storm_window
+        while self._disconnects and self._disconnects[0] < cutoff:
+            self._disconnects.popleft()
+        self._disconnects.append(at)
+        if len(self._disconnects) >= self.config.reconnect_storm_threshold:
+            await self._alert_once(
+                "market_data_reconnect_storm",
+                "Market-data reconnect storm: "
+                f"{len(self._disconnects)} disconnects in "
+                f"{self.config.reconnect_storm_window.total_seconds():g}s; "
+                f"latest reason={reason.kind}",
+                severity="warning",
+                repeat_after=self.config.reconnect_storm_alert_interval,
+                now=at,
+            )
+
+    async def on_stream_healthy(self, _at: datetime) -> None:
+        """Clear reconnect alerts only after the stream's heartbeat health window."""
+
+        self._disconnects.clear()
+        self._clear_alert("market_data_reconnect_storm")
+        self._clear_alert("market_data_disconnected")
 
     async def gap_fill(self, symbol: str, last_closed: datetime | None, end: datetime) -> None:
         self.operator.heartbeat("primary", status="degraded", detail="market-data reconnecting")
@@ -304,8 +341,8 @@ class PaperRuntime:
                 "be reviewed",
             )
             return
-        self._active_alerts.discard("market_data_disconnected")
-        self._active_alerts.discard("market_data_processing_failed")
+        self._clear_alert("market_data_disconnected")
+        self._clear_alert("market_data_processing_failed")
         self._record_outcome(outcome)
 
     async def on_halt(self, reason: str) -> None:
@@ -324,14 +361,35 @@ class PaperRuntime:
         )
 
     async def _alert_once(
-        self, condition: str, message: str, *, severity: str = "critical"
+        self,
+        condition: str,
+        message: str,
+        *,
+        severity: str = "critical",
+        repeat_after: timedelta | None = None,
+        now: datetime | None = None,
     ) -> None:
-        if condition in self._active_alerts:
+        current = now or utc_now()
+        last = self._alerted_at.get(condition)
+        if condition in self._active_alerts and (
+            repeat_after is None or last is None or current - last < repeat_after
+        ):
             return
         self._active_alerts.add(condition)
-        await self.operator.emit_alert(
-            Alert(condition=condition, severity=severity, message=message)
-        )
+        try:
+            await self.operator.emit_alert(
+                Alert(condition=condition, severity=severity, message=message)
+            )
+        except Exception:
+            # Notification failure must not escape into the stream reconnect loop.
+            logger.exception("alert delivery path failed condition=%s", condition)
+            self._clear_alert(condition)
+            return
+        self._alerted_at[condition] = current
+
+    def _clear_alert(self, condition: str) -> None:
+        self._active_alerts.discard(condition)
+        self._alerted_at.pop(condition, None)
 
 
 async def start_paper_runtime(
@@ -412,7 +470,10 @@ async def start_paper_runtime(
         else None,
         lock=application.state.trading_lock,
     )
-    stream = ingestor or CoinbaseWebSocketIngestor(config.symbols)
+    stream = ingestor or CoinbaseWebSocketIngestor(
+        config.symbols,
+        healthy_connection_seconds=config.reconnect_healthy_period.total_seconds(),
+    )
     runtime = PaperRuntime(
         config=config,
         operator=operator,

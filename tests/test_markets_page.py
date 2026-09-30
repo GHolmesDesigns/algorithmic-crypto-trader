@@ -248,7 +248,7 @@ async def test_page_is_server_rendered_with_metrics_table_and_only_tradingview_e
 def test_vendored_lightweight_charts_build_has_the_recorded_checksum_and_notices():
     root = Path(__file__).resolve().parents[1] / "api" / "static" / "markets"
     library = root / "lightweight-charts.standalone.production.js"
-    digest = hashlib.sha256(library.read_bytes()).hexdigest().upper()
+    digest = hashlib.sha256(library.read_bytes().replace(b"\r\n", b"\n")).hexdigest().upper()
     metadata = (root / "README.md").read_text(encoding="utf-8")
     assert "Version: `5.2.1`" in metadata
     assert f"SHA-256: `{digest}`" in metadata
