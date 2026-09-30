@@ -38,6 +38,7 @@ from core.logging import redact_free_text
 from core.models import utc_now
 from db.models import (
     DiscrepancyRecord,
+    EquityHoldingRecord,
     EquitySnapshotRecord,
     EvidenceRecord,
     FillRecord,
@@ -46,6 +47,7 @@ from db.models import (
     RiskDecisionRecord,
     SystemEventRecord,
 )
+from portfolio.valuation import LAST_PRICE_MAX_AGE
 from risk.kill_switch_journal import EVENT_TYPE as KILL_SWITCH_EVENT
 from sqlalchemy import Integer, case, func, literal_column, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -378,8 +380,17 @@ def _daily_counts(
     return counts
 
 
-def _daily_last_equity(session: Session, edges: tuple[datetime, ...]) -> list[Decimal | None]:
-    """The latest recorded equity per UTC day, or ``None`` when no snapshot fell in it."""
+@dataclass(frozen=True, slots=True)
+class DayEquity:
+    """A day's final equity snapshot and the holdings it could not value at a live quote."""
+
+    equity: Decimal | None
+    partial: bool
+    holdings: tuple[tuple[str, str, int | None], ...]  # symbol, basis, price age in seconds
+
+
+def _daily_last_equity(session: Session, edges: tuple[datetime, ...]) -> list[DayEquity | None]:
+    """The latest snapshot per UTC day, or ``None`` when no snapshot fell in it."""
 
     bucket = case(
         *[
@@ -389,7 +400,9 @@ def _daily_last_equity(session: Session, edges: tuple[datetime, ...]) -> list[De
     ).label("bucket")
     numbered = (
         select(
+            EquitySnapshotRecord.snapshot_id,
             EquitySnapshotRecord.equity,
+            EquitySnapshotRecord.partial,
             bucket,
             func.row_number()
             .over(partition_by=bucket, order_by=EquitySnapshotRecord.as_of.desc())
@@ -398,11 +411,28 @@ def _daily_last_equity(session: Session, edges: tuple[datetime, ...]) -> list[De
         .where(EquitySnapshotRecord.as_of >= edges[0], EquitySnapshotRecord.as_of < edges[-1])
         .subquery()
     )
-    values: list[Decimal | None] = [None] * (len(edges) - 1)
+    finals = session.execute(
+        select(
+            numbered.c.bucket, numbered.c.snapshot_id, numbered.c.equity, numbered.c.partial
+        ).where(numbered.c.rank == 1)
+    ).all()
+    holdings: dict[Any, list[tuple[str, str, int | None]]] = {}
     for row in session.execute(
-        select(numbered.c.bucket, numbered.c.equity).where(numbered.c.rank == 1)
-    ).all():
-        values[int(row[0])] = row[1]
+        select(
+            EquityHoldingRecord.snapshot_id,
+            EquityHoldingRecord.symbol,
+            EquityHoldingRecord.basis,
+            EquityHoldingRecord.price_age_seconds,
+        )
+        .where(EquityHoldingRecord.snapshot_id.in_([row[1] for row in finals]))
+        .order_by(EquityHoldingRecord.symbol)
+    ):
+        holdings.setdefault(row[0], []).append((row[1], row[2], row[3]))
+    values: list[DayEquity | None] = [None] * (len(edges) - 1)
+    for bucket_index, snapshot_id, equity, partial in finals:
+        values[int(bucket_index)] = DayEquity(
+            equity, bool(partial), tuple(holdings.get(snapshot_id, ()))
+        )
     return values
 
 
@@ -518,7 +548,7 @@ def _day(
     reconciliation_runs: int,
     divergences: int,
     kill_switch_events: int,
-    equity: Decimal | None,
+    equity: DayEquity | None,
     *,
     in_progress: bool,
     heartbeats: int,
@@ -530,8 +560,7 @@ def _day(
     open_incidents: int,
 ) -> dict[str, Any]:
     missing: list[str] = []
-    if equity is None:
-        missing.append("equity")
+    value, notes, approximate = _equity_field(equity, missing)
     if not uptime_ok:
         missing.append("uptime")
     if open_incidents > 0:
@@ -550,12 +579,57 @@ def _day(
         "disconnects": disconnects,
         "gap_fills": gap_fills,
         "open_incidents": open_incidents,
-        "equity": _decimal(equity),
+        "equity": _decimal(value),
+        # The asterisk and footnotes come from the stored holdings, not from display logic.
+        "equity_approximate": approximate,
+        "equity_notes": notes,
         "missing": missing,
         # Missing data always includes a real gap, so a day is never marked pass on
         # partial evidence: a missed heartbeat interval, or an incident still open.
         "status": "incomplete" if missing else "pass",
     }
+
+
+def _equity_field(
+    equity: DayEquity | None, missing: list[str]
+) -> tuple[Decimal | None, list[str], bool]:
+    """The digest's equity value, its footnotes, and whether it rests on a last-known price.
+
+    A day with no snapshot is ``not recorded``. A partial snapshot has no value at all, and
+    a last-known price that has reached the age limit keeps the day incomplete: both name
+    the holding.
+    """
+
+    if equity is None:
+        missing.append("equity")
+        return None, [], False
+    notes: list[str] = []
+    for symbol, basis, age in equity.holdings:
+        if basis == "unpriced":
+            notes.append(f"{symbol} has never had a price, so equity could not be valued")
+        elif basis == "last_known" and age is not None:
+            if timedelta(seconds=age) >= LAST_PRICE_MAX_AGE:
+                notes.append(
+                    f"{symbol} is valued at its last price, {_age_text(age)} old; "
+                    f"the limit is {_age_text(int(LAST_PRICE_MAX_AGE.total_seconds()))}"
+                )
+                if "equity_price_age" not in missing:
+                    missing.append("equity_price_age")
+            else:
+                notes.append(f"includes {symbol} at its last price, {_age_text(age)} old")
+    if equity.equity is None:
+        missing.append("equity")
+    return (
+        equity.equity,
+        notes,
+        equity.equity is not None and any(basis == "last_known" for _, basis, _ in equity.holdings),
+    )
+
+
+def _age_text(seconds: int) -> str:
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    return f"{seconds // 3600} h"
 
 
 def _criterion(key: str, label: str, record: EvidenceRecord | None) -> dict[str, Any]:

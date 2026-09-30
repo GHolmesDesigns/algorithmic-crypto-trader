@@ -25,6 +25,7 @@ TERMINAL = frozenset({OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJE
 
 DivergenceHook = Callable[[tuple[Discrepancy, ...]], Awaitable[None]]
 UnavailableHook = Callable[[str], Awaitable[None]]
+ReconciledHook = Callable[[PortfolioState], Awaitable[object]]
 # Re-reads one order by client_order_id; ExecutionEngine.recover also persists it.
 OrderRefresher = Callable[[str], Awaitable[object]]
 
@@ -79,6 +80,7 @@ class ScheduledReconciler:
         refresh_order: OrderRefresher | None = None,
         on_divergence: DivergenceHook | None = None,
         on_unavailable: UnavailableHook | None = None,
+        on_reconciled: ReconciledHook | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("reconciliation interval must be positive")
@@ -87,6 +89,7 @@ class ScheduledReconciler:
         self.refresh_order = refresh_order or self._read_order
         self.on_divergence = on_divergence
         self.on_unavailable = on_unavailable
+        self.on_reconciled = on_reconciled
         self.lock = asyncio.Lock()
         self._baseline = PortfolioState(positions=baseline.positions, balances=baseline.balances)
         # Orders open at the baseline stay tracked; their fills are already in its balances.
@@ -120,7 +123,19 @@ class ScheduledReconciler:
         if isinstance(outcome, str):
             await self._unavailable(outcome)
             return None
-        return await self._report(outcome)
+        reported = await self._report(outcome)
+        await self._reconciled(outcome.authoritative)
+        return reported
+
+    async def _reconciled(self, authoritative: PortfolioState) -> None:
+        """Hand the broker's state to a read-only consumer; its failure never affects the run."""
+
+        if self.on_reconciled is None:
+            return
+        try:
+            await self.on_reconciled(authoritative)
+        except Exception:
+            logger.exception("post-reconciliation hook failed")
 
     async def _compare(self) -> ReconciliationResult | str:
         """Refresh, project, and reconcile; a string explains why the run was unavailable."""

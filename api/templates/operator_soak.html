@@ -81,7 +81,7 @@
                   <tr>
                     <th scope="row">{{ day.date }}{% if day.in_progress %} <span class="age">in progress</span>{% endif %}</th>
                     <td>{{ ui.pill(day.status) }}</td>
-                    <td class="num">{% if day.equity %}{{ day.equity }}{% else %}{{ ui.absent("not recorded") }}{% endif %}</td>
+                    <td class="num">{% if day.equity %}{{ day.equity }}{% if day.equity_approximate %}<span aria-label="includes a last-known price">*</span>{% endif %}{% elif day.equity_notes %}{{ ui.absent("partial") }}{% else %}{{ ui.absent("not recorded") }}{% endif %}{% for note in day.equity_notes %}<br><span class="age">{% if day.equity_approximate %}* {% endif %}{{ note }}</span>{% endfor %}</td>
                     <td class="num"><span class="count">{{ day.trades }}</span></td>
                     <td class="num"><span class="count">{{ day.refusals }}</span></td>
                     <td class="num"><span class="count">{{ day.reconciliation_runs }}</span></td>

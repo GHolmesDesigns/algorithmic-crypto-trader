@@ -42,6 +42,7 @@ from db.session import create_database_engine, create_session_factory
 from execution.engine import ExecutionEngine
 from execution.persistence import SqlAlchemyOrderStore
 from fastapi import FastAPI
+from portfolio.equity import EquitySampler, SqlAlchemyEquityStore
 from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
 from portfolio.store import SqlAlchemyPortfolioStore
@@ -55,6 +56,7 @@ from app.startup_broker import assert_live_key_scope, build_startup_broker
 from app.watch_feed import WatchFeedConfig, WatchOnlyFeed, build_watch_client
 
 DEFAULT_RECONCILE_INTERVAL_SECONDS = 300.0
+DEFAULT_EQUITY_SAMPLE_INTERVAL_SECONDS = 3600.0
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +317,7 @@ def start_scheduled_reconciliation(
     if operator_state.broker is None:
         return None
     interval = interval_seconds if interval_seconds is not None else _reconcile_interval()
+    equity_interval = _equity_sample_interval()
     settings: StartupSettings = application.state.startup_settings
     engine = create_database_engine(settings.database_url, settings.trading_mode)
     session_factory = create_session_factory(engine)
@@ -354,6 +357,8 @@ def start_scheduled_reconciliation(
             )
         )
 
+    equity_store = SqlAlchemyEquityStore(session_factory)
+    sampler = EquitySampler(operator_state.broker, equity_store, equity_store)
     execution = ExecutionEngine(operator_state.broker, order_store)
     scheduler = ScheduledReconciler(
         Reconciler(operator_state.broker, application.state.kill_switch, store=portfolio_store),
@@ -362,6 +367,7 @@ def start_scheduled_reconciliation(
         refresh_order=execution.recover,
         on_divergence=on_divergence,
         on_unavailable=on_unavailable,
+        on_reconciled=sampler.sample,
     )
     execution.on_recorded = scheduler.observe
     application.state.execution = execution
@@ -369,13 +375,28 @@ def start_scheduled_reconciliation(
     operator_state.scheduled_reconciliation = scheduler
     stop = asyncio.Event()
     task = asyncio.create_task(scheduler.run(stop))
+    sampling = asyncio.create_task(sampler.run(stop, equity_interval, lock=scheduler.lock))
 
     async def stop_scheduler() -> None:
         stop.set()
         await task
+        await sampling
         engine.dispose()
 
     return stop_scheduler
+
+
+def _equity_sample_interval() -> float:
+    raw = os.environ.get("EQUITY_SAMPLE_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_EQUITY_SAMPLE_INTERVAL_SECONDS
+    try:
+        interval = float(raw)
+    except ValueError as exc:
+        raise StartupGuardError("EQUITY_SAMPLE_INTERVAL_SECONDS must be a number") from exc
+    if not 0 < interval <= 3600:
+        raise StartupGuardError("EQUITY_SAMPLE_INTERVAL_SECONDS must be between 0 and 3600")
+    return interval
 
 
 def _reconcile_interval() -> float:
