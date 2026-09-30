@@ -20,25 +20,33 @@ def apply_fills(
 
     Accounting follows the local simulator: a buy adds base asset at a
     size-weighted average price and spends quote asset plus fee; a sell does the
-    reverse and keeps the average price. Holds are carried over unchanged. A
-    projection that goes negative is a local accounting failure and raises.
+    reverse and keeps the average price. A position whose cost basis is unknown
+    (``None``) stays unknown after a buy rather than averaging against a
+    placeholder. Holds are carried over unchanged. A projection that goes
+    negative is a local accounting failure and raises.
     """
 
     now = as_of or utc_now()
-    positions = {item.symbol: (item.quantity, item.average_price) for item in baseline.positions}
+    positions: dict[str, tuple[Decimal, Decimal | None]] = {
+        item.symbol: (item.quantity, item.average_price) for item in baseline.positions
+    }
     available = {item.asset: item.available for item in baseline.balances}
     holds = {item.asset: item.hold for item in baseline.balances}
     for fill in sorted(fills, key=lambda item: (item.occurred_at, item.fill_id)):
         base, quote = fill.symbol.split("-", maxsplit=1)
         notional = fill.quantity * fill.price
-        quantity, average = positions.get(fill.symbol, (ZERO, ZERO))
+        quantity, average = positions.get(fill.symbol, (ZERO, None))
         sign = Decimal("1") if fill.side is OrderSide.BUY else Decimal("-1")
         available[base] = available.get(base, ZERO) + sign * fill.quantity
         available[quote] = available.get(quote, ZERO) - sign * notional
         available[fill.fee_asset] = available.get(fill.fee_asset, ZERO) - fill.fee
         if fill.side is OrderSide.BUY:
             total = quantity + fill.quantity
-            average = (quantity * average + notional) / total
+            if quantity == 0:
+                average = notional / total
+            elif average is not None:
+                average = (quantity * average + notional) / total
+            # else: the cost of what was already held is unknown, so the blend is too.
             quantity = total
         else:
             quantity -= fill.quantity

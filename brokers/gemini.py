@@ -176,7 +176,7 @@ class GeminiBroker(BrokerInterface):
             Position(
                 symbol=f"{balance.asset}-USD",
                 quantity=balance.available + balance.hold,
-                average_price=Decimal("0"),
+                average_price=None,
                 as_of=now,
             )
             for balance in balances

@@ -104,8 +104,8 @@ class Reconciler:
                 or remote_position is None
                 or local_position.quantity != remote_position.quantity
                 or (
-                    local_position.average_price != 0
-                    and remote_position.average_price != 0
+                    local_position.average_price is not None
+                    and remote_position.average_price is not None
                     and local_position.average_price != remote_position.average_price
                 )
             ):
