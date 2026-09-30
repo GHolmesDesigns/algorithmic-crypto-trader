@@ -35,6 +35,7 @@ from core.guards import (
     startup_banner,
 )
 from core.logging import configure_logging
+from core.reconnect import ReconnectSettings
 from data.coinbase import CoinbaseRESTClient
 from data.storage import SqlAlchemyCandleStore
 from data.watchlist import SqlAlchemyWatchlist
@@ -200,7 +201,12 @@ def attach_history(application: FastAPI) -> Callable[[], None]:
     application.state.history = SqlAlchemyHistory(session_factory)
     application.state.trends = SqlAlchemyTrends(session_factory)
     application.state.market_candles = SqlAlchemyCandleReads(session_factory)
-    application.state.soak = SqlAlchemySoak(session_factory)
+    reconnect = ReconnectSettings.from_env()
+    application.state.soak = SqlAlchemySoak(
+        session_factory,
+        reconnect_storm_threshold=reconnect.storm_threshold,
+        reconnect_storm_window=reconnect.storm_window,
+    )
     return engine.dispose
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -167,8 +168,9 @@ async def test_backfill_can_refresh_a_bounded_existing_window_and_repair_a_gap()
 
 
 class FakeTransport:
-    def __init__(self, messages: list[str]) -> None:
+    def __init__(self, messages: list[str], before_recv: Callable[[], None] | None = None) -> None:
         self.messages = iter(messages)
+        self.before_recv = before_recv
         self.sent: list[str] = []
         self.closed = False
 
@@ -176,6 +178,8 @@ class FakeTransport:
         self.sent.append(message)
 
     async def recv(self) -> str:
+        if self.before_recv is not None:
+            self.before_recv()
         try:
             return next(self.messages)
         except StopIteration as exc:
@@ -183,6 +187,69 @@ class FakeTransport:
 
     async def close(self) -> None:
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_healthy_connection_resets_the_next_reconnect_delay(monkeypatch) -> None:
+    heartbeat = json.dumps({"channel": "heartbeats", "events": []})
+    now = NOW
+    sleeps: list[float] = []
+
+    def advance(seconds: float) -> Callable[[], None]:
+        def move() -> None:
+            nonlocal now
+            now += timedelta(seconds=seconds)
+
+        return move
+
+    transports = [
+        FakeTransport([heartbeat], before_recv=advance(5)),
+        FakeTransport([heartbeat], before_recv=advance(20)),
+    ]
+
+    async def connect(_: str) -> FakeTransport:
+        return transports.pop(0)
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("data.stream.asyncio.sleep", fake_sleep)
+    ingestor = CoinbaseWebSocketIngestor(
+        ("BTC-USD",),
+        connect=connect,
+        reconnect_base_seconds=1,
+        reconnect_max_seconds=30,
+        healthy_connection_seconds=10,
+        clock=lambda: now,
+    )
+
+    await ingestor.run(asyncio.Event(), max_connections=2)
+
+    assert sleeps == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_repeated_failures_still_back_off_to_the_maximum(monkeypatch) -> None:
+    sleeps: list[float] = []
+    transports = [FakeTransport([]) for _ in range(4)]
+
+    async def connect(_: str) -> FakeTransport:
+        return transports.pop(0)
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("data.stream.asyncio.sleep", fake_sleep)
+    ingestor = CoinbaseWebSocketIngestor(
+        ("BTC-USD",),
+        connect=connect,
+        reconnect_base_seconds=1,
+        reconnect_max_seconds=4,
+    )
+
+    await ingestor.run(asyncio.Event(), max_connections=4)
+
+    assert sleeps == [1, 2, 4, 4]
 
 
 @pytest.mark.asyncio

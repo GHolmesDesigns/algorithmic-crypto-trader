@@ -41,6 +41,12 @@ change the live-mode guards or authorize Coinbase order placement.
   alert requires broker-state review because submission may already have begun.
 - A trading-cycle halt routes a critical alert. Reconciliation divergence and
   unavailability continue to route through the same `OperatorState`.
+- A market-data reconnect storm is a warning when three or more disconnects
+  occur within five minutes. The alert repeats no more often than every 15
+  minutes while the storm persists, and clears only after the stream has
+  received heartbeats continuously for 60 seconds. The reconnect delay also
+  returns to its one-second base after that healthy period; repeated failures
+  still back off to the 30-second ceiling.
 - Alert delivery failure is recorded as `failed` for that destination. Tokens,
   passwords, topic URLs, and recipient addresses are not placed in alert text or
   logs.
@@ -50,6 +56,24 @@ change the live-mode guards or authorize Coinbase order placement.
 Phone push uses an explicitly configured HTTPS ntfy topic. Email uses SMTP with
 STARTTLS by default. Both may be enabled; one failing destination does not stop
 the other.
+
+Reconnect-storm defaults are bounded and can be overridden in the protected
+deployment environment:
+
+```text
+PAPER_RECONNECT_STORM_THRESHOLD=3
+PAPER_RECONNECT_STORM_WINDOW_SECONDS=300
+PAPER_RECONNECT_STORM_ALERT_INTERVAL_SECONDS=900
+PAPER_RECONNECT_HEALTHY_SECONDS=60
+```
+
+The Soak & readiness daily digest marks a UTC day with a rolling-window storm
+as **Reconnect storm review** and keeps that day incomplete. The raw disconnect
+count remains visible, but it is never treated as a passing soak day. Review
+the System events rows for the bounded reason kind and note, confirm that REST
+gap fill completed, and keep the paper runtime in its existing fail-closed
+state. Do not re-arm a halt or change trading configuration merely to silence
+the alert; escalate a persistent storm through the incident runbook.
 
 Minimum ntfy configuration:
 

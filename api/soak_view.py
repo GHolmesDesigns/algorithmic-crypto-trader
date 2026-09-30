@@ -38,6 +38,7 @@ _MISSING_LABELS = {
     "equity": "Equity",
     "uptime": "Uptime",
     "incidents": "Incidents",
+    "reconnect_storm": "Reconnect storm review",
 }
 
 
@@ -137,6 +138,8 @@ def _day(day: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "recovered_restarts": int(day["recovered_restarts"]),
         "disconnects": int(day["disconnects"]),
         "gap_fills": int(day["gap_fills"]),
+        "reconnect_storm": bool(day.get("reconnect_storm", False)),
+        "review": day.get("review"),
         "open_incidents": int(day["open_incidents"]),
         "equity": day.get("equity"),
         "status": _status(day["status"], _DAY_STATUS),

@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from core.disconnect import DisconnectReason, redact_diagnostic
 from core.models import Candle, Quote
+from core.reconnect import DEFAULT_RECONNECT_HEALTHY_SECONDS
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from data.coinbase import COINBASE_WS_URL, GRANULARITY_SECONDS, normalize_coinbase_candle
@@ -86,15 +87,22 @@ class CoinbaseWebSocketIngestor:
         on_quote: Callable[[Quote], Awaitable[None]] | None = None,
         gap_fill: Callable[[str, datetime | None, datetime], Awaitable[None]] | None = None,
         on_disconnect: Callable[[datetime, DisconnectReason], Awaitable[None]] | None = None,
+        on_healthy: Callable[[datetime], Awaitable[None]] | None = None,
         recorder: JsonlReplayRecorder | None = None,
         heartbeat_timeout_seconds: float = 30.0,
         reconnect_base_seconds: float = 1.0,
         reconnect_max_seconds: float = 30.0,
+        healthy_connection_seconds: float = DEFAULT_RECONNECT_HEALTHY_SECONDS,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not product_ids:
             raise ValueError("at least one Coinbase product is required")
-        if heartbeat_timeout_seconds <= 0 or reconnect_base_seconds <= 0:
+        if (
+            heartbeat_timeout_seconds <= 0
+            or reconnect_base_seconds <= 0
+            or reconnect_max_seconds < reconnect_base_seconds
+            or healthy_connection_seconds <= 0
+        ):
             raise ValueError("stream timing values must be positive")
         self.product_ids = product_ids
         self.connect = connect or self._connect_real
@@ -102,16 +110,19 @@ class CoinbaseWebSocketIngestor:
         self.on_quote = on_quote
         self.gap_fill = gap_fill
         self.on_disconnect = on_disconnect
+        self.on_healthy = on_healthy
         self.recorder = recorder
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.reconnect_base_seconds = reconnect_base_seconds
         self.reconnect_max_seconds = reconnect_max_seconds
+        self.healthy_connection_seconds = healthy_connection_seconds
         self.clock = clock or (lambda: datetime.now(UTC))
         self.last_heartbeat: datetime | None = None
         # Opening time of the newest bucket known to be closed, per product.
         self.last_candle_at: dict[str, datetime] = {}
         self._open_buckets: dict[str, Candle] = {}
         self.last_quote: dict[str, Quote] = {}
+        self._connection_healthy = False
 
     async def _connect_real(self, url: str) -> WebSocketTransport:
         import websockets
@@ -127,6 +138,7 @@ class CoinbaseWebSocketIngestor:
             attempts += 1
             transport: WebSocketTransport | None = None
             stage = "connect"
+            self._connection_healthy = False
             try:
                 transport = await self.connect(COINBASE_WS_URL)
                 stage = "subscribe"
@@ -156,6 +168,8 @@ class CoinbaseWebSocketIngestor:
                             self.last_candle_at[product_id] = last_filled
                 if stop.is_set():
                     return
+                if self._connection_healthy:
+                    delay = self.reconnect_base_seconds
                 await asyncio.sleep(delay)
                 delay = min(self.reconnect_max_seconds, delay * 2)
             finally:
@@ -193,27 +207,43 @@ class CoinbaseWebSocketIngestor:
             await transport.send(json.dumps(payload, separators=(",", ":")))
 
     async def _consume(self, transport: WebSocketTransport, stop: asyncio.Event) -> None:
-        heartbeat_started = datetime.now(UTC)
+        heartbeat_started = self.clock()
+        healthy = False
         while not stop.is_set():
             try:
                 raw = await asyncio.wait_for(transport.recv(), self.heartbeat_timeout_seconds)
             except TimeoutError as exc:
                 raise HeartbeatTimeout("Coinbase heartbeat timeout") from exc
             payload = _parse_message(raw)
-            received_at = datetime.now(UTC)
+            received_at = self.clock()
             if self.recorder is not None:
                 self.recorder.record("coinbase.websocket", payload, received_at=received_at)
-            self._record_heartbeat(payload, received_at)
+            received_heartbeat = self._record_heartbeat(payload, received_at)
             heartbeat_reference = self.last_heartbeat or heartbeat_started
             if received_at - heartbeat_reference > timedelta(
                 seconds=self.heartbeat_timeout_seconds
             ):
                 raise HeartbeatTimeout("Coinbase heartbeat is stale")
             await self._handle_payload(payload, received_at)
+            if (
+                received_heartbeat
+                and not healthy
+                and received_at - heartbeat_started
+                >= timedelta(seconds=self.healthy_connection_seconds)
+            ):
+                healthy = True
+                self._connection_healthy = True
+                if self.on_healthy is not None:
+                    try:
+                        await self.on_healthy(received_at)
+                    except Exception:
+                        logger.exception("market-data healthy callback failed")
 
-    def _record_heartbeat(self, payload: dict[str, Any], received_at: datetime) -> None:
+    def _record_heartbeat(self, payload: dict[str, Any], received_at: datetime) -> bool:
         if payload.get("channel") == "heartbeats" or payload.get("type") == "heartbeat":
             self.last_heartbeat = received_at
+            return True
+        return False
 
     async def _handle_payload(self, payload: dict[str, Any], received_at: datetime) -> None:
         channel = payload.get("channel")
