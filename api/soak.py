@@ -487,10 +487,8 @@ def _daily_last_equity(session: Session, edges: tuple[datetime, ...]) -> list[Da
     ):
         holdings.setdefault(row[0], []).append((row[1], row[2], row[3]))
     values: list[DayEquity | None] = [None] * (len(edges) - 1)
-    for bucket_index, snapshot_id, equity, partial in finals:
-        values[int(bucket_index)] = DayEquity(
-            equity, bool(partial), tuple(holdings.get(snapshot_id, ()))
-        )
+    for row in finals:  # bucket, snapshot_id, equity, partial
+        values[int(row[0])] = DayEquity(row[2], bool(row[3]), tuple(holdings.get(row[1], ())))
     return values
 
 
