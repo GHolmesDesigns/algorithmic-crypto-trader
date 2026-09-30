@@ -1,0 +1,2 @@
+# Shell scripts run inside Linux containers and on the VPS; keep them LF on Windows checkouts.
+*.sh text eol=lf
