@@ -21,6 +21,7 @@ from api.soak import (
     parse_incident_close,
     parse_incident_open,
 )
+from api.soak_view import build_soak_view
 from api.system_events import DISCONNECT_EVENT, GAP_FILL_EVENT, HEARTBEAT_EVENT, RESTART_EVENT
 from api.trends import trends_query
 from app.main import create_app
@@ -324,6 +325,54 @@ def test_a_disconnect_and_its_gap_fill_are_both_recorded(tmp_path):
     payload = soak.read(now=NOW)
     day = days_by_date(payload)[start.date().isoformat()]
     assert (day["disconnects"], day["gap_fills"]) == (1, 1)
+
+
+def test_two_disconnects_do_not_mark_a_complete_day_for_storm_review(tmp_path):
+    edges = trends_query(DIGEST_WINDOW, NOW).edges
+    start = edges[3]
+    soak = reader(tmp_path)
+    add(
+        tmp_path,
+        *hourly_heartbeats(start),
+        restart(start, "clean"),
+        equity(start),
+        disconnect(start),
+        disconnect(start + timedelta(seconds=30)),
+    )
+
+    day = days_by_date(soak.read(now=NOW))[start.date().isoformat()]
+
+    assert day["disconnects"] == 2
+    assert day["reconnect_storm"] is False
+    assert day["status"] == "pass"
+
+
+def test_three_disconnects_in_the_window_mark_a_day_incomplete_for_review(tmp_path):
+    edges = trends_query(DIGEST_WINDOW, NOW).edges
+    start = edges[3]
+    soak = reader(tmp_path)
+    add(
+        tmp_path,
+        *hourly_heartbeats(start),
+        restart(start, "clean"),
+        equity(start),
+        disconnect(start),
+        disconnect(start + timedelta(seconds=30)),
+        disconnect(start + timedelta(seconds=60)),
+    )
+
+    day = days_by_date(soak.read(now=NOW))[start.date().isoformat()]
+
+    assert day["disconnects"] == 3
+    assert day["reconnect_storm"] is True
+    assert day["review"] == "reconnect storm"
+    assert "reconnect_storm" in day["missing"]
+    assert day["status"] == "incomplete"
+
+    view = build_soak_view(payload=soak.read(now=NOW), now=NOW)
+    viewed_day = next(item for item in view["days"] if item["date"] == start.date().isoformat())
+    assert viewed_day["review"] == "reconnect storm"
+    assert "Reconnect storm review" in viewed_day["missing"]
 
 
 def test_an_open_incident_leaves_its_day_incomplete_until_it_is_closed(tmp_path):

@@ -89,7 +89,7 @@
                     <td class="num"><span class="count">{{ day.kill_switch_events }}</span></td>
                     <td class="num"><span class="count">{{ day.heartbeats }}</span></td>
                     <td class="num"><span class="count">{{ day.restarts }}</span>{% if day.recovered_restarts %} <span class="age">({{ day.recovered_restarts }} recovered)</span>{% endif %}</td>
-                    <td class="num"><span class="count">{{ day.disconnects }}</span>{% if day.gap_fills %} <span class="age">({{ day.gap_fills }} gap-filled)</span>{% endif %}</td>
+                    <td class="num"><span class="count">{{ day.disconnects }}</span>{% if day.gap_fills %} <span class="age">({{ day.gap_fills }} gap-filled)</span>{% endif %}{% if day.review %} <span class="age">({{ day.review }}; review)</span>{% endif %}</td>
                     <td class="num"><span class="count">{{ day.open_incidents }}</span></td>
                   </tr>
                   {%- endfor %}
