@@ -157,9 +157,7 @@ def context(**changes) -> CycleContext:
 
 @pytest.mark.asyncio
 async def test_risk_inputs_leave_unpriced_exposure_unknown_and_honour_window_and_cooldown() -> None:
-    dust = Position(
-        symbol="DOGE-USD", quantity=Decimal("5"), average_price=Decimal("0"), as_of=utc_now()
-    )
+    dust = Position(symbol="DOGE-USD", quantity=Decimal("5"), average_price=None, as_of=utc_now())
     source = BrokerRiskInputs(
         StubBroker((dust,)), constraints=CONSTRAINTS, estimated_slippage=Decimal("0")
     )
@@ -253,9 +251,7 @@ class CoinsOnly(StubBroker):
 @pytest.mark.asyncio
 async def test_an_account_without_dollars_is_valued_by_its_coins_alone() -> None:
     now = datetime(2026, 9, 27, 12, tzinfo=UTC)
-    coins = Position(
-        symbol="BTC-USD", quantity=Decimal("1"), average_price=Decimal("0"), as_of=utc_now()
-    )
+    coins = Position(symbol="BTC-USD", quantity=Decimal("1"), average_price=None, as_of=utc_now())
     broker = CoinsOnly((coins,))
     source = BrokerRiskInputs(
         broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0"), clock=lambda: now
@@ -430,10 +426,8 @@ class QuotingBroker(StubBroker):
 
 @pytest.mark.asyncio
 async def test_other_holdings_are_valued_at_the_venue_bid_not_a_missing_cost_basis() -> None:
-    # Coinbase and Gemini report no cost basis: average_price is always 0.
-    eth = Position(
-        symbol="ETH-USD", quantity=Decimal("2"), average_price=Decimal("0"), as_of=utc_now()
-    )
+    # Coinbase and Gemini report no cost basis: average_price is None.
+    eth = Position(symbol="ETH-USD", quantity=Decimal("2"), average_price=None, as_of=utc_now())
     priced = BrokerRiskInputs(
         QuotingBroker((eth,), prices={"ETH-USD": Decimal("2500")}),
         constraints=CONSTRAINTS,
@@ -602,9 +596,7 @@ class SettlingVenue:
 
     async def get_positions(self):
         return tuple(
-            Position(
-                symbol=f"{asset}-USD", quantity=amount, average_price=Decimal("0"), as_of=utc_now()
-            )
+            Position(symbol=f"{asset}-USD", quantity=amount, average_price=None, as_of=utc_now())
             for asset, amount in self.balances.items()
             if asset != "USD" and amount
         )

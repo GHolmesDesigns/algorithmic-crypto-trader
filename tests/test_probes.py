@@ -522,7 +522,9 @@ async def test_a_probe_refusal_is_never_taken_for_an_unpriced_holding(refusal) -
     class Refusing:
         async def get_positions(self) -> tuple[Position, ...]:
             now = datetime.now(UTC)
-            return (Position(symbol="BCH-USD", quantity=Decimal("5"), average_price=0, as_of=now),)
+            return (
+                Position(symbol="BCH-USD", quantity=Decimal("5"), average_price=None, as_of=now),
+            )
 
         async def get_quote(self, symbol: str) -> None:
             raise refusal

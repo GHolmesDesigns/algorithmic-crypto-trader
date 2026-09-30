@@ -356,7 +356,7 @@ Phase 4 may start now. It may be built during the Phase 1.5 soak because it chan
 
 - For traded symbols, mark signals, orders, and fills from persisted history on both chart forms, each linked to its order's lineage.
 - Buys and sells differ by marker shape, not by colour alone.
-- No average-cost line or per-position P/L until #30 lands.
+- No per-position P/L until a trustworthy producer is defined; #30 now represents an unknown cost basis as absent.
 
 **Exit:** markers match persisted history for the window, and a symbol with no activity shows none.
 

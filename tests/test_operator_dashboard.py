@@ -43,7 +43,7 @@ class HealthyBroker:
 
     async def get_positions(self):
         return (
-            Position(symbol="BTC-USD", quantity="0.1", average_price="0", as_of=utc_now()),
+            Position(symbol="BTC-USD", quantity="0.1", average_price=None, as_of=utc_now()),
             Position(symbol="ETH-USD", quantity="2", average_price="1800.5", as_of=utc_now()),
         )
 
@@ -214,7 +214,7 @@ async def test_paper_with_a_healthy_broker_shows_current_data_in_a_neutral_tone(
     assert '<th scope="row">USD</th><td class="num">100</td><td class="num">2.5</td>' in portfolio
     # A zero balance is a real value, printed as a number.
     assert '<th scope="row">BTC</th><td class="num">0</td>' in portfolio
-    # Venues record 0 when they report no cost basis: that is unknown, not a price.
+    # Venues report no cost basis as None: that is unknown, not a price.
     assert (
         '<th scope="row">BTC-USD</th><td class="num">0.1</td><td class="num">'
         '<span class="absent"><span class="mark" aria-hidden="true">○</span> not known</span>'
@@ -742,6 +742,20 @@ def test_rare_states_still_say_what_is_known():
     assert (strategy.status.word, strategy.status.tone) == ("none registered", "unknown")
     assert view["portfolio"]["positions"][0]["average_price"].text == "not known"
     assert view["alerts"]["rows"][0]["undelivered"] == "No delivery was recorded."
+
+
+def test_a_real_zero_average_price_is_shown_as_a_price_and_only_none_is_unknown():
+    def shown(value):
+        snapshot = {
+            "portfolio": {
+                "status": "current",
+                "positions": [{"symbol": "ETH-USD", "quantity": "1", "average_price": value}],
+            }
+        }
+        return build_dashboard(snapshot, role="admin")["portfolio"]["positions"][0]["average_price"]
+
+    assert (shown("0").kind, shown("0").text) == ("text", "0")  # an airdrop cost nothing
+    assert shown(None).text == "not known"
 
 
 def test_strategy_card_shows_the_worst_heartbeat():

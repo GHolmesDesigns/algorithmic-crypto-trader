@@ -65,7 +65,7 @@ async def test_reconciliation_accepts_matching_empty_portfolio() -> None:
 @pytest.mark.asyncio
 async def test_reconciliation_ignores_an_unavailable_provider_cost_basis() -> None:
     broker = SimulatedBroker()
-    broker._positions["BTC-USD"] = (Decimal("1"), Decimal("0"))
+    broker._positions["BTC-USD"] = (Decimal("1"), None)
     local = PortfolioState(
         positions=(
             Position(

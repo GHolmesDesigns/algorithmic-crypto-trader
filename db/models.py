@@ -153,7 +153,7 @@ class PositionSnapshotRecord(Base):
     batch_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
-    average_price: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    average_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
 

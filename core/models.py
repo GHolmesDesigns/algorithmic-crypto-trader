@@ -131,7 +131,8 @@ class Balance(FrozenModel):
 class Position(FrozenModel):
     symbol: str
     quantity: Decimal
-    average_price: NonNegativeDecimal
+    # ``None`` means the venue reports no cost basis; ``0`` is a real price of nothing.
+    average_price: NonNegativeDecimal | None = None
     as_of: datetime
 
 

@@ -342,7 +342,7 @@ Important merged limitation: the `TradingCycle` exists and is extensively tested
 - Missing baselines, unreadable persistence, unresolved orders, unavailable brokers, or divergence halt the system.
 - Process-kill and database-outage paths are covered by controlled tests.
 
-Current model caveat: venue positions use `average_price=0` as an unknown-cost-basis placeholder. Open issue `#30` will replace that with an explicit absent value before any UI treats cost basis as meaningful.
+Model note: a venue position with no known cost basis has `average_price = null`; `0` is a real price (an airdrop). Issue `#30` made that change, so cost basis may now be shown when present. Per-position P/L still needs a defined producer.
 
 ### 5.9 Operator API, health, controls, and alert model
 
@@ -542,7 +542,7 @@ Initial merged-data view:
 - data source and `as_of` age;
 - unmistakable unavailable/last-known treatment.
 
-Do not visualize per-position P/L or use average price as cost basis until issue `#30` lands and a trustworthy P/L producer is defined.
+Do not visualize per-position P/L or use average price as cost basis until a trustworthy P/L producer is defined (issue `#30` made an unknown cost basis explicit).
 
 ### 8.4 Risk and safety
 

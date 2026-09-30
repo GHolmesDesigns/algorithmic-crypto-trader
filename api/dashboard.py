@@ -502,9 +502,9 @@ def _portfolio(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
 
 
 def _average_price(value: object) -> Fact:
-    # Venue adapters record 0 when the venue reports no cost basis; 0 is not a price.
+    # None means the venue reports no cost basis; a real 0 (an airdrop) is a known price.
     try:
-        known = value not in (None, "") and Decimal(str(value)) != 0
+        known = value not in (None, "") and Decimal(str(value)) >= 0
     except InvalidOperation:
         known = False
     if not known:
