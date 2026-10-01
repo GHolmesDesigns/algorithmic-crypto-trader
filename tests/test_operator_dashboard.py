@@ -1,6 +1,8 @@
 """Server-rendered operator dashboard: every state renders truthfully and safely."""
 
+import hashlib
 import re
+import struct
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -28,10 +30,13 @@ from core.models import (
 from portfolio.scheduler import ReconciliationStatus
 from risk.kill_switch import KillSwitch
 
+from tests.operator_support import ICON_LINK
+
 OPERATOR = {"x-operator-token": "operator-secret"}
 ADMIN = {"x-operator-token": "admin-secret"}
 MARKS = "●▲■○◐"
 CSS = Path(__file__).resolve().parents[1] / "api" / "templates" / "operator.css"
+ICON_DIR = Path(__file__).resolve().parents[1] / "api" / "static" / "icons"
 
 
 class HealthyBroker:
@@ -658,7 +663,7 @@ async def test_styles_are_local_and_inline(monkeypatch):
     html = await page(dashboard_app(monkeypatch))
     assert "<style>" in html
     assert "--crit: #96382f;" in html
-    assert "<link" not in html
+    assert html.count("<link") == 1 and ICON_LINK in html
     assert "http://" not in html
     assert "https://" not in html
     assert "@import" not in html
@@ -787,3 +792,40 @@ async def test_state_text_is_escaped_not_rendered_as_markup(monkeypatch):
     assert "<img" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "&lt;b&gt;x&lt;/b&gt;" in html
+
+
+# Browser-tab icon
+
+
+def icon_sizes(data: bytes) -> list[int]:
+    """Edge lengths listed in an ICO directory; a stored 0 means 256."""
+
+    reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+    assert (reserved, kind) == (0, 1)
+    return [data[6 + 16 * index] or 256 for index in range(count)]
+
+
+@pytest.mark.asyncio
+async def test_favicon_is_served_without_a_session_as_a_cached_icon(monkeypatch):
+    transport = httpx.ASGITransport(app=dashboard_app(monkeypatch))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/favicon.ico")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/x-icon"
+    assert response.headers["cache-control"] == "public, max-age=86400"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "set-cookie" not in response.headers
+    assert response.content.startswith(b"\x00\x00\x01\x00")
+    assert {16, 32, 48, 256} <= set(icon_sizes(response.content))
+
+
+def test_committed_icon_has_the_recorded_checksum():
+    digest = hashlib.sha256((ICON_DIR / "bitcoin.ico").read_bytes()).hexdigest().upper()
+    assert f"SHA-256: `{digest}`" in (ICON_DIR / "README.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_dashboard_and_sign_in_pages_link_the_icon(monkeypatch):
+    application = dashboard_app(monkeypatch)
+    assert ICON_LINK in await page(application)
+    assert ICON_LINK in await page(application, headers={}, path="/operator/login")

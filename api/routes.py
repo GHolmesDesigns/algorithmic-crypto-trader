@@ -15,7 +15,7 @@ from urllib.parse import parse_qs
 from core.logging import redact_free_text
 from core.models import KillSwitchState, utc_now
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from risk.kill_switch import TransitionNotRecorded
 
@@ -28,6 +28,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates"))
 _SESSION_COOKIE = "operator_session"
 _SESSION_TTL_SECONDS = 8 * 60 * 60
 _ROLE_LABELS = {"operator": "Operator", "admin": "Administrator"}
+FAVICON_FILE = Path(__file__).resolve().parent / "static" / "icons" / "bitcoin.ico"
 
 
 @router.get("/health")
@@ -35,6 +36,20 @@ async def health() -> dict[str, str]:
     """Unauthenticated liveness only; never exposes broker or trading state."""
 
     return {"status": "ok"}
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    """Unauthenticated, like /health: a fixed public image that reads no state."""
+
+    return FileResponse(
+        FAVICON_FILE,
+        media_type="image/x-icon",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/health/detail")

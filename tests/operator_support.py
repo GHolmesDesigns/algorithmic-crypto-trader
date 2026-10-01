@@ -17,6 +17,8 @@ REARM = {
     "checklist": [key for key, _ in REARM_CHECKLIST],
     "reason": "INC-42 drill pause ended; approved by the incident owner",
 }
+# The one <link> an operator page may carry: the same-origin tab icon, never a stylesheet.
+ICON_LINK = '<link rel="icon" href="/favicon.ico" sizes="any">'
 
 
 def sqlite_settings(
