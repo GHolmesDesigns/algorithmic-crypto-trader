@@ -1,2 +1,5 @@
 # Shell scripts run inside Linux containers and on the VPS; keep them LF on Windows checkouts.
 *.sh text eol=lf
+
+# Icons are binary; never convert line endings in them.
+*.ico binary

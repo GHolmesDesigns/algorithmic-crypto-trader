@@ -38,7 +38,7 @@ from sqlalchemy.orm import sessionmaker
 from strategy.reference import MovingAverageCrossStrategy
 
 from tests.gate_support import PARITY_WINDOWS, paper_cycle, state_at
-from tests.operator_support import history_app, sqlite_settings
+from tests.operator_support import ICON_LINK, history_app, sqlite_settings
 
 OPERATOR_TOKEN = "operator-secret-history-4b1e"
 ADMIN_TOKEN = "admin-secret-history-93c7"
@@ -868,7 +868,8 @@ async def test_history_pages_are_structured_script_free_and_token_free(tmp_path)
         assert parsed.headings.count(1) == 1 and parsed.headings[0] == 1, path
         assert all(b - a <= 1 for a, b in zip(parsed.headings, parsed.headings[1:], strict=False))
         assert parsed.visible_marks == 0, path
-        assert "<script" not in html and "<link" not in html
+        assert "<script" not in html
+        assert html.count("<link") == 1 and ICON_LINK in html, path
         assert '<a class="skip-link" href="#main">Skip to main content</a>' in html
         assert '<nav class="history-nav" aria-label="History views">' in html
         nav = html[html.index('<nav class="history-nav"') : html.index("</nav>")]

@@ -35,7 +35,7 @@ from risk.engine import RISK_GATES
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from tests.operator_support import history_app, sqlite_settings
+from tests.operator_support import ICON_LINK, history_app, sqlite_settings
 
 OPERATOR_TOKEN = "operator-secret-trends-5d2a"
 ADMIN_TOKEN = "admin-secret-trends-81fe"
@@ -561,9 +561,8 @@ async def test_the_trends_page_is_structured_script_free_and_linked(tmp_path):
         assert parsed.headings[0] == 1 and parsed.headings.count(1) == 1
         assert all(b - a <= 1 for a, b in zip(parsed.headings, parsed.headings[1:], strict=False))
         assert parsed.visible_marks == 0, window
-        assert (
-            "<script" not in html and "<link" not in html and "http" not in html.split("<main")[1]
-        )
+        assert "<script" not in html and "http" not in html.split("<main")[1]
+        assert html.count("<link") == 1 and ICON_LINK in html, window
         assert f'<option value="{window}" selected>' in html
         nav = html[html.index('<nav class="history-nav"') : html.index("</nav>")]
         assert f'<a href="{PATH}" aria-current="page">Trends</a>' in nav
