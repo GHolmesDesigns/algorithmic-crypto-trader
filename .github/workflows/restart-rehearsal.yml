@@ -28,7 +28,7 @@ jobs:
       COMPOSE_PROJECT_DIR: ${{ github.workspace }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install age, rclone, and PostgreSQL client
         run: |
