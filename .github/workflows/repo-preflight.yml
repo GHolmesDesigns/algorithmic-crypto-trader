@@ -17,6 +17,7 @@ concurrency:
 jobs:
   preflight:
     name: Repository baseline
+    # Follows ubuntu-latest on purpose: it passes on both 24.04 and 26.04 (#126), so the required check survives the rollout.
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
