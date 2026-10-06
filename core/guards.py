@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from core.models import TradingMode
+from core.version import application_version
 
 
 class CredentialScope(StrEnum):
@@ -72,5 +73,6 @@ def startup_banner(settings: StartupSettings) -> str:
     )
     return (
         f"TRADING SERVICE | mode={settings.trading_mode.value.upper()} | "
-        f"credential_scope={settings.credential_scope.value} | live_confirmation={confirmation}"
+        f"credential_scope={settings.credential_scope.value} | live_confirmation={confirmation} | "
+        f"version={application_version()}"
     )
