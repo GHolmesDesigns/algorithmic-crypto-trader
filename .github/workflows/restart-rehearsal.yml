@@ -22,7 +22,7 @@ jobs:
   rehearsal:
     name: Restart, backup, and restore rehearsal
     if: github.event_name != 'pull_request' || github.event.label.name == 'restart-rehearsal'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       COMPOSE_PROJECT_DIR: ${{ github.workspace }}
