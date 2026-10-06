@@ -117,19 +117,23 @@ app for `GET /operator/diagnostics` with the in-container operator token, the wa
 
 - the kill-switch state, the startup recovery status, and the last scheduled
   reconciliation result;
-- every pending or unknown order by an eight-character reference, with its age
-  and whether the venue knows it (`found (<status>)`, `not found`, or the failure
-  of the lookup). Up to five orders are looked up, one read each;
+- every pending or unknown order by an eight-character reference (the first
+  eight characters of its ID), with its age and whether the venue knows it
+  (`found (<status>)`, `not found`, or the failure of the lookup). Up to five
+  orders are looked up, one read each;
 - the last `N` stored discrepancies with their kind, key, differing field, local
   and broker value, and the delta (broker minus local);
-- the last `N` fills with quantity, price, `quantity × price`, and fee, then the
-  balance check for each reconciliation window they fell in: the broker's
-  balance at the start, every fill's `quantity × price` and fee, the rounding to
-  the venue's balance unit, the projected balance, the broker's balance at the
-  end, and their difference. A window is the span between two stored broker
-  snapshots, and a fill is placed in it by its recorded time, so this is a
-  reconstruction from stored rows. The fee's asset is not stored, so it is
-  taken to be the quote asset.
+- the last `N` fills, each by an eight-character reference, with quantity, price,
+  `quantity × price`, and fee. A fill's reference is the last eight characters
+  of its ID, because a venue's trade IDs share a long prefix and differ at the
+  end; it is the same in the fill row, the window, the itemized lines, and a fill
+  discrepancy. Then the balance check for each reconciliation window they fell
+  in: the broker's balance at the start, every fill's `quantity × price` and
+  fee, the rounding to the venue's balance unit, the projected balance, the
+  broker's balance at the end, and their difference. A window is the span
+  between two stored broker snapshots, and a fill is placed in it by its
+  recorded time, so this is a reconstruction from stored rows. The fee's asset
+  is not stored, so it is taken to be the quote asset.
 
 It changes nothing: the database is only read, the venue is only asked for an
 order, no file is written (not even the drill's state directory), and the kill
@@ -145,7 +149,7 @@ What the app log now says for the same halt:
 | --- | --- |
 | Reconciliation divergence | One `reconciliation divergence: <kind> <key> field=<field> delta(broker-local)=<delta>` line per differing field. In `paper` it adds `local=` and `broker=`. In every other mode it carries no value. |
 | Provider HTTP failure | `<operation> failed: ProviderHTTPError HTTP <status> path=<endpoint path> reason=<provider reason>`. Never a response body, header, or credential. |
-| Order lifecycle | `order step=saved`, `lookup`, `order_new`, and `fill`, each once per order, with `ref=<8 characters>`. A fill carries its quantity, price, fee, and notional. |
+| Order lifecycle | `order step=saved`, `lookup`, `order_new`, and `fill`, each once per order, with `ref=<8 characters>`. A fill carries `fill=<last 8 characters of its ID>`, its quantity, price, fee, and notional. |
 
 ## Pass criteria
 

@@ -11,7 +11,7 @@ from typing import Any, Protocol
 
 from brokers.http import provider_failure_fields
 from brokers.interface import BrokerInterface
-from core.logging import short_reference
+from core.logging import fill_reference, short_reference
 from core.models import Fill, Order, OrderRequest, OrderStatus, RiskApproval
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ class ExecutionEngine:
             _log_step(
                 "fill",
                 reference,
-                fill=short_reference(fill.fill_id),
+                fill=fill_reference(fill.fill_id),
                 symbol=fill.symbol,
                 side=fill.side.value,
                 quantity=fill.quantity,

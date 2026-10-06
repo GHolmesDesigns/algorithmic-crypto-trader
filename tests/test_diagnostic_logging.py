@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from itertools import count
 from uuid import uuid4
 
 import httpx
@@ -44,7 +45,7 @@ from core.models import (
 from core.resilience import TokenBucketRateLimiter
 from execution.engine import ExecutionEngine, InMemoryOrderStore
 from execution.persistence import SqlAlchemyOrderStore
-from portfolio.divergence import field_changes
+from portfolio.divergence import field_changes, log_discrepancy
 from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
 from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
@@ -173,6 +174,33 @@ async def test_every_differing_field_is_one_line_and_an_order_key_is_shortened(c
         ]
     )
     assert client_order_id not in caplog.text
+
+
+def test_two_fill_keys_that_share_a_prefix_are_logged_apart(caplog) -> None:
+    # Gemini trade IDs count up from a shared prefix; their first eight characters are the same.
+    caplog.set_level(logging.INFO)
+    logger = logging.getLogger(DIVERGENCE)
+
+    for tid in ("2840141812001", "2840141812002"):
+        # The venue lists a fill the app never recorded.
+        unrecorded = Fill(
+            fill_id=tid,
+            order_id=uuid4(),
+            symbol="BTC-USD",
+            side=OrderSide.SELL,
+            quantity=Decimal("0.00005"),
+            price=Decimal("84390.47"),
+            fee=Decimal("0.01"),
+            fee_asset="USD",
+            occurred_at=NOW,
+        )
+        log_discrepancy(logger, Discrepancy("fill", tid, None, unrecorded), include_values=False)
+
+    assert [record.event["key"] for record in divergence_records(caplog)] == [
+        "41812001",
+        "41812002",
+    ]
+    assert "2840141812001" not in caplog.text and "2840141812002" not in caplog.text
 
 
 def test_each_kind_of_difference_is_named_by_its_own_field() -> None:
@@ -414,6 +442,7 @@ async def test_a_rejected_order_logs_the_venues_reason_once_at_the_adapter_and_t
 async def test_an_order_logs_saved_lookup_order_new_and_each_fill_once(caplog) -> None:
     caplog.set_level(logging.INFO)
     book = GeminiSandboxBook()
+    book._tids = count(2840141812001)  # a trade ID as long as the Sandbox's
     broker = gemini(book)
     store = InMemoryOrderStore()
     engine = ExecutionEngine(broker, store)
@@ -446,7 +475,9 @@ async def test_an_order_logs_saved_lookup_order_new_and_each_fill_once(caplog) -
     assert fill["quantity"] == "0.01" and fill["price"] == "60010"
     assert fill["fee"] == format(stored.fee, "f")
     assert Decimal(fill["notional"]) == Decimal("0.01") * Decimal("60010")
-    assert fill["fee_asset"] == stored.fee_asset and fill["fill"] == stored.fill_id[:8]
+    # A fill is shown by the end of its ID, where one trade ID differs from the next one's.
+    assert stored.fill_id == "2840141812001"
+    assert fill["fee_asset"] == stored.fee_asset and fill["fill"] == "41812001"
     line = next(
         r.getMessage() for r in caplog.records if r.name == ENGINE and "step=fill" in r.getMessage()
     )

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
-from core.logging import short_reference
+from core.logging import fill_reference, short_reference
 
 if TYPE_CHECKING:
     from portfolio.reconciliation import Discrepancy
@@ -109,7 +109,9 @@ def _delta(local: object, broker: object) -> Decimal | None:
 
 def _short(kind: str, key: str) -> str:
     # An order or fill key is an identifier; an asset or symbol is not.
-    return short_reference(key) if kind in {"order", "fill"} else key
+    if kind == "order":
+        return short_reference(key)
+    return fill_reference(key) if kind == "fill" else key
 
 
 def _render(kind: str, value: object) -> str:
