@@ -48,6 +48,9 @@ GEMINI_ORDER_NAMESPACE = UUID("e2fd1e2e-89a0-4c8f-86a9-9ad7f54ee32b")
 # The risk engine's default slippage limit: how far past the quote a market order may fill.
 DEFAULT_MARKET_COLLAR = Decimal("0.01")
 PRICE_TICK = Decimal("0.01")
+# The Sandbox reports a USD balance to 5 decimals (seen on 2026-10-05 and 2026-10-06, #118),
+# which is finer than a cent but coarser than a 0.0001 BTC fill's notional at cent prices.
+BALANCE_INCREMENTS = {"USD": Decimal("0.00001")}
 # Gemini answers an order it refuses with 400, 409, or 422, and insufficient funds with 406.
 REJECTION_STATUSES = frozenset({400, 406, 409, 422})
 
@@ -116,6 +119,7 @@ class GeminiBroker(BrokerInterface):
             price_increment=Decimal("0.01"),
             quantity_increment=Decimal("0.00000001"),
             max_quote_age_seconds=60,
+            balance_increments=dict(BALANCE_INCREMENTS),
         )
 
     @property

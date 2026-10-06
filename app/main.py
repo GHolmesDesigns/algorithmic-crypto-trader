@@ -374,6 +374,7 @@ def start_scheduled_reconciliation(
         on_divergence=on_divergence,
         on_unavailable=on_unavailable,
         on_reconciled=sampler.sample,
+        balance_increments=operator_state.broker.capabilities.balance_increments,
     )
     execution.on_recorded = scheduler.observe
     application.state.execution = execution

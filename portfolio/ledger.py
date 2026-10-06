@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from core.models import Balance, Fill, OrderSide, Position, utc_now
 
@@ -14,7 +14,11 @@ ZERO = Decimal("0")
 
 
 def apply_fills(
-    baseline: PortfolioState, fills: Iterable[Fill], *, as_of: datetime | None = None
+    baseline: PortfolioState,
+    fills: Iterable[Fill],
+    *,
+    as_of: datetime | None = None,
+    balance_increments: Mapping[str, Decimal] | None = None,
 ) -> PortfolioState:
     """Return the positions and balances the broker should report after ``fills``.
 
@@ -24,6 +28,13 @@ def apply_fills(
     (``None``) stays unknown after a buy rather than averaging against a
     placeholder. Holds are carried over unchanged. A projection that goes
     negative is a local accounting failure and raises.
+
+    A venue reports a balance in a fixed unit, and a fill's notional can carry more
+    decimals than that. ``balance_increments`` names the unit per asset, and the
+    projected ``available`` of a listed asset that a fill moved is rounded half up to
+    it, so the exact comparison against the venue is between two numbers of the same
+    precision (#118). An asset no fill moved, or one not listed, is not rounded, and
+    neither are holds or positions.
     """
 
     now = as_of or utc_now()
@@ -32,8 +43,10 @@ def apply_fills(
     }
     available = {item.asset: item.available for item in baseline.balances}
     holds = {item.asset: item.hold for item in baseline.balances}
+    moved: set[str] = set()
     for fill in sorted(fills, key=lambda item: (item.occurred_at, item.fill_id)):
         base, quote = fill.symbol.split("-", maxsplit=1)
+        moved.update((base, quote, fill.fee_asset))
         notional = fill.quantity * fill.price
         quantity, average = positions.get(fill.symbol, (ZERO, None))
         sign = Decimal("1") if fill.side is OrderSide.BUY else Decimal("-1")
@@ -54,6 +67,11 @@ def apply_fills(
     for asset, amount in available.items():
         if amount < 0:
             raise ValueError(f"projected {asset} balance is negative")
+    # After the check, so a projection that is negative at full precision still raises.
+    for asset, increment in (balance_increments or {}).items():
+        if asset in moved:
+            units = (available[asset] / increment).to_integral_value(rounding=ROUND_HALF_UP)
+            available[asset] = units * increment
     return PortfolioState(
         orders=baseline.orders,
         fills=baseline.fills,

@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from app.main import create_app, run_startup_recovery
 from app.recovery import recover_on_startup
+from brokers.interface import BrokerCapabilities
 from brokers.simulated import FaultPlan, SimulatedBroker, SimulatedFault, SubmissionTimeoutError
 from core.guards import CredentialScope, StartupSettings
 from core.models import (
@@ -521,6 +522,11 @@ class LoopBoundBroker:
             self.loop = loop
         elif loop is not self.loop:
             raise RuntimeError("Event loop is closed")
+
+    @property
+    def capabilities(self) -> BrokerCapabilities:
+        # The reconciler reads the broker's declared balance precision at startup.
+        return SimulatedBroker().capabilities
 
     async def get_order(self, client_order_id: str) -> Order | None:
         self._check_loop()
