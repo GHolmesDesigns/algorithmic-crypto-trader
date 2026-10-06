@@ -32,7 +32,7 @@ jobs:
       (github.event.label.name == 'restore-drill' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     # Pinned to the VPS's 24.04: 26.04's pg_restore 18 fails against the 16 database (#126). Revisit when the VPS moves.
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
       scratch:
