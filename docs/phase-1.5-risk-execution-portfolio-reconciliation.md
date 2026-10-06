@@ -42,16 +42,23 @@ A fill's notional, quantity × price, can carry more decimals than the venue rep
 The rule that replaced it:
 
 - A broker declares the unit it rounds an asset's balance to in `BrokerCapabilities.balance_increments`. Only the Gemini Sandbox declares one, `USD` at `0.00001`. A broker that declares nothing, which today means Coinbase and the simulator, is compared exactly, as before.
-- `portfolio.ledger.apply_fills` rounds the projected `available` of a declared asset to that unit, half up, when a fill moved it. It rounds after the negative-balance check, so a projection that is negative at full precision still refuses. An asset no fill moved, an undeclared asset, holds, positions, fills and order status are not rounded.
+- `portfolio.ledger.apply_fills` settles every amount a fill moves in a declared asset, its quantity × price and its fee, in that unit: each is cut toward zero, fill by fill, before it is added. The projection is also checked unrounded, so a balance that is negative at full precision, or only as settled, still refuses. An undeclared asset, holds, positions, fills and order status are not rounded.
 - The comparison is still equality. Both sides now have the venue's precision; no tolerance was added, so a difference of one cent, or of one unit of the declared precision, still halts. This keeps the decision in #43.
 - The unit is declared by the adapter, never inferred from a reported value. A venue that prints a balance of 10000.00 as `10000` would otherwise look as if it reported whole dollars, and the cent difference that matters would be rounded away.
 
-Two things the recorded fills do not establish, both unverified until the owner's next own trade on the Sandbox reconciles with 0 differences:
+### Why fill by fill, toward zero
 
-- **The rounding rule.** Both fills agree under rounding to the nearest unit and under truncation. If the Sandbox truncates, a later fill whose sixth decimal is 5 or more would halt by exactly `0.00001`, and the discrepancy row would show that.
-- **Several fills in one interval.** The ledger rounds the sum of the fills since the last reconciliation once. A venue that rounds every fill separately could differ by one unit after several fills between two runs.
+The first version of this rule rounded the projected balance once, half up. It fitted the two trades above, which left open whether the Sandbox rounds or truncates and whether it rounds each fill or the total. The sell of 2026-10-06 20:55 UTC answered both: it filled in two pieces, and the app halted on a USD gap of `0.00002`.
 
-`tests/test_balance_precision.py` pins the two recorded fills, a partial fill, and the cases that must still halt.
+| Trade, 2026-10-06 UTC | Quantity × price | Fee | Sandbox USD after |
+| --- | --- | --- | --- |
+| Buy, 19:40 | 0.0001 × 84665.9 = 8.46659 | 0.03386 | 9991.42441 |
+| Sell, 20:55, first piece | 0.000062 × 84390.47 = 5.23220914 | 0.02092 | |
+| Sell, 20:55, second piece | 0.000038 × 84293.86 = 3.20316668 | 0.01281 | 9999.82604 |
+
+The Sandbox credited 5.23220 and 3.20316, each piece cut to 5 decimals. Rounding the total once, half up, projected 9999.82606; cutting the total once projected 9999.82605. Against all four recorded trades, only cutting each fill toward zero matches every balance; rounding half up or half even, per fill or on the total, and rounding up each fail at least one. The sell side is proven by remainders of half a unit or more. The buy side is inferred: the one recorded buy with a remainder had `0.000002`, which every rule but rounding up agrees on. If a buy settles differently, it halts by one unit, and `drill.sh diagnose` shows the gap.
+
+`tests/test_balance_precision.py` pins the recorded trades, the split sell, a partial fill, and the cases that must still halt.
 
 ## Validation boundary
 

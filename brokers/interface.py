@@ -30,10 +30,11 @@ class BrokerCapabilities(FrozenModel):
     price_increment: Decimal
     quantity_increment: Decimal
     max_quote_age_seconds: int = Field(gt=0)
-    # The unit a venue rounds an asset's balance to, e.g. {"USD": Decimal("0.00001")} for a
-    # venue that reports dollars to 5 decimals. A fill's notional can carry more decimals than
-    # that, so the ledger rounds its projection of a listed asset to the same unit before the
-    # exact comparison. An asset not listed is compared at full precision (#118).
+    # The unit a venue settles an asset's balance in, e.g. {"USD": Decimal("0.00001")} for a
+    # venue that keeps dollars to 5 decimals. A fill's notional can carry more decimals than
+    # that, so the ledger cuts every amount a fill moves in a listed asset toward zero to the
+    # same unit, fill by fill, before the exact comparison. An asset not listed is compared at
+    # full precision (#118).
     balance_increments: dict[str, Decimal] = Field(default_factory=dict)
 
     @field_validator("balance_increments")

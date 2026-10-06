@@ -5,6 +5,11 @@ and each order was followed by a ``reconciliation_divergence`` halt on **balance
 available**. The ledger projects USD exactly (quantity x price has 6 decimals), the Sandbox
 reports 5, and the reconciler compares for equality. The numbers below are the recorded
 fills and the balances the dashboard showed afterwards.
+
+Rounding the projected balance once, half up, fitted those two trades but not the sell of
+2026-10-06 20:55 UTC, which filled in two pieces and halted on a 0.00002 USD gap. The Sandbox
+settles every fill on its own and cuts the remainder below 0.00001 off, which is the only rule
+that fits all four recorded trades.
 """
 
 from __future__ import annotations
@@ -200,10 +205,79 @@ async def test_the_apps_own_buy_and_sell_reconcile_cleanly_at_the_sandbox_precis
 
 
 @pytest.mark.asyncio
+async def test_a_sell_split_across_two_fills_reconciles_at_what_the_sandbox_credited() -> None:
+    # 2026-10-06: the 19:40 buy, then the 20:55 sell that filled in two pieces. The Sandbox
+    # credited 5.23220 and 3.20316, each piece's quantity x price cut to 5 decimals; rounding
+    # the 9999.82605582 total once gave 9999.82606 and halted on a 0.00002 gap.
+    venue = SandboxVenue()
+    venue.account = {"USD": (USD_AFTER_SELL, "0")}
+    run = await Run(venue).start()
+
+    buy, buy_fill = own_order(OrderSide.BUY, "0.0001", "84665.9", "0.03386", second=2)
+    assert (
+        await run.after({"USD": ("9991.42441", "0"), "BTC": ("0.0001", "0")}, buy, (buy_fill,))
+        == []
+    )
+
+    sell, piece_one = own_order(
+        OrderSide.SELL, "0.0001", "84390.47", "0.02092", filled="0.000062", second=3
+    )
+    _, piece_two = own_order(
+        OrderSide.SELL, "0.0001", "84293.86", "0.01281", filled="0.000038", second=3
+    )
+    sell = sell.model_copy(update={"filled_quantity": Decimal("0.0001")})
+    piece_two = piece_two.model_copy(update={"order_id": sell.order_id})
+    assert (
+        await run.after(
+            {"USD": ("9999.82604", "0"), "BTC": ("0", "0")}, sell, (piece_one, piece_two)
+        )
+        == []
+    )
+    assert run.switch.state is KillSwitchState.RUNNING
+    assert run.alerts == []
+
+
+@pytest.mark.parametrize(
+    ("side", "usd"),
+    [
+        # Recorded: the first piece of the 20:55 sell, 5.23220914 credited as 5.23220.
+        pytest.param(OrderSide.SELL, "1005.21128", id="sell"),
+        # Inferred: no recorded buy had a remainder of half a unit or more. Every recorded buy
+        # fits this rule, and a buy that does not would halt and show the gap.
+        pytest.param(OrderSide.BUY, "994.74688", id="buy"),
+    ],
+)
+def test_a_remainder_of_half_a_unit_or_more_is_cut_off_not_rounded_up(
+    side: OrderSide, usd: str
+) -> None:
+    _, fill = own_order(side, "0.000062", "84390.47", "0.02092")
+
+    projected = apply_fills(
+        baseline(USD="1000.00000", BTC="1"), [fill], balance_increments=FIVE_DECIMALS
+    )
+
+    assert {item.asset: item.available for item in projected.balances}["USD"] == Decimal(usd)
+
+
+def test_fills_are_settled_one_by_one_not_as_a_total() -> None:
+    # The two pieces of the 20:55 sell without fees: one by one 5.23220 + 3.20316 = 8.43536,
+    # where cutting the 8.43537582 total once would give 8.43537.
+    _, piece_one = own_order(OrderSide.SELL, "0.000062", "84390.47", "0", second=1)
+    _, piece_two = own_order(OrderSide.SELL, "0.000038", "84293.86", "0", second=2)
+
+    projected = apply_fills(
+        baseline(USD="0", BTC="1"), [piece_one, piece_two], balance_increments=FIVE_DECIMALS
+    )
+
+    assert {item.asset: item.available for item in projected.balances}["USD"] == Decimal("8.43536")
+
+
+@pytest.mark.asyncio
 async def test_a_partial_fill_then_its_completion_reconcile_cleanly() -> None:
     run = await Run(SandboxVenue()).start()
 
-    # 0.00004 of a 0.0001 BTC buy fills: 3.4131528 notional plus a 0.0136526112 fee.
+    # 0.00004 of a 0.0001 BTC buy fills: 3.4131528 notional plus a 0.0136526112 fee, which the
+    # venue settles as 3.41315 and 0.01365.
     partial, first = own_order(
         OrderSide.BUY,
         "0.0001",
@@ -213,18 +287,19 @@ async def test_a_partial_fill_then_its_completion_reconcile_cleanly() -> None:
         filled="0.00004",
     )
     assert (
-        await run.after({"USD": ("9996.57319", "0"), "BTC": ("0.00004", "0")}, partial, (first,))
+        await run.after({"USD": ("9996.57320", "0"), "BTC": ("0.00004", "0")}, partial, (first,))
         == []
     )
 
-    # The remaining 0.00006 fills at 85330: 5.1198 notional plus a 0.0204792 fee.
+    # The remaining 0.00006 fills at 85330: 5.1198 notional plus a 0.0204792 fee, settled as
+    # 5.11980 and 0.02047.
     done = partial.model_copy(
         update={"status": OrderStatus.FILLED, "filled_quantity": Decimal("0.0001")}
     )
     _, rest = own_order(OrderSide.BUY, "0.0001", "85330", "0.0204792", filled="0.00006", second=1)
     rest = rest.model_copy(update={"order_id": done.order_id})
     assert (
-        await run.after({"USD": ("9991.43291", "0"), "BTC": ("0.0001", "0")}, done, (first, rest))
+        await run.after({"USD": ("9991.43293", "0"), "BTC": ("0.0001", "0")}, done, (first, rest))
         == []
     )
     assert run.switch.state is KillSwitchState.RUNNING
@@ -298,7 +373,7 @@ async def test_an_outside_order_alongside_the_apps_fill_still_halts_on_what_stay
             {"USD": Decimal("0.00000001")}, "9991.43299", False, id="finer unit keeps it exact"
         ),
         pytest.param(
-            {"USD": Decimal("0.00000001")}, "9991.43298647", True, id="finer unit, finer report"
+            {"USD": Decimal("0.00000001")}, "9991.43298648", True, id="finer unit, finer report"
         ),
     ],
 )
@@ -376,6 +451,18 @@ def test_the_ledger_still_refuses_a_negative_projection_that_rounding_would_hide
     _, fill = own_order(OrderSide.BUY, "0.0001", BUY_PRICE, "0.034131528")
     with pytest.raises(ValueError, match="negative"):
         apply_fills(baseline(USD="8.56701"), [fill], balance_increments=FIVE_DECIMALS)
+
+
+def test_the_ledger_refuses_a_projection_that_is_negative_only_as_settled() -> None:
+    # Two sells credit 0.000009 each, settled as 0, and a buy debits 0.000015, settled as
+    # 0.00001: 0.000003 left at full precision, 0.00001 short as the venue settles it.
+    _, sell_one = own_order(OrderSide.SELL, "0.00000001", "900", "0", second=1)
+    _, sell_two = own_order(OrderSide.SELL, "0.00000001", "900", "0", second=2)
+    _, buy = own_order(OrderSide.BUY, "0.00000001", "1500", "0", second=3)
+    with pytest.raises(ValueError, match="negative"):
+        apply_fills(
+            baseline(USD="0", BTC="1"), [sell_one, sell_two, buy], balance_increments=FIVE_DECIMALS
+        )
 
 
 @pytest.mark.asyncio

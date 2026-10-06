@@ -27,10 +27,10 @@ domain models.
   use cancel-and-replace.
 - Authenticated Coinbase user-order events are supported, with bounded status
   polling available as the recovery path.
-- An adapter whose venue rounds a balance declares the unit in
+- An adapter whose venue settles a balance in a fixed unit declares the unit in
   `BrokerCapabilities.balance_increments`. Gemini declares `USD` at 5 decimals
-  and Coinbase declares none, so only Gemini's expected balances are rounded
-  before reconciliation ([why](phase-1.5-risk-execution-portfolio-reconciliation.md#the-apps-own-fills-and-the-venues-balance-precision)).
+  and Coinbase declares none, so only Gemini's fills are settled in that unit,
+  one by one, before reconciliation ([why](phase-1.5-risk-execution-portfolio-reconciliation.md#the-apps-own-fills-and-the-venues-balance-precision)).
 
 ## Automated evidence
 
