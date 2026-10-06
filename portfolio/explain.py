@@ -16,7 +16,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
-from core.logging import short_reference
+from core.logging import fill_reference
 from core.models import Fill, OrderSide
 
 from portfolio.ledger import apply_fills
@@ -68,7 +68,7 @@ def explain_window(
     items: dict[str, list[Item]] = {}
     for fill in ordered:
         base, quote = fill.symbol.split("-", maxsplit=1)
-        reference = short_reference(fill.fill_id)
+        reference = fill_reference(fill.fill_id)
         sign = Decimal("1") if fill.side is OrderSide.BUY else Decimal("-1")
         items.setdefault(base, []).append(Item(f"fill {reference} quantity", sign * fill.quantity))
         items.setdefault(quote, []).append(

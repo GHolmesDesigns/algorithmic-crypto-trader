@@ -7,7 +7,8 @@ fills. This answers them from what is already stored, so nobody queries the data
 Nothing here writes. ``SqlAlchemyDiagnostics`` issues only ``SELECT``; the one provider call is
 ``get_order`` for a pending order, the same read startup recovery makes. The report never prints
 a secret, token, host name, or address: orders and fills are shown by an eight-character
-reference, and a provider failure by its type, status code, endpoint path, and reason.
+reference (an order's first eight characters, a fill's last eight, where trade IDs differ), and a
+provider failure by its type, status code, endpoint path, and reason.
 
 The service refuses to build it in ``live`` mode or with a trade-capable credential scope.
 """
@@ -24,7 +25,7 @@ from uuid import UUID
 
 from brokers.http import describe_provider_failure
 from core.guards import CredentialScope
-from core.logging import short_reference
+from core.logging import fill_reference, short_reference
 from core.models import Balance, Fill, OrderSide, Position, TradingMode, utc_now
 from db.models import (
     BalanceSnapshotRecord,
@@ -354,7 +355,7 @@ def _fill_rows(
         "rows": [
             {
                 "at": _utc(fill.occurred_at).isoformat(),
-                "ref": short_reference(fill.fill_id),
+                "ref": fill_reference(fill.fill_id),
                 "order": short_reference(fill.order_id),
                 "symbol": fill.symbol,
                 "side": fill.side.value,
@@ -394,7 +395,7 @@ def _checks(
     checks: list[dict[str, Any]] = []
     for end in sorted(windows, key=lambda index: -1 if index is None else index):
         members = windows[end]
-        refs = [short_reference(fill.fill_id) for fill in members]
+        refs = [fill_reference(fill.fill_id) for fill in members]
         if end is None:
             checks.append({"fills": refs, "status": "not yet reconciled"})
         elif end == 0:
@@ -465,7 +466,9 @@ def _rebuild(kind: str, payload: Mapping[str, Any]) -> object:
 
 
 def _key(kind: str, key: str) -> str:
-    return short_reference(key) if kind in {"order", "fill"} else key
+    if kind == "order":
+        return short_reference(key)
+    return fill_reference(key) if kind == "fill" else key
 
 
 def _utc(value: datetime) -> datetime:

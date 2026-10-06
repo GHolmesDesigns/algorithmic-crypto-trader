@@ -12,8 +12,8 @@ from typing import Any
 from uuid import UUID
 
 REDACTED = "[REDACTED]"
-# An order or fill ID in a log line: enough to tell two lines apart and match them to each
-# other, not the identifier itself.
+# An order or fill ID in a log line or report: enough to tell two lines apart and match them
+# to each other, not the identifier itself.
 REFERENCE_LENGTH = 8
 SECRET_FIELD_NAMES = frozenset(
     {
@@ -62,9 +62,19 @@ def reset_correlation_id(token: contextvars.Token[str | None]) -> None:
 
 
 def short_reference(identifier: object) -> str:
-    """The first ``REFERENCE_LENGTH`` characters of an order or fill ID."""
+    """The first ``REFERENCE_LENGTH`` characters of an order ID."""
 
     return str(identifier)[:REFERENCE_LENGTH]
+
+
+def fill_reference(identifier: object) -> str:
+    """The last ``REFERENCE_LENGTH`` characters of a fill ID, or all of it when shorter.
+
+    Fill IDs differ at the end, not the start: a venue's trade IDs count up from a long shared
+    prefix (Gemini's ``tid``), and a simulated fill ends in its number.
+    """
+
+    return str(identifier)[-REFERENCE_LENGTH:]
 
 
 def scrub_secrets(value: Any) -> Any:

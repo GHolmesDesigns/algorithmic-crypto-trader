@@ -571,3 +571,36 @@ async def test_fills_outside_any_stored_window_are_labelled_not_guessed(tmp_path
 
     assert not_yet == [{"fills": ["tid-9001"], "status": "not yet reconciled"}]
     assert no_earlier == [{"fills": ["tid-9001"], "status": "no earlier broker snapshot is stored"}]
+
+
+@pytest.mark.asyncio
+async def test_two_trade_ids_that_share_a_prefix_are_told_apart_everywhere(tmp_path) -> None:
+    # On 2026-10-06 the report printed "fill 28401418" for five different Gemini fills, because
+    # trade IDs count up from a shared prefix and only their first eight characters were shown.
+    application, factory = diagnostics_app(tmp_path, RoundingVenue())
+    seed_fill(factory, broker_fill_id="2840141812001")
+    seed_fill(factory, broker_fill_id="2840141812002")
+    snapshot(factory, T0, USD="100000")
+    snapshot(factory, T1, USD="67999.5", BTC="0.5")
+    discrepancy(factory, "fill", "2840141812002", {}, {}, T1)
+
+    body = (await report_of(application)).json()
+
+    assert [row["ref"] for row in body["fills"]["rows"]] == ["41812001", "41812002"]
+    [check] = body["fills"]["checks"]
+    assert (check["status"], check["fills"]) == ("itemized", ["41812001", "41812002"])
+    usd = next(asset for asset in check["assets"] if asset["asset"] == "USD")
+    assert [item["label"] for item in usd["items"]] == [
+        "fill 41812001 quantity × price",
+        "fill 41812001 fee",
+        "fill 41812002 quantity × price",
+        "fill 41812002 fee",
+    ]
+    # The discrepancy names the same fill by the same reference as its row.
+    [row] = body["discrepancies"]["rows"]
+    assert (row["kind"], row["key"]) == ("fill", "41812002")
+    lines = body["report"]
+    assert any(line.endswith(" fills=41812001,41812002: itemized") for line in lines)
+    assert sum(" fill 41812001 order " in line for line in lines) == 1
+    assert sum(" fill 41812002 order " in line for line in lines) == 1
+    assert "2840141812001" not in json.dumps(body) and "2840141812002" not in json.dumps(body)
