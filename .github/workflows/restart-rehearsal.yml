@@ -22,7 +22,7 @@ jobs:
   rehearsal:
     name: Restart, backup, and restore rehearsal
     if: github.event_name != 'pull_request' || github.event.label.name == 'restart-rehearsal'
-    # Pinned to the VPS's 24.04: 26.04's pg_restore 18 fails against the 16 database (#126). Revisit when the VPS moves.
+    # Pinned to the VPS's 24.04 to stay on its Docker Compose 2.x line (the 26.04 runner has 5.x). Revisit when the VPS moves.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
