@@ -78,12 +78,37 @@ echo "rclone $*" >> "$STUB_LOG"
 """,
     "pg_restore": """#!/bin/sh
 echo "pg_restore $*" >> "$STUB_LOG"
+if [ "${1:-}" = --version ] && [ "${FAKE_CLIENT_VERSION:-}" != none ]; then
+  echo "pg_restore (PostgreSQL) ${FAKE_CLIENT_VERSION:-16.4}"
+fi
 """,
     "psql": """#!/bin/sh
 echo "psql $*" >> "$STUB_LOG"
-printf '%s\\n' "$FAKE_RESTORED"
+case "$*" in
+  *server_version_num*) echo "${FAKE_SERVER_VERSION_NUM:-160004}" ;;
+  *) printf '%s\\n' "$FAKE_RESTORED" ;;
+esac
 """,
 }
+
+# `docker run IMAGE sh -c SCRIPT` as the restore script uses it to run a matching client: the
+# stub records the line, keeps what arrives on stdin, and answers for pg_restore or psql.
+RESTORE_DOCKER_STUB = """#!/bin/sh
+echo "docker $*" >> "$STUB_LOG"
+if [ "$1" = version ]; then
+  [ -z "${FAKE_NO_DOCKER:-}" ]
+  exit $?
+fi
+case "$*" in
+  *pg_restore*)
+    cat > "$STUB_DIR/container-stdin"
+    if [ -n "${FAKE_CONTAINER_RESTORE_FAILS:-}" ]; then
+      echo "pg_restore: error: simulated failure" >&2
+      exit 1
+    fi ;;
+  *psql*) printf '%s\\n' "$FAKE_RESTORED" ;;
+esac
+"""
 
 
 def stub_env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -268,7 +293,10 @@ def encrypted_artifacts(tmp_path: Path, manifest: list[str]) -> tuple[Path, Path
 
 
 def restore(
-    tmp_path: Path, restored: list[str], manifest_lines: list[str] = MANIFEST
+    tmp_path: Path,
+    restored: list[str],
+    manifest_lines: list[str] = MANIFEST,
+    **extra: str,
 ) -> subprocess.CompletedProcess[str]:
     dump, manifest = encrypted_artifacts(tmp_path, manifest_lines)
     restore_dir = tmp_path / "restore"
@@ -278,8 +306,16 @@ def restore(
         AGE_IDENTITY_FILE=str(tmp_path / "identity.txt"),
         SCRATCH_DATABASE_URL="postgresql://restore@127.0.0.1:5433/trader_restore",
         FAKE_RESTORED="\n".join(restored),
+        **extra,
     )
+    docker = restore_dir / "bin" / "docker"
+    docker.write_text(RESTORE_DOCKER_STUB, encoding="utf-8", newline="\n")
+    docker.chmod(0o755)
     return run_script("restore-verify-postgres.sh", env, str(dump), str(manifest))
+
+
+def restore_calls(tmp_path: Path) -> list[str]:
+    return (tmp_path / "restore" / "calls.log").read_text().splitlines()
 
 
 @needs_sh
@@ -294,6 +330,8 @@ def test_restore_verifies_row_counts_against_backup_manifest(tmp_path) -> None:
     assert "restore@" not in result.stdout + result.stderr
     calls = (tmp_path / "restore" / "calls.log").read_text()
     assert "pg_restore --clean --if-exists --exit-on-error --no-owner" in calls
+    # The local client is the same major version as the database, so no container is needed.
+    assert not any(line.startswith("docker") for line in restore_calls(tmp_path))
     leftovers = [path for path in (tmp_path / "restore").iterdir() if "trader-restore" in path.name]
     assert leftovers == []
 
@@ -314,6 +352,110 @@ def test_restore_rejects_contents_that_differ_from_manifest(tmp_path, restored) 
     assert result.returncode != 0
     assert "restore_verified" not in result.stdout
     assert "do not match" in result.stderr
+
+
+def container_runs(tmp_path: Path) -> list[str]:
+    return [line for line in restore_calls(tmp_path) if line.startswith("docker run")]
+
+
+@needs_sh
+@pytest.mark.parametrize(
+    ("client", "server_num", "image"),
+    [
+        ("18.6", "160004", "postgres:16-alpine"),
+        ("17.2", "160015", "postgres:16-alpine"),
+        ("16.4", "170002", "postgres:17-alpine"),
+        ("none", "160004", "postgres:16-alpine"),
+    ],
+    ids=["newer-client", "client-17", "newer-server", "no-local-client"],
+)
+def test_restore_runs_a_matching_client_from_the_database_image_when_the_local_one_differs(
+    tmp_path, client, server_num, image
+) -> None:
+    result = restore(
+        tmp_path, MANIFEST, FAKE_CLIENT_VERSION=client, FAKE_SERVER_VERSION_NUM=server_num
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == "restore_verified=1"
+    assert "verified orders=2" in result.stdout.splitlines()
+    calls = restore_calls(tmp_path)
+    runs = container_runs(tmp_path)
+    # One run restores the dump and one counts the rows, both from the server's major version.
+    assert len(runs) == 2
+    for line in runs:
+        assert "--rm" in line and "--network host" in line and "-e SCRATCH_DATABASE_URL" in line
+        assert f" {image} sh -c " in line
+    assert "pg_restore --clean --if-exists --exit-on-error --no-owner" in runs[0]
+    assert "psql" in runs[1] and "ON_ERROR_STOP=1" in runs[1]
+    # The local pg_restore only reports its version, and the local psql only reads the server's.
+    assert [line for line in calls if line.startswith("pg_restore")] == ["pg_restore --version"]
+    assert [line for line in calls if line.startswith("psql")] == [
+        "psql --dbname=postgresql://restore@127.0.0.1:5433/trader_restore --no-psqlrc "
+        "--tuples-only --no-align --command=SHOW server_version_num"
+    ]
+    # The dump travels on stdin, and the URL reaches the container through its environment only.
+    assert (tmp_path / "restore" / "container-stdin").read_text() == "PGDMP-plain-dump"
+    assert "restore@" not in "\n".join(runs) and "postgresql://" not in "\n".join(runs)
+    assert "restore@" not in result.stdout + result.stderr
+
+
+@needs_sh
+def test_restore_through_the_matching_client_still_rejects_contents_that_differ(tmp_path) -> None:
+    drifted = [line.replace("fills=4", "fills=3") for line in MANIFEST]
+
+    result = restore(tmp_path, drifted, FAKE_CLIENT_VERSION="18.6")
+
+    assert result.returncode != 0
+    assert "restore_verified" not in result.stdout
+    assert "do not match" in result.stderr
+
+
+@needs_sh
+def test_restore_through_the_matching_client_fails_when_the_restore_fails(tmp_path) -> None:
+    result = restore(
+        tmp_path, MANIFEST, FAKE_CLIENT_VERSION="18.6", FAKE_CONTAINER_RESTORE_FAILS="1"
+    )
+
+    assert result.returncode != 0
+    assert "restore_verified" not in result.stdout
+    assert "simulated failure" in result.stderr
+    # Nothing was counted after the failed restore.
+    assert len(container_runs(tmp_path)) == 1
+
+
+@needs_sh
+@pytest.mark.parametrize("client", ["18.6", "none"], ids=["newer-client", "no-local-client"])
+def test_restore_refuses_a_mismatched_client_when_docker_is_unavailable(tmp_path, client) -> None:
+    result = restore(tmp_path, MANIFEST, FAKE_CLIENT_VERSION=client, FAKE_NO_DOCKER="1")
+
+    assert result.returncode != 0
+    assert "restore_verified" not in result.stdout
+    shown = "missing" if client == "none" else client.split(".")[0]
+    assert f"pg_restore is PostgreSQL {shown} but the scratch database is PostgreSQL 16" in (
+        result.stderr
+    )
+    assert "install the PostgreSQL 16 client tools, or Docker" in result.stderr
+    assert "restore@" not in result.stdout + result.stderr
+    # It stopped before touching the database.
+    assert not any(line.startswith("pg_restore --clean") for line in restore_calls(tmp_path))
+    assert container_runs(tmp_path) == []
+
+
+@needs_sh
+@pytest.mark.parametrize("server_num", ["", "not-a-number", "16.4"])
+def test_restore_fails_closed_when_the_database_version_cannot_be_read(
+    tmp_path, server_num
+) -> None:
+    result = restore(tmp_path, MANIFEST, FAKE_SERVER_VERSION_NUM=server_num or " ")
+
+    assert result.returncode != 0
+    assert "restore_verified" not in result.stdout
+    assert "could not read the scratch database's PostgreSQL version" in result.stderr
+    assert "restore@" not in result.stdout + result.stderr
+    assert not any(
+        line.startswith(("pg_restore --clean", "docker run")) for line in restore_calls(tmp_path)
+    )
 
 
 DRILL_DOCKER_STUB = """#!/bin/sh
@@ -771,7 +913,7 @@ def test_restore_verifies_older_backups_against_their_own_table_list(tmp_path) -
     psql_call = next(
         line
         for line in (tmp_path / "restore" / "calls.log").read_text().splitlines()
-        if line.startswith("psql")
+        if line.startswith("psql") and "ON_ERROR_STOP" in line
     )
     assert "FROM orders" in psql_call
     assert "market_candles" not in psql_call

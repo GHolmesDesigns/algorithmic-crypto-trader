@@ -141,9 +141,21 @@ off-box. The output contains only the two filenames.
 
 ## Scratch restore verification
 
-On an isolated operator machine, install `age` and PostgreSQL 16 or newer client
-tools. Create a separate, empty scratch database and keep the `age` identity
-file there. Never point this command at the production database.
+On an isolated operator machine, install `age`, and either the PostgreSQL client
+tools of the same major version as the scratch database (16 for the production
+image) or Docker on Linux. Create a separate, empty scratch database and keep
+the `age` identity file there. Never point this command at the production
+database.
+
+The restore and the row counts must use a client of the scratch database's own
+major version. A newer one is not enough: a PostgreSQL 18 `pg_restore` sends
+`SET transaction_timeout`, which a 16 database rejects, and `--exit-on-error`
+stops there. The script reads the database's version first. When the local
+`pg_restore` is a different major version, or missing, it runs both steps from
+the `postgres:<major>-alpine` image instead, over the host network, with the
+database URL in the container's environment rather than on its command line. If
+it can neither match the version locally nor run Docker, it exits non-zero and
+says so before restoring anything.
 
 ```sh
 export AGE_IDENTITY_FILE=/secure/operator/trader-backup-identity.txt
