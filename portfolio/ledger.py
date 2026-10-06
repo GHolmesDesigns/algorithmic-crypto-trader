@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from core.models import Balance, Fill, OrderSide, Position, utc_now
 
@@ -29,30 +29,38 @@ def apply_fills(
     placeholder. Holds are carried over unchanged. A projection that goes
     negative is a local accounting failure and raises.
 
-    A venue reports a balance in a fixed unit, and a fill's notional can carry more
-    decimals than that. ``balance_increments`` names the unit per asset, and the
-    projected ``available`` of a listed asset that a fill moved is rounded half up to
-    it, so the exact comparison against the venue is between two numbers of the same
-    precision (#118). An asset no fill moved, or one not listed, is not rounded, and
-    neither are holds or positions.
+    A venue settles a balance in a fixed unit, and a fill's notional can carry more
+    decimals than that. ``balance_increments`` names the unit per asset. Every amount
+    a fill moves in a listed asset (its quantity × price, its fee) is rounded toward
+    zero to that unit, fill by fill, as the Gemini Sandbox settles it (#118, then the
+    split sell of 2026-10-06 20:55 UTC). The exact comparison against the venue is then
+    between two numbers of the same precision. An asset not listed, holds and positions
+    are not rounded.
     """
 
     now = as_of or utc_now()
+    increments = balance_increments or {}
     positions: dict[str, tuple[Decimal, Decimal | None]] = {
         item.symbol: (item.quantity, item.average_price) for item in baseline.positions
     }
     available = {item.asset: item.available for item in baseline.balances}
+    # The same balances unrounded, so rounding a debit down never hides a shortfall.
+    exact = dict(available)
     holds = {item.asset: item.hold for item in baseline.balances}
-    moved: set[str] = set()
     for fill in sorted(fills, key=lambda item: (item.occurred_at, item.fill_id)):
         base, quote = fill.symbol.split("-", maxsplit=1)
-        moved.update((base, quote, fill.fee_asset))
         notional = fill.quantity * fill.price
         quantity, average = positions.get(fill.symbol, (ZERO, None))
         sign = Decimal("1") if fill.side is OrderSide.BUY else Decimal("-1")
-        available[base] = available.get(base, ZERO) + sign * fill.quantity
-        available[quote] = available.get(quote, ZERO) - sign * notional
-        available[fill.fee_asset] = available.get(fill.fee_asset, ZERO) - fill.fee
+        for asset, amount in (
+            (base, sign * fill.quantity),
+            (quote, -sign * notional),
+            (fill.fee_asset, -fill.fee),
+        ):
+            increment = increments.get(asset)
+            settled = amount if increment is None else _toward_zero(amount, increment)
+            exact[asset] = exact.get(asset, ZERO) + amount
+            available[asset] = available.get(asset, ZERO) + settled
         if fill.side is OrderSide.BUY:
             total = quantity + fill.quantity
             if quantity == 0:
@@ -65,13 +73,8 @@ def apply_fills(
             quantity -= fill.quantity
         positions[fill.symbol] = (quantity, average)
     for asset, amount in available.items():
-        if amount < 0:
+        if amount < 0 or exact[asset] < 0:
             raise ValueError(f"projected {asset} balance is negative")
-    # After the check, so a projection that is negative at full precision still raises.
-    for asset, increment in (balance_increments or {}).items():
-        if asset in moved:
-            units = (available[asset] / increment).to_integral_value(rounding=ROUND_HALF_UP)
-            available[asset] = units * increment
     return PortfolioState(
         orders=baseline.orders,
         fills=baseline.fills,
@@ -86,3 +89,9 @@ def apply_fills(
             if amount != 0 or holds.get(asset, ZERO) != 0
         ),
     )
+
+
+def _toward_zero(amount: Decimal, increment: Decimal) -> Decimal:
+    """``amount`` in whole ``increment`` units, dropping the remainder as the venue does."""
+
+    return (amount / increment).to_integral_value(rounding=ROUND_DOWN) * increment

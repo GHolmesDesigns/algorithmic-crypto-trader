@@ -202,7 +202,7 @@ def test_a_two_millionths_gap_is_itemized_as_notional_fee_and_rounding() -> None
     # The shape of the 2026-10-05 and 2026-10-06 divergences: USD to five decimals, off by 0.000002.
     explained = explain_window(
         books(USD="1000"),
-        books(USD="993.555032", BTC="0.0001"),
+        books(USD="993.555042", BTC="0.0001"),
         [a_fill()],
         balance_increments={"USD": Decimal("0.00001")},
     )
@@ -214,9 +214,9 @@ def test_a_two_millionths_gap_is_itemized_as_notional_fee_and_rounding() -> None
     ]
     assert usd.before == Decimal("1000")
     assert usd.exact == Decimal("993.55503079")
-    assert usd.rounding == Decimal("993.55503") - Decimal("993.55503079")
-    assert usd.projected == Decimal("993.55503")
-    assert usd.broker == Decimal("993.555032")
+    assert usd.rounding == Decimal("993.55504") - Decimal("993.55503079")
+    assert usd.projected == Decimal("993.55504")
+    assert usd.broker == Decimal("993.555042")
     assert usd.difference == Decimal("0.000002")
 
 
