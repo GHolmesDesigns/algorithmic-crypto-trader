@@ -12,6 +12,9 @@ from typing import Any
 from uuid import UUID
 
 REDACTED = "[REDACTED]"
+# An order or fill ID in a log line: enough to tell two lines apart and match them to each
+# other, not the identifier itself.
+REFERENCE_LENGTH = 8
 SECRET_FIELD_NAMES = frozenset(
     {
         "api_key",
@@ -56,6 +59,12 @@ def set_correlation_id(value: UUID | str) -> contextvars.Token[str | None]:
 
 def reset_correlation_id(token: contextvars.Token[str | None]) -> None:
     _correlation_id.reset(token)
+
+
+def short_reference(identifier: object) -> str:
+    """The first ``REFERENCE_LENGTH`` characters of an order or fill ID."""
+
+    return str(identifier)[:REFERENCE_LENGTH]
 
 
 def scrub_secrets(value: Any) -> Any:

@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 
+from brokers.http import describe_provider_failure, provider_failure_fields
 from core.models import Fill, Order, OrderStatus, utc_now
 
 from portfolio.ledger import apply_fills
@@ -161,8 +162,12 @@ class ScheduledReconciler:
 
         try:
             await self._refresh_open_orders()
-        except Exception:
-            logger.exception("open orders could not be refreshed before reconciliation")
+        except Exception as exc:
+            logger.exception(
+                "open orders could not be refreshed before reconciliation: %s",
+                describe_provider_failure(exc),
+                extra={"event": provider_failure_fields(exc)},
+            )
             self.reconciler.kill_switch.trip("open orders could not be refreshed")
             return "open orders could not be refreshed"
         try:

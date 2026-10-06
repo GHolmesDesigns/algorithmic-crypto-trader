@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -53,9 +54,12 @@ from brokers.http import (
     ProviderHTTPError,
     ProviderOrderRejectedError,
     ProviderTimeoutError,
+    log_provider_failure,
     replacement_quantity,
 )
 from brokers.interface import BrokerCapabilities, BrokerInterface
+
+logger = logging.getLogger(__name__)
 
 COINBASE_ORDER_NAMESPACE = UUID("8c3c7e68-982d-4e4f-93c1-6d5e7d2c52a1")
 COINBASE_SANDBOX_REST_URL = "https://api-sandbox.coinbase.com/api/v3/brokerage"
@@ -355,6 +359,7 @@ class CoinbaseBroker(BrokerInterface):
             self._orders[key] = unknown
             raise AmbiguousSubmissionError(unknown) from exc
         except ProviderHTTPError as exc:
+            log_provider_failure(logger, "Coinbase create order", exc)
             # A 400/422 (e.g. INVALID_ARGUMENT) means Coinbase did not create the order.
             if exc.status_code in {400, 422}:
                 rejected = unknown.model_copy(update={"status": OrderStatus.REJECTED})
@@ -393,6 +398,7 @@ class CoinbaseBroker(BrokerInterface):
             except ProviderHTTPError as exc:
                 if exc.status_code == 404:
                     return None
+                log_provider_failure(logger, "Coinbase order lookup", exc)
                 raise
             raw = None if _is_missing(payload) else payload
         else:

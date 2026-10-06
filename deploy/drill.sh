@@ -10,6 +10,9 @@
 #   drill.sh after-reboot          post-reboot checks, restore the original kill-switch state
 #   drill.sh backup                install the nightly backup and run it once
 #   drill.sh status                print the kill-switch state and startup recovery status
+#   drill.sh diagnose [N]          read-only report: kill switch and recovery, pending orders and
+#                                  whether the venue knows them, the last N discrepancies with
+#                                  values, and the last N fills' projected-versus-broker balance
 #
 # Operator tokens are read inside the app container from its own environment;
 # they never appear on the host command line or in output. The drill refuses to
@@ -83,7 +86,10 @@ request = urllib.request.Request(
 body = json.loads(urllib.request.urlopen(request, timeout=10).read())
 for key in sys.argv[4].split(".") if len(sys.argv) > 4 and sys.argv[4] else ():
     body = body[key]
-print(body if isinstance(body, str) else json.dumps(body, sort_keys=True))
+if isinstance(body, list) and all(isinstance(line, str) for line in body):
+    print("\n".join(body))
+else:
+    print(body if isinstance(body, str) else json.dumps(body, sort_keys=True))
 ' "$@"
 }
 
@@ -171,7 +177,8 @@ alembic_head() {
 
 cd "$project_dir"
 require_paper
-mkdir -p -m 0700 "$state_dir"
+# `diagnose` writes nothing, not even the drill's own state directory.
+[ "${1:-}" = diagnose ] || mkdir -p -m 0700 "$state_dir"
 
 case "${1:-}" in
   deploy)
@@ -270,8 +277,21 @@ case "${1:-}" in
 ' "$(api GET /operator/state operator recovery.status || echo unavailable)"
     ;;
 
+  diagnose)
+    # Read-only. The app builds the report from its own stored rows and one order lookup per
+    # pending order, and refuses to under live mode or a trade-capable scope. Nothing is
+    # changed, no file is written, and the report names no secret, token, host, or address.
+    limit=${2:-5}
+    case $limit in
+      '' | *[!0-9]*) echo "usage: drill.sh diagnose [count from 1 to 20]" >&2; exit 2 ;;
+    esac
+    report=$(api GET "/operator/diagnostics?limit=$limit" operator report) \
+      || { echo "diagnose: the app did not return its report" >&2; exit 1; }
+    printf '%s\n' "$report"
+    ;;
+
   *)
-    echo "usage: drill.sh deploy <sha> | before-reboot | after-reboot | backup | status" >&2
+    echo "usage: drill.sh deploy <sha> | before-reboot | after-reboot | backup | status | diagnose [N]" >&2
     exit 2
     ;;
 esac

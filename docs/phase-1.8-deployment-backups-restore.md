@@ -175,8 +175,11 @@ log or the backup artifacts.
    endpoint, the startup recovery result, and the latest backup timer result.
 4. If startup recovery reports `halted`, leave the kill switch halted, review
    the recorded discrepancies, capture redacted logs, and follow the incident
-   owner process. Never retry an ambiguous order without querying the broker by
-   its persisted client order ID.
+   owner process. Run `sh deploy/drill.sh diagnose` for the read-only report on
+   pending orders, discrepancy values, and the projected-versus-broker balance
+   (see the [VPS drill checklist](phase-1.8-vps-drill-checklist.md#diagnosing-a-halt)).
+   Never retry an ambiguous order without querying the broker by its persisted
+   client order ID.
 
 ## Evidence boundary
 

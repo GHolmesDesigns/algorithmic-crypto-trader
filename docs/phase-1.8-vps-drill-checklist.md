@@ -66,6 +66,7 @@ systemctl reboot            # only after the owner says yes in chat
 sh deploy/drill.sh after-reboot
 sh deploy/drill.sh backup
 sh deploy/drill.sh status    # kill-switch state and startup recovery status
+sh deploy/drill.sh diagnose  # read-only report on a halt; see "Diagnosing a halt"
 ```
 
 Each phase prints `CHECK <name>: PASS|FAIL …` lines and a final `RESULT`, and
@@ -106,6 +107,45 @@ empty production database cannot show:
 
 It uses throwaway credentials and keys and needs no secrets. Run it from the
 Actions tab or by adding the `restart-rehearsal` label to a pull request.
+
+## Diagnosing a halt
+
+`sh deploy/drill.sh diagnose [N]` is the sanctioned, read-only way to see why
+trading halted. `N` is a whole number from 1 to 20 and defaults to 5. It asks the
+app for `GET /operator/diagnostics` with the in-container operator token, the way
+`status` does, and prints:
+
+- the kill-switch state, the startup recovery status, and the last scheduled
+  reconciliation result;
+- every pending or unknown order by an eight-character reference, with its age
+  and whether the venue knows it (`found (<status>)`, `not found`, or the failure
+  of the lookup). Up to five orders are looked up, one read each;
+- the last `N` stored discrepancies with their kind, key, differing field, local
+  and broker value, and the delta (broker minus local);
+- the last `N` fills with quantity, price, `quantity × price`, and fee, then the
+  balance check for each reconciliation window they fell in: the broker's
+  balance at the start, every fill's `quantity × price` and fee, the rounding to
+  the venue's balance unit, the projected balance, the broker's balance at the
+  end, and their difference. A window is the span between two stored broker
+  snapshots, and a fill is placed in it by its recorded time, so this is a
+  reconstruction from stored rows. The fee's asset is not stored, so it is
+  taken to be the quote asset.
+
+It changes nothing: the database is only read, the venue is only asked for an
+order, no file is written (not even the drill's state directory), and the kill
+switch is untouched. It refuses to run in `live` mode or with a trade-capable
+credential scope, in the script and again in the app, and prints no secret,
+token, host name, or address. Run it against a halt before re-arming, and paste
+the output into the incident record with the date and commit under
+**Owner-run verification**.
+
+What the app log now says for the same halt:
+
+| Event | Log line |
+| --- | --- |
+| Reconciliation divergence | One `reconciliation divergence: <kind> <key> field=<field> delta(broker-local)=<delta>` line per differing field. In `paper` it adds `local=` and `broker=`. In every other mode it carries no value. |
+| Provider HTTP failure | `<operation> failed: ProviderHTTPError HTTP <status> path=<endpoint path> reason=<provider reason>`. Never a response body, header, or credential. |
+| Order lifecycle | `order step=saved`, `lookup`, `order_new`, and `fill`, each once per order, with `ref=<8 characters>`. A fill carries its quantity, price, fee, and notional. |
 
 ## Pass criteria
 

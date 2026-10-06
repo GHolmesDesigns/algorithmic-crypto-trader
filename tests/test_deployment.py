@@ -16,6 +16,7 @@ from api.controls import REARM_CHECKLIST
 from core.models import KillSwitchState
 
 from tests.operator_support import journaled_app
+from tests.test_diagnostics_report import RoundingVenue, diagnostics_app
 
 ROOT = Path(__file__).parents[1]
 SH = shutil.which("sh")
@@ -345,6 +346,10 @@ case "$1" in
         shift 6; printf '%s\\n' "$@" > "$STUB_DIR/rearm-args"
         echo running > "$state_file"; echo running ;;
       "GET /operator/state") echo "${FAKE_RECOVERY:-no_broker}" ;;
+      "GET /operator/diagnostics?limit="*)
+        [ -z "${FAKE_DIAGNOSE_DOWN:-}" ] || exit 1
+        printf '%s\\n' "$8" > "$STUB_DIR/diagnose-path"
+        printf '%s\\n' "$FAKE_DIAGNOSTICS" ;;
     esac ;;
 esac
 """
@@ -603,6 +608,123 @@ def test_drill_status_reports_kill_switch_and_recovery(tmp_path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == ["kill_switch=running", "recovery=halted"]
+
+
+DIAGNOSTICS = "\n".join(
+    [
+        "diagnose mode=paper credential_scope=none at=2026-10-06T14:30:00+00:00",
+        "kill_switch=halted",
+        "recovery=reconciled",
+        "pending_orders=0",
+    ]
+)
+
+
+@needs_sh
+def test_drill_diagnose_prints_the_apps_report_and_changes_nothing(tmp_path) -> None:
+    env = drill_env(tmp_path, FAKE_DIAGNOSTICS=DIAGNOSTICS)
+
+    result = run_script("drill.sh", env, "diagnose")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == DIAGNOSTICS + "\n"
+    assert (tmp_path / "diagnose-path").read_text().strip() == "/operator/diagnostics?limit=5"
+    calls = (tmp_path / "calls.log").read_text()
+    # One read-only request to the app and nothing else: no database, restart, or re-arm call,
+    # no write verb, and not even the drill's own state directory.
+    assert calls.count("docker compose") == 1
+    assert "GET /operator/diagnostics?limit=5 operator report" in calls
+    for forbidden in ("exec -T db", " restart", "up -d", "POST /operator", "psql", "rearm"):
+        assert forbidden not in calls
+    assert not (tmp_path / "state").exists()
+    assert "never-printed" not in result.stdout + result.stderr + calls
+
+
+@needs_sh
+def test_drill_diagnose_passes_the_requested_count_to_the_app(tmp_path) -> None:
+    env = drill_env(tmp_path, FAKE_DIAGNOSTICS=DIAGNOSTICS)
+
+    result = run_script("drill.sh", env, "diagnose", "12")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "diagnose-path").read_text().strip() == "/operator/diagnostics?limit=12"
+
+
+@needs_sh
+@pytest.mark.parametrize("count", ["abc", "-1", "1.5", "5;ls"])
+def test_drill_diagnose_refuses_a_count_that_is_not_a_whole_number(tmp_path, count) -> None:
+    env = drill_env(tmp_path, FAKE_DIAGNOSTICS=DIAGNOSTICS)
+
+    result = run_script("drill.sh", env, "diagnose", count)
+
+    assert result.returncode == 2
+    assert "usage: drill.sh diagnose" in result.stderr
+    assert not (tmp_path / "calls.log").exists()
+
+
+@needs_sh
+@pytest.mark.parametrize(
+    ("mode", "scope"), [("live", "none"), ("paper", "trade"), ("live", "trade")]
+)
+def test_drill_diagnose_refuses_live_or_trade_capable_configuration(tmp_path, mode, scope) -> None:
+    env = drill_env(tmp_path, mode=mode, scope=scope, FAKE_DIAGNOSTICS=DIAGNOSTICS)
+
+    result = run_script("drill.sh", env, "diagnose")
+
+    assert result.returncode == 2
+    assert "refusing" in result.stderr
+    assert result.stdout == ""
+    assert not (tmp_path / "calls.log").exists()  # the app was never asked
+    assert not (tmp_path / "state").exists()
+
+
+@needs_sh
+def test_drill_diagnose_fails_plainly_when_the_app_does_not_answer(tmp_path) -> None:
+    env = drill_env(tmp_path, FAKE_DIAGNOSTICS=DIAGNOSTICS, FAKE_DIAGNOSE_DOWN="1")
+
+    result = run_script("drill.sh", env, "diagnose")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "the app did not return its report" in result.stderr
+
+
+def test_drill_api_helper_prints_the_diagnostic_report_as_plain_lines(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("OPERATOR_TOKEN", "operator-secret")
+    monkeypatch.setenv("OPERATOR_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("KILL_SWITCH_FILE", str(tmp_path / "app-kill-switch.json"))
+    application, _ = diagnostics_app(tmp_path, RoundingVenue())
+
+    async def send(request) -> httpx.Response:
+        url = urlsplit(request.full_url)
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+            return await client.request(
+                request.get_method(),
+                f"{url.path}?{url.query}",
+                headers=dict(request.header_items()),
+            )
+
+    def urlopen(request, timeout):
+        response = asyncio.run(send(request))
+        assert response.status_code == 200, response.text
+        return io.BytesIO(response.content)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        sys, "argv", ["-c", "GET", "/operator/diagnostics?limit=5", "operator", "report"]
+    )
+    exec(compile(drill_api_code(), "drill-api", "exec"), {"__name__": "__main__"})
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("diagnose mode=paper credential_scope=view at=")
+    assert lines[1:4] == ["kill_switch=running", "recovery=not_run", lines[3]]
+    assert "pending_orders=0" in lines
+    assert not any(line.startswith(("[", '"')) for line in lines)  # not a JSON dump
+    assert "operator-secret" not in "\n".join(lines)
 
 
 def test_drill_backup_phase_fails_on_any_error_in_the_run_log() -> None:
