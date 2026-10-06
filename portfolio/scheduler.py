@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 
 from core.models import Fill, Order, OrderStatus, utc_now
 
@@ -69,6 +70,10 @@ class ScheduledReconciler:
     also persists the order's status and fills. The trading loop must hold
     ``lock`` while it trades: an order placed mid-comparison could not be
     attributed to either side of the broker's snapshot.
+
+    ``balance_increments`` is the broker's declared balance precision
+    (``BrokerCapabilities.balance_increments``); without it the projection is compared at
+    full precision, which is right for a venue that reports balances exactly.
     """
 
     def __init__(
@@ -81,11 +86,13 @@ class ScheduledReconciler:
         on_divergence: DivergenceHook | None = None,
         on_unavailable: UnavailableHook | None = None,
         on_reconciled: ReconciledHook | None = None,
+        balance_increments: Mapping[str, Decimal] | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("reconciliation interval must be positive")
         self.reconciler = reconciler
         self.interval_seconds = interval_seconds
+        self.balance_increments: dict[str, Decimal] = dict(balance_increments or {})
         self.refresh_order = refresh_order or self._read_order
         self.on_divergence = on_divergence
         self.on_unavailable = on_unavailable
@@ -109,7 +116,9 @@ class ScheduledReconciler:
 
     def expected_state(self) -> PortfolioState:
         new_fills = [fill for key, fill in self._fills.items() if key not in self._applied_fill_ids]
-        projected = apply_fills(self._baseline, new_fills)
+        projected = apply_fills(
+            self._baseline, new_fills, balance_increments=self.balance_increments
+        )
         return PortfolioState(
             orders=dict(self._orders),
             fills=dict(self._fills),
