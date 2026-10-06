@@ -11,6 +11,7 @@ from brokers.http import log_provider_failure
 from brokers.interface import BrokerInterface
 from core.guards import StartupSettings
 from core.models import Balance, Fill, Order, Position, Signal, utc_now
+from core.version import application_version
 from risk.kill_switch import KillSwitch
 
 from api.alerts import Alert, AlertDelivery, AlertRouter
@@ -214,7 +215,11 @@ class OperatorState:
     def health(self) -> dict[str, Any]:
         return {
             "status": "healthy" if self.snapshot.connectivity_status == "healthy" else "degraded",
-            "application": {"status": "healthy", "heartbeat": utc_now().isoformat()},
+            "application": {
+                "status": "healthy",
+                "version": application_version(),
+                "heartbeat": utc_now().isoformat(),
+            },
             "broker": {
                 "status": self.snapshot.connectivity_status,
                 "detail": self.snapshot.connectivity_detail,
@@ -247,6 +252,7 @@ class OperatorState:
         return {
             "application": {
                 "status": health["status"],
+                "version": health["application"]["version"],
                 "heartbeat": health["application"]["heartbeat"],
             },
             "trading": {

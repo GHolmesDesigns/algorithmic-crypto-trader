@@ -728,6 +728,7 @@ def _health(snapshot: Mapping[str, Any], now: datetime) -> list[dict[str, Any]]:
             "facts": [
                 _state("Status", _status(application.get("status"), _APPLICATION)),
                 _time("Heartbeat", application.get("heartbeat"), now),
+                _text("Application version", application.get("version")),
                 _text("Trading mode", trading.get("mode")),
                 _text("Credential scope", trading.get("credential_scope")),
                 _text("Strategy version", trading.get("strategy_version")),

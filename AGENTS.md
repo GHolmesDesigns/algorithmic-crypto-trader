@@ -117,6 +117,7 @@ Open a draft pull request after the claimed scope is implemented and locally che
 
 - the issue and dependency chain;
 - the exact behavior changed;
+- the application version change, old to new, or `no bump` and why (`CONTRIBUTING.md`, Versioning);
 - files and contracts affected;
 - local validation and its results;
 - safety and reconciliation implications;

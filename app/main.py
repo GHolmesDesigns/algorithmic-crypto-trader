@@ -39,6 +39,7 @@ from core.guards import (
 from core.logging import configure_logging
 from core.models import TradingMode
 from core.reconnect import ReconnectSettings
+from core.version import application_version
 from data.coinbase import CoinbaseRESTClient
 from data.storage import SqlAlchemyCandleStore
 from data.watchlist import SqlAlchemyWatchlist
@@ -81,7 +82,7 @@ def create_app(
     startup_settings = settings or load_startup_settings()
     application = FastAPI(
         title="Algorithmic Crypto Trader",
-        version="0.1.0",
+        version=application_version(),
         lifespan=_recovery_lifespan if recover_on_start else None,
     )
     application.router.routes.extend(router.routes)
