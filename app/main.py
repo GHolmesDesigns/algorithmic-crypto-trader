@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from api.alerts import Alert, AlertRouter, build_alert_router
+from api.diagnostics import SqlAlchemyDiagnostics
+from api.diagnostics_routes import router as diagnostics_router
 from api.history import SqlAlchemyHistory
 from api.history_routes import router as history_router
 from api.markets import SqlAlchemyCandleReads
@@ -35,6 +37,7 @@ from core.guards import (
     startup_banner,
 )
 from core.logging import configure_logging
+from core.models import TradingMode
 from core.reconnect import ReconnectSettings
 from data.coinbase import CoinbaseRESTClient
 from data.storage import SqlAlchemyCandleStore
@@ -82,6 +85,7 @@ def create_app(
         lifespan=_recovery_lifespan if recover_on_start else None,
     )
     application.router.routes.extend(router.routes)
+    application.router.routes.extend(diagnostics_router.routes)
     application.router.routes.extend(history_router.routes)
     application.router.routes.extend(markets_router.routes)
     application.router.routes.extend(markets_page_router.routes)
@@ -191,16 +195,18 @@ def attach_kill_switch_journal(application: FastAPI) -> Callable[[], None]:
 
 
 def attach_history(application: FastAPI) -> Callable[[], None]:
-    """Serve bounded, read-only history, trends, market candles, and the soak console.
+    """Serve bounded, read-only history, trends, market candles, the soak console, and diagnostics.
 
     Returns a close callback. Without it, the history, trends, candle, and soak routes
-    answer 503: not available, never an empty history or a chart of zeros.
+    answer 503: not available, never an empty history or a chart of zeros. The diagnostics
+    report instead marks each stored section unavailable.
     """
 
     settings: StartupSettings = application.state.startup_settings
     engine = create_database_engine(settings.database_url, settings.trading_mode)
     session_factory = create_session_factory(engine)
     application.state.history = SqlAlchemyHistory(session_factory)
+    application.state.diagnostics = SqlAlchemyDiagnostics(session_factory)
     application.state.trends = SqlAlchemyTrends(session_factory)
     application.state.market_candles = SqlAlchemyCandleReads(session_factory)
     reconnect = ReconnectSettings.from_env()
@@ -367,7 +373,12 @@ def start_scheduled_reconciliation(
     sampler = EquitySampler(operator_state.broker, equity_store, equity_store)
     execution = ExecutionEngine(operator_state.broker, order_store)
     scheduler = ScheduledReconciler(
-        Reconciler(operator_state.broker, application.state.kill_switch, store=portfolio_store),
+        Reconciler(
+            operator_state.broker,
+            application.state.kill_switch,
+            store=portfolio_store,
+            log_values=_may_log_divergence_values(settings),
+        ),
         baseline=baseline,
         interval_seconds=interval,
         refresh_order=execution.recover,
@@ -391,6 +402,15 @@ def start_scheduled_reconciliation(
         engine.dispose()
 
     return stop_scheduler
+
+
+def _may_log_divergence_values(settings: StartupSettings) -> bool:
+    """Both sides of a divergence go to the log in full only in ``paper``, a sandbox.
+
+    Every other mode, live above all, logs the field and the delta alone.
+    """
+
+    return settings.trading_mode is TradingMode.PAPER
 
 
 def _equity_sample_interval() -> float:
@@ -438,6 +458,7 @@ async def run_startup_recovery(application: FastAPI, *, broker=None) -> StartupR
             order_store=SqlAlchemyOrderStore(session_factory),
             portfolio_store=SqlAlchemyPortfolioStore(session_factory),
             broker=recovery_broker,
+            log_values=_may_log_divergence_values(settings),
         )
         SqlAlchemySystemEventJournal(session_factory).record(
             RESTART_EVENT,

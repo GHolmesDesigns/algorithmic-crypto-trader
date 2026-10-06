@@ -55,6 +55,7 @@ async def recover_on_startup(
     portfolio_store: PortfolioStore,
     broker: BrokerInterface | None,
     alert: Callable[[Discrepancy], None] | None = None,
+    log_values: bool = False,
 ) -> StartupRecoveryResult:
     """Resolve persisted orders and reconcile against the broker before new entries.
 
@@ -112,7 +113,9 @@ async def recover_on_startup(
         positions=baseline.positions if baseline is not None else (),
         balances=baseline.balances if baseline is not None else (),
     )
-    reconciler = Reconciler(broker, kill_switch, alert, store=portfolio_store)
+    reconciler = Reconciler(
+        broker, kill_switch, alert, store=portfolio_store, log_values=log_values
+    )
     try:
         reconciliation = await reconciler.reconcile(local)
     except ReconciliationUnavailable:

@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
+from brokers.http import log_provider_failure
 from brokers.interface import BrokerInterface
 from core.guards import StartupSettings
 from core.models import Balance, Fill, Order, Position, Signal, utc_now
 from risk.kill_switch import KillSwitch
 
 from api.alerts import Alert, AlertDelivery, AlertRouter
+
+logger = logging.getLogger(__name__)
 
 TRANSITION_LIMIT = 10
 
@@ -152,7 +156,8 @@ class OperatorState:
         try:
             balances = await self.broker.get_balances()
             positions = await self.broker.get_positions()
-        except Exception:
+        except Exception as exc:
+            log_provider_failure(logger, "operator broker refresh", exc)
             self.snapshot = replace(
                 self.snapshot,
                 connectivity_status="unavailable",

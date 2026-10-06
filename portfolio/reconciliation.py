@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from brokers.http import log_provider_failure
 from brokers.interface import BrokerInterface
 from core.models import Balance, Fill, Order, Position
 from risk.kill_switch import KillSwitch
+
+from portfolio.divergence import log_discrepancy
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,11 +50,16 @@ class Reconciler:
         kill_switch: KillSwitch,
         alert: Callable[[Discrepancy], None] | None = None,
         store=None,
+        *,
+        log_values: bool = False,
     ) -> None:
         self.broker = broker
         self.kill_switch = kill_switch
         self.alert = alert
         self.store = store
+        # Whether a divergence's local and broker values may be logged. Off unless the caller,
+        # which knows the trading mode, turns it on for a sandbox: a live balance never is.
+        self.log_values = log_values
 
     async def reconcile(self, local: PortfolioState) -> ReconciliationResult:
         try:
@@ -56,6 +67,7 @@ class Reconciler:
             balances = await self.broker.get_balances()
             positions = await self.broker.get_positions()
         except Exception as exc:
+            log_provider_failure(logger, "reconciliation balance read", exc, level=logging.ERROR)
             self.kill_switch.trip("broker unavailable during reconciliation")
             raise ReconciliationUnavailable("broker state could not be read") from exc
 
@@ -66,6 +78,9 @@ class Reconciler:
             try:
                 broker_order = await self.broker.get_order(client_order_id)
             except Exception as exc:
+                log_provider_failure(
+                    logger, "reconciliation order lookup", exc, level=logging.ERROR
+                )
                 self.kill_switch.trip("broker unavailable during order reconciliation")
                 raise ReconciliationUnavailable("broker order state could not be read") from exc
             if broker_order is None:
@@ -89,6 +104,7 @@ class Reconciler:
             try:
                 remote_fills = await self.broker.get_fills(client_order_id)
             except Exception as exc:
+                log_provider_failure(logger, "reconciliation fill read", exc, level=logging.ERROR)
                 self.kill_switch.trip("broker unavailable during fill reconciliation")
                 raise ReconciliationUnavailable("broker fill state could not be read") from exc
             for fill in remote_fills:
@@ -141,6 +157,11 @@ class Reconciler:
             discrepancies.append(Discrepancy("fill", fill_id, None, broker_fills[fill_id]))
 
         for discrepancy in discrepancies:
+            try:
+                log_discrepancy(logger, discrepancy, include_values=self.log_values)
+            except Exception:
+                # A diagnostic line must never change whether trading halts.
+                logger.warning("divergence detail could not be logged")
             if self.alert is not None:
                 self.alert(discrepancy)
         if discrepancies:

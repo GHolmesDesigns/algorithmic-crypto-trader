@@ -26,6 +26,7 @@ from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
+from brokers.http import describe_provider_failure, provider_failure_fields
 from core.models import Fill, Order, OrderStatus, utc_now
 
 from execution.audit import ORDER_CLOSED_EVENT, OrderClosureRecord
@@ -200,7 +201,13 @@ def _lookup_failed(client_order_id: str, what: str, exc: Exception) -> ClosureOu
 
     status = getattr(exc, "status_code", None)
     failure = f"HTTP {status}" if isinstance(status, int) else type(exc).__name__
-    logger.warning("order close refused: %s failed (%s)", what, failure)
+    # The page and the audit text above name only the kind; the log adds the endpoint and reason.
+    logger.warning(
+        "order close refused: %s failed (%s)",
+        what,
+        describe_provider_failure(exc),
+        extra={"event": provider_failure_fields(exc)},
+    )
     return ClosureOutcome(
         ClosureCode.LOOKUP_FAILED,
         client_order_id,

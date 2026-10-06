@@ -33,6 +33,7 @@ from tempfile import NamedTemporaryFile
 from typing import Protocol
 from uuid import UUID
 
+from brokers.http import describe_provider_failure, provider_failure_fields
 from brokers.interface import BrokerInterface
 from core.models import (
     Balance,
@@ -152,8 +153,12 @@ class TradingCycle:
                 pending = self.execution.store.pending()
         except PersistenceUnavailable:
             return await self._halt("order store unavailable while resolving pending orders")
-        except Exception:
-            logger.exception("pending orders could not be resolved")
+        except Exception as exc:
+            logger.exception(
+                "pending orders could not be resolved: %s",
+                describe_provider_failure(exc),
+                extra={"event": provider_failure_fields(exc)},
+            )
             return await self._unresolved(
                 CycleStatus.BROKER_ERROR, "pending orders could not be queried at the broker"
             )
@@ -282,7 +287,11 @@ class TradingCycle:
             return CycleOutcome(
                 CycleStatus.REJECTED, "broker rejected the order", signal, decision, order
             )
-        logger.warning("broker failure during submission: %s", type(exc).__name__)
+        logger.warning(
+            "broker failure during submission: %s",
+            describe_provider_failure(exc),
+            extra={"event": provider_failure_fields(exc)},
+        )
         return CycleOutcome(
             CycleStatus.BROKER_ERROR, f"broker failure: {type(exc).__name__}", signal, decision
         )

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -38,9 +39,12 @@ from brokers.http import (
     ProviderHTTPError,
     ProviderOrderRejectedError,
     ProviderTimeoutError,
+    log_provider_failure,
     replacement_quantity,
 )
 from brokers.interface import BrokerCapabilities, BrokerInterface
+
+logger = logging.getLogger(__name__)
 
 GEMINI_SANDBOX_REST_URL = "https://api.sandbox.gemini.com"
 GEMINI_SANDBOX_WS_URL = "wss://api.sandbox.gemini.com/v2/marketdata"
@@ -222,6 +226,7 @@ class GeminiBroker(BrokerInterface):
             self._orders[key] = unknown
             raise AmbiguousSubmissionError(unknown) from exc
         except ProviderHTTPError as exc:
+            log_provider_failure(logger, "Gemini order/new", exc)
             if exc.status_code in REJECTION_STATUSES:
                 rejected = unknown.model_copy(update={"status": OrderStatus.REJECTED})
                 self._orders[key] = rejected
@@ -304,6 +309,9 @@ class GeminiBroker(BrokerInterface):
         except ProviderHTTPError as exc:
             if exc.status_code == 404:
                 return None
+            # Not-found is the normal answer for an order the venue never saw; anything else
+            # is a failed lookup, and the caller that halts on it only gets the exception type.
+            log_provider_failure(logger, "Gemini order status lookup", exc)
             raise
         if isinstance(payload, list):
             # Queried by client_order_id, the Sandbox answers with a list of orders.

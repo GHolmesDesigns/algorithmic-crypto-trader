@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+from core.logging import redact_free_text
 from core.models import Order, OrderStatus
 from core.resilience import CircuitBreaker, TokenBucketRateLimiter
+
+REASON_LIMIT = 80
+PATH_LIMIT = 120
+# A path segment this long that also holds a digit is an identifier (an order ID), not a route.
+_IDENTIFIER_SEGMENT = 16
 
 
 class ProviderError(RuntimeError):
@@ -20,12 +28,86 @@ class ProviderError(RuntimeError):
 
 
 class ProviderHTTPError(ProviderError):
-    """An HTTP response outside the successful range."""
+    """An HTTP response outside the successful range.
 
-    def __init__(self, status_code: int, message: str, *, payload: Any = None) -> None:
+    ``path`` is the endpoint path alone, never the host, query string, header, or body, so a
+    log line can say which call failed without carrying anything a credential could hide in.
+    """
+
+    def __init__(
+        self, status_code: int, message: str, *, payload: Any = None, path: str | None = None
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload
+        self.path = path
+
+    @property
+    def reason(self) -> str | None:
+        """The provider's own ``reason`` code, bounded and scrubbed; never the rest of the body."""
+
+        if not isinstance(self.payload, Mapping):
+            return None
+        raw = self.payload.get("reason")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        return redact_free_text(raw)[:REASON_LIMIT] or None
+
+
+def endpoint_path(url: str) -> str:
+    """The route of ``url`` without host, query, or identifiers, for logs and diagnostics."""
+
+    segments = []
+    for segment in urlsplit(url).path.split("/"):
+        long_identifier = len(segment) >= _IDENTIFIER_SEGMENT and any(
+            character.isdigit() for character in segment
+        )
+        segments.append(":id" if long_identifier else segment)
+    return "/".join(segments)[:PATH_LIMIT]
+
+
+def provider_failure_fields(exc: BaseException) -> dict[str, object]:
+    """Structured, secret-free fields for a failed provider call.
+
+    An HTTP failure adds its status code, endpoint path, and the provider's reason. Nothing
+    else about the response is kept: no body, header, or credential ever reaches a log.
+    """
+
+    fields: dict[str, object] = {"error": type(exc).__name__}
+    if isinstance(exc, ProviderHTTPError):
+        fields["status_code"] = exc.status_code
+        if exc.path:
+            fields["path"] = exc.path
+        if exc.reason:
+            fields["reason"] = exc.reason
+    return fields
+
+
+def describe_provider_failure(exc: BaseException) -> str:
+    """One readable phrase for ``provider_failure_fields``: ``ProviderHTTPError HTTP 500 ...``."""
+
+    fields = provider_failure_fields(exc)
+    parts = [str(fields["error"])]
+    if "status_code" in fields:
+        parts.append(f"HTTP {fields['status_code']}")
+    for key in ("path", "reason"):
+        if key in fields:
+            parts.append(f"{key}={fields[key]}")
+    return " ".join(parts)
+
+
+def log_provider_failure(
+    logger: logging.Logger, operation: str, exc: BaseException, *, level: int = logging.WARNING
+) -> None:
+    """Log what failed and how, from the exception's own safe fields only."""
+
+    logger.log(
+        level,
+        "%s failed: %s",
+        operation,
+        describe_provider_failure(exc),
+        extra={"event": {"operation": operation, **provider_failure_fields(exc)}},
+    )
 
 
 class ProviderTimeoutError(ProviderError):
@@ -191,7 +273,10 @@ class ProviderHTTPClient:
                 if attempt >= self.max_429_retries:
                     self.circuit_breaker.record_failure()
                     raise ProviderHTTPError(
-                        429, "provider rate limit persisted", payload=_json(response)
+                        429,
+                        "provider rate limit persisted",
+                        payload=_json(response),
+                        path=endpoint_path(url),
                     )
                 delay = retry_after_seconds(
                     response,
@@ -211,6 +296,7 @@ class ProviderHTTPClient:
                     response.status_code,
                     f"provider returned HTTP {response.status_code}",
                     payload=payload,
+                    path=endpoint_path(url),
                 )
             return payload
         raise AssertionError("unreachable")

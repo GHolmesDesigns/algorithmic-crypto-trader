@@ -1087,6 +1087,16 @@ uses `deploy/drill.sh` and the `Restore drill` workflow. Do not improvise
 commands against the production database, and do not reboot a host without the
 owner's immediate approval for that one interruption.
 
+After a halt, `sh deploy/drill.sh diagnose` is the read-only way to see why. It
+prints the kill-switch and recovery state, each pending or unknown order and
+whether the venue knows it, the last stored discrepancies with their values and
+deltas, and the projected-versus-broker balance for the latest fills, itemized as
+`quantity × price`, fee, and rounding. It refuses to run in `live` mode or with a
+trade-capable credential scope, changes nothing, and prints no secret, token,
+host name, or address. The app's own log now names a divergence's field and
+delta (and both values in `paper` only), a provider failure's status code,
+endpoint path, and reason, and each order step once.
+
 Nightly backups are encrypted before leaving the host. A backup is not proven
 usable until `deploy/restore-verify-postgres.sh` restores it into a separate
 scratch database and verifies the migration version and durable table counts.
@@ -1105,7 +1115,8 @@ Never restore a drill backup over the production database.
 | Re-arm returns `422` | A checklist item or the cause-and-approval reference is missing, or the reference exceeds 500 characters. | Complete the review; the kill switch is unchanged. |
 | Re-arm returns `503` | The transition could not be saved to the database. | Leave the system stopped and restore the database first. |
 | Startup recovery is `no_broker` | No broker is configured and no pending order exists. | Expected only for an intentionally credential-free environment. |
-| Startup recovery halts | Pending order, provider outage, missing baseline, database read failure, or divergence. | Keep halted and reconcile against the broker. |
+| Startup recovery halts | Pending order, provider outage, missing baseline, database read failure, or divergence. | Keep halted and reconcile against the broker. Run `sh deploy/drill.sh diagnose` to see which order, value, or call. |
+| Trading halted and the log says only a divergence or a provider error | The broker is authoritative; a divergence or a failed call halts trading. | Run `sh deploy/drill.sh diagnose`; read the `reconciliation divergence` and `failed:` log lines for the field, delta, status, path, and reason. |
 | Broker says unavailable but old balances remain visible | Last-known values are retained only for diagnosis. | Do not treat them as current; pause or halt as risk requires. |
 | Reconciliation interval is rejected | Value is non-numeric, zero/negative, or above 3600 seconds. | Set a valid bounded interval. |
 | Kill switch halts after reading a flag | Flag was `halted`, invalid, or unreadable. | Fix the external flag source, investigate, then manually re-arm. |

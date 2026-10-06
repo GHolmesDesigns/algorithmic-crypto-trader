@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
+from brokers.http import provider_failure_fields
 from brokers.interface import BrokerInterface
+from core.logging import short_reference
 from core.models import Fill, Order, OrderRequest, OrderStatus, RiskApproval
+
+logger = logging.getLogger(__name__)
+
+# Fills already logged, remembered so a re-read of an open order does not log them again.
+LOGGED_FILL_MEMORY = 10_000
 
 
 class PersistenceUnavailable(RuntimeError):
@@ -108,6 +116,7 @@ class ExecutionEngine:
         self.store = store or InMemoryOrderStore()
         # Observers such as the scheduled reconciler see each persisted order and its fills.
         self.on_recorded = on_recorded
+        self._logged_fills: dict[str, None] = {}
 
     async def submit(self, request: OrderRequest, approval: RiskApproval) -> Order:
         if request.signal_id != approval.signal_id:
@@ -116,19 +125,52 @@ class ExecutionEngine:
             raise PermissionError("order is not approved by risk engine")
 
         persisted = self.store.reserve(request, approval)
+        reference = short_reference(request.client_order_id)
+        _log_step(
+            "saved",
+            reference,
+            symbol=request.symbol,
+            side=request.side.value,
+            quantity=request.quantity,
+            status=persisted.status.value,
+        )
         if persisted.status not in {OrderStatus.UNKNOWN, OrderStatus.PENDING_SUBMIT}:
             return persisted
         # Pending or unknown: ask the venue by client_order_id before any (re)submission.
-        existing = await self.broker.get_order(str(request.client_order_id))
+        try:
+            existing = await self.broker.get_order(str(request.client_order_id))
+        except Exception as exc:
+            _log_step("lookup", reference, level=logging.WARNING, **_failure(exc))
+            raise
+        _log_step(
+            "lookup",
+            reference,
+            result="found" if existing is not None else "not_found",
+            status=existing.status.value if existing is not None else None,
+        )
         if existing is not None:
             return await self._record(existing)
         try:
             result = await self.broker.submit_order(request, approval)
         except Exception as exc:
             provider_order = getattr(exc, "order", None)
+            _log_step(
+                "order_new",
+                reference,
+                level=logging.WARNING,
+                status=provider_order.status.value if isinstance(provider_order, Order) else None,
+                **_failure(exc),
+            )
             if isinstance(provider_order, Order):
                 self.store.update(provider_order)
             raise
+        _log_step(
+            "order_new",
+            reference,
+            result="accepted",
+            status=result.status.value,
+            filled_quantity=result.filled_quantity,
+        )
         return await self._record(result)
 
     async def recover(self, client_order_id: str) -> Order | None:
@@ -150,6 +192,7 @@ class ExecutionEngine:
         linked = _linked_to_local_order(order, fills)
         if linked:
             self.store.add_fills(linked)
+            self._log_new_fills(order, linked)
         # Keep the durable order recoverable until every authoritative fill has
         # been read and persisted. If either step fails, or the venue reports more
         # executed than its fills cover, the existing row keeps its status, so a
@@ -161,6 +204,57 @@ class ExecutionEngine:
         if self.on_recorded is not None:
             self.on_recorded(order, linked)
         return order
+
+    def _log_new_fills(self, order: Order, fills: tuple[Fill, ...]) -> None:
+        """Log each fill's quantity, price, fee, and notional the first time it is recorded."""
+
+        reference = short_reference(order.request.client_order_id)
+        for fill in fills:
+            if fill.fill_id in self._logged_fills:
+                continue
+            self._logged_fills[fill.fill_id] = None
+            if len(self._logged_fills) > LOGGED_FILL_MEMORY:
+                self._logged_fills.pop(next(iter(self._logged_fills)))
+            _log_step(
+                "fill",
+                reference,
+                fill=short_reference(fill.fill_id),
+                symbol=fill.symbol,
+                side=fill.side.value,
+                quantity=fill.quantity,
+                price=fill.price,
+                fee=fill.fee,
+                fee_asset=fill.fee_asset,
+                notional=fill.quantity * fill.price,
+            )
+
+
+def _failure(exc: Exception) -> dict[str, object]:
+    """A failed step's fields: the exception's kind and, for HTTP, its status, path, and reason."""
+
+    return {"result": "failed", **provider_failure_fields(exc)}
+
+
+def _log_step(step: str, reference: str, *, level: int = logging.INFO, **fields: object) -> None:
+    """One line per order step: ``order step=<step> ref=<8 characters> key=value ...``.
+
+    A ``None`` field is left out and a decimal is written in full, never in scientific form.
+    """
+
+    shown = {
+        key: format(value, "f") if isinstance(value, Decimal) else value
+        for key, value in fields.items()
+        if value is not None
+    }
+    detail = " ".join(f"{key}={value}" for key, value in shown.items())
+    logger.log(
+        level,
+        "order step=%s ref=%s %s",
+        step,
+        reference,
+        detail,
+        extra={"event": {"step": step, "ref": reference, **shown}},
+    )
 
 
 def _linked_to_local_order(order: Order, fills: tuple[Fill, ...]) -> tuple[Fill, ...]:
