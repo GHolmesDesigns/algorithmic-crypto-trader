@@ -1,0 +1,47 @@
+{%- extends "_operator_page.html" -%}
+{%- import "_operator_macros.html" as ui -%}
+{%- if outcome and outcome.closed -%}{%- set heading = "Order closed" -%}{%- set tone = "ok" -%}
+{%- elif outcome -%}{%- set heading = "Close refused" -%}{%- set tone = "crit" if outcome.code.value in ("lookup_failed", "not_recorded") else "warn" -%}
+{%- else -%}{%- set heading = "Close refused" -%}{%- set tone = "warn" -%}{%- endif -%}
+{% block title %}{{ heading }}{% endblock %}
+{% block page_name %}Control result{% endblock %}
+{% block content %}
+        <section class="result tone-{{ tone }}" aria-labelledby="result-heading">
+          <p class="eyebrow">Control result</p>
+          <h1 id="result-heading">{{ heading }}</h1>
+          {%- if errors %}
+          <ul class="errors">
+            {%- for error in errors %}
+            <li>{{ error }}</li>
+            {%- endfor %}
+          </ul>
+          {%- elif outcome %}
+          <p>{{ outcome.detail }}</p>
+          {%- endif %}
+          <dl class="facts">
+            <div><dt>Action</dt><dd>Close an order the venue never received</dd></div>
+            <div><dt>Order</dt><dd class="mono">{{ client_order_id or "not given" }}</dd></div>
+            {%- if outcome %}
+            <div><dt>The venue answered</dt><dd>{{ outcome.broker_lookup }}</dd></div>
+            {%- endif %}
+            <div><dt>Changed</dt><dd>
+              {%- if outcome and outcome.closed -%}
+              Yes: {{ outcome.record.previous_status.value }} to canceled, recorded as {{ outcome.record.order.request.side.value }} {{ "{:f}".format(outcome.record.order.request.quantity.normalize()) }} {{ outcome.record.order.request.symbol }}, never received by the venue.
+              {%- else -%}
+              No: nothing was changed. The order is as it was.
+              {%- endif -%}
+            </dd></div>
+            {%- if reason %}
+            <div><dt>{% if outcome and outcome.closed %}Reason recorded{% else %}Reason entered (not saved){% endif %}</dt><dd>{{ reason }}</dd></div>
+            {%- endif %}
+            <div><dt>Kill switch</dt><dd>{{ ui.pill(kill_switch, "pill-large") }} unchanged</dd></div>
+            <div><dt>Time (UTC)</dt><dd><time datetime="{{ at.isoformat() }}">{{ at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</time></dd></div>
+            <div><dt>Acting role</dt><dd>{{ acting_role }}</dd></div>
+          </dl>
+          <p class="next-step"><strong>Next safe step:</strong>
+            {%- if outcome and outcome.closed %} The order is no longer pending, was not resubmitted, and no replacement exists. Closing does not re-arm: finish the re-arm checklist and re-arm only when every item is true.
+            {%- else %} Nothing changed. Resolve the cause shown above before trying again, and do not create a replacement order.
+            {%- endif %}</p>
+          <p><a class="button button-quiet" href="/operator#unresolved-orders">Return to dashboard</a></p>
+        </section>
+{% endblock %}

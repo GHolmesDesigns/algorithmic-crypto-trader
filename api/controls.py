@@ -85,6 +85,44 @@ def parse_rearm(body: bytes, content_type: str) -> RearmRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class CloseOrderRequest:
+    client_order_id: str
+    reason: str
+    errors: tuple[str, ...] = field(default=())
+
+
+def parse_close_order(body: bytes, content_type: str) -> CloseOrderRequest:
+    """Read the order to close and the reason from a form post or a JSON body.
+
+    JSON sends ``{"client_order_id": "...", "reason": "..."}``. Nothing is looked up or
+    changed here: this only decides whether the request is complete.
+    """
+
+    if content_type.split(";", 1)[0].strip().lower() == "application/json":
+        try:
+            payload = json.loads(body or b"{}")
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            return CloseOrderRequest("", "", ("The request body must be a JSON object.",))
+        client_order_id = str(payload.get("client_order_id") or "")
+        reason = str(payload.get("reason") or "")
+    else:
+        form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+        client_order_id = form.get("client_order_id", [""])[0]
+        reason = form.get("reason", [""])[0]
+    client_order_id = client_order_id.strip()
+    errors: list[str] = []
+    if not client_order_id:
+        errors.append("Choose the order to close.")
+    if not reason.strip():
+        errors.append("Enter the reason for closing the order.")
+    elif len(reason) > REASON_LIMIT:
+        errors.append(f"Keep the reason to {REASON_LIMIT} characters or fewer.")
+    return CloseOrderRequest(client_order_id, reason, tuple(errors))
+
+
+@dataclass(frozen=True, slots=True)
 class ControlResult:
     """What a control did, rendered as the result page or returned as JSON."""
 

@@ -331,6 +331,36 @@
           {%- endif %}
         </div>
       </div>
+      {%- if view.unresolved is not none %}
+      <section class="panel" id="unresolved-orders" aria-labelledby="unresolved-heading">
+        <h3 id="unresolved-heading">Orders waiting on the venue</h3>
+        {%- if not view.unresolved.readable %}
+        <p class="notice tone-crit"><span class="mark" aria-hidden="true">■</span> The saved orders could not be read, so none can be closed from here and none can be confirmed resolved. Check Alerts &amp; errors and the application log.</p>
+        {%- elif not view.unresolved.rows %}
+        <p class="note">No saved order is waiting on the venue: none is pending or unknown.</p>
+        {%- else %}
+        <p>An order the venue never received stays pending, and a re-arm halts again because of it. Closing one asks the venue about it again, by its client order ID, then for its fills. It is closed only if the venue answers that it has no record of it and returns no fill. It is never resubmitted and no replacement is created. Closing does not re-arm; the kill switch is unchanged.</p>
+        <ul class="unresolved">
+          {%- for row in view.unresolved.rows %}
+          <li class="panel">
+            <p>{{ ui.pill(row.status) }} {{ row.side }} {{ row.quantity }} {{ row.symbol }} · strategy <span class="mono">{{ row.strategy_version }}</span> · saved {{ ui.stamp(row.created) }}</p>
+            <p>Client order ID <span class="mono">{{ row.client_order_id }}</span></p>
+            <form method="post" action="/operator/orders/close">
+              <input type="hidden" name="client_order_id" value="{{ row.client_order_id }}">
+              <div class="field">
+                <label for="close-reason-{{ loop.index }}">Reason for closing this order</label>
+                <textarea id="close-reason-{{ loop.index }}" name="reason" rows="2" required maxlength="500"></textarea>
+              </div>
+              <div class="actions">
+                <button class="button button-quiet" type="submit">Close order: never received by the venue</button>
+              </div>
+            </form>
+          </li>
+          {%- endfor %}
+        </ul>
+        {%- endif %}
+      </section>
+      {%- endif %}
     </section>
 
     <section id="health" class="block" aria-labelledby="health-heading">

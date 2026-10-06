@@ -8,10 +8,11 @@ stops trading before any broker call.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from core.models import Order, OrderStatus, RiskApproval, Signal
@@ -22,6 +23,50 @@ from sqlalchemy.exc import SQLAlchemyError
 from execution.engine import InMemoryOrderStore, PersistenceUnavailable
 
 FILLED_STATUSES = frozenset({OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED})
+
+# The ``system_events`` type written when an administrator closes an order the venue never
+# received. The order itself ends ``canceled``, which is also what a broker cancel leaves, so
+# this event is what tells the two apart.
+ORDER_CLOSED_EVENT = "order_closed_never_received"
+NEVER_RECEIVED = "never received by the venue"
+
+
+@dataclass(frozen=True, slots=True)
+class OrderClosureRecord:
+    """Who closed a never-received order, when, why, and what the venue said at that moment.
+
+    Carries identifiers and the broker's answer, never a request or a provider response.
+    """
+
+    order: Order
+    previous_status: OrderStatus
+    actor: str
+    reason: str
+    closed_at: datetime
+    broker_lookup: str
+
+    def to_payload(self) -> Mapping[str, Any]:
+        """The ``system_events`` payload. The order store adds the risk decision's id."""
+
+        request = self.order.request
+        return {
+            "client_order_id": str(request.client_order_id),
+            "order_id": str(self.order.order_id),
+            "signal_id": str(request.signal_id),
+            "strategy_version": request.strategy_version,
+            "symbol": request.symbol,
+            "side": request.side.value,
+            # The database column keeps 18 decimals; the event reads as the order was placed.
+            "quantity": format(request.quantity.normalize(), "f"),
+            "previous_status": self.previous_status.value,
+            "new_status": OrderStatus.CANCELED.value,
+            "actor": self.actor,
+            "reason": self.reason,
+            "closed_at": self.closed_at.isoformat(),
+            "broker_lookup": self.broker_lookup,
+            "broker_fills": 0,
+            "outcome": NEVER_RECEIVED,
+        }
 
 
 @dataclass(frozen=True, slots=True)

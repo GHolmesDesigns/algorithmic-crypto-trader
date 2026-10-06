@@ -99,6 +99,12 @@
                 {%- if order.rule %}
                 <p class="rule">{{ order.rule }}</p>
                 {%- endif %}
+                {%- if order.closure %}
+                <p class="rule"><strong>{{ order.closure.label }}.</strong> {{ order.closure.actor }} closed it {{ ui.stamp(order.closure.closed) }}. It was {{ order.closure.was }}, and the venue answered: {{ order.closure.broker_lookup }}. Reason: {{ order.closure.reason }}</p>
+                {%- if order.closure.event_href %}
+                <p><a href="{{ order.closure.event_href }}">See the audit event under System events</a></p>
+                {%- endif %}
+                {%- endif %}
                 <p class="event-meta">Created {{ ui.stamp(order.created) }} · strategy <span class="mono">{{ order.strategy_version }}</span></p>
                 <dl class="ids">
                   <div><dt>Client order ID</dt><dd>{{ copy(order.client_order_id) }}</dd></div>
@@ -149,6 +155,10 @@
               <p class="event-head">{{ ui.pill(row.change.status) }} {{ row.change.text }}</p>
               <p>{{ row.change.reason }}</p>
               <p class="event-meta">{{ row.change.actor }} ({{ row.change.kind }}) · {{ ui.stamp(row.created) }}{% if row.change.checklist %} · {{ row.change.checklist }}{% endif %}</p>
+              {%- elif row.closure %}
+              <p class="event-head"><span class="mono">{{ row.event_type }}</span> {{ row.closure.label }}</p>
+              <p>{{ row.closure.reason }}</p>
+              <p class="event-meta">{{ row.closure.actor }} · was {{ row.closure.was }} · the venue answered: {{ row.closure.broker_lookup }} · {{ ui.stamp(row.created) }} · order {{ copy(row.closed_order) }}</p>
               {%- elif row.disconnect %}
               <p class="event-head"><span class="mono">{{ row.event_type }}</span> {{ row.disconnect.label }}</p>
               {%- if row.disconnect.note %}

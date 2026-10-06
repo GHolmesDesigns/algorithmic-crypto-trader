@@ -167,7 +167,38 @@ def build_dashboard(
         "strategies": strategies,
         "legend": [Status(word, tone) for tone, word in _LEGEND],
         "rearm_checklist": REARM_CHECKLIST,
+        # Only an administrator can close an order, so only an administrator is shown the list.
+        "unresolved": _unresolved(snapshot, now) if role == "admin" else None,
     }
+
+
+def _unresolved(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+    """Saved orders the venue has not confirmed, for the close control.
+
+    ``None`` when the payload carries no such list (it was not read), which is different from
+    a list with nothing in it: only an empty list says no order is waiting.
+    """
+
+    payload = snapshot.get("unresolved_orders")
+    if payload is None:
+        return None
+    if not payload.get("readable"):
+        return {"readable": False, "rows": []}
+    rows = []
+    for order in payload.get("orders", ()):
+        request = order.get("request", {})
+        rows.append(
+            {
+                "client_order_id": str(request.get("client_order_id", "")),
+                "symbol": str(request.get("symbol", "")),
+                "side": str(request.get("side", "")),
+                "quantity": _plain_amount(request.get("quantity", "")),
+                "strategy_version": str(request.get("strategy_version", "")),
+                "status": _status(order.get("status"), _ORDER),
+                "created": _stamp(order.get("created_at"), now),
+            }
+        )
+    return {"readable": True, "rows": rows}
 
 
 _KILL_SWITCH_MEANINGS = (
@@ -501,6 +532,15 @@ def _portfolio(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     }
 
 
+def _plain_amount(value: object) -> str:
+    """An amount as it was placed. The database keeps 18 decimals, which read as noise."""
+
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except InvalidOperation:
+        return str(value)
+
+
 def _average_price(value: object) -> Fact:
     # None means the venue reports no cost basis; a real 0 (an airdrop) is a known price.
     try:
@@ -773,19 +813,45 @@ def build_rearm_review(
     }
 
 
+def _orders_detail(pending: int, unknown: int, total: int, *, saved: bool, readable: bool) -> str:
+    if not readable:
+        return (
+            "The saved orders could not be read, so none can be confirmed resolved. "
+            "Do not confirm the orders item."
+        )
+    held = "saved" if saved else "this process holds"
+    text = (
+        f"{pending} pending submission and {unknown} unknown among the {total} order(s) {held}. "
+        "Resolve each by looking it up with its client order ID. Never resubmit it."
+    )
+    if pending or unknown:
+        text += (
+            " An order the venue never received is closed from the dashboard, after the app "
+            "asks the venue about it again."
+        )
+    return text
+
+
 def _rearm_warnings(snapshot: Mapping[str, Any], now: datetime) -> list[dict[str, Any]]:
     recovery = snapshot.get("recovery", {})
     reconciliation = snapshot.get("reconciliation", {})
     runs = reconciliation.get("runs")
-    orders = [str(order.get("status")) for order in snapshot.get("orders", ())]
+    # The saved order store is the source when the route read it. The snapshot's own order
+    # list holds only what this process was handed, which the running service never is.
+    saved = snapshot.get("unresolved_orders")
+    if saved is not None and not saved.get("readable"):
+        orders: list[str] = []
+        order_status = Status("unreadable", "crit")
+    else:
+        source = saved.get("orders", ()) if saved is not None else snapshot.get("orders", ())
+        orders = [str(order.get("status")) for order in source]
+        order_status = Status("none", "ok")
     pending = orders.count("pending_submit")
     unknown = orders.count("unknown")
     if unknown:
         order_status = Status(f"{unknown} unknown", "crit")
     elif pending:
         order_status = Status(f"{pending} pending", "warn")
-    else:
-        order_status = Status("none", "ok")
     strategies = [_heartbeat(item, now) for item in snapshot.get("strategies", ())]
     worst = _worst(strategies)
     if worst is None:
@@ -825,10 +891,12 @@ def _rearm_warnings(snapshot: Mapping[str, Any], now: datetime) -> list[dict[str
         {
             "label": "Pending or unknown orders",
             "status": order_status,
-            "detail": (
-                f"{pending} pending submission and {unknown} unknown among the "
-                f"{len(orders)} order(s) this process holds. Resolve each by looking it up "
-                "with its client order ID. Never resubmit it."
+            "detail": _orders_detail(
+                pending,
+                unknown,
+                len(orders),
+                saved=saved is not None,
+                readable=order_status.word != "unreadable",
             ),
             "stamp": None,
         },

@@ -490,7 +490,7 @@ active warnings before you decide:
 
 - startup recovery status and detail;
 - the last scheduled reconciliation result;
-- pending or unknown orders this process holds; and
+- the saved orders that are still pending or unknown; and
 - the strategy heartbeat.
 
 It also shows the kill switch's recent saved changes.
@@ -502,7 +502,8 @@ page, and the server refuses a re-arm with any item unconfirmed:
 2. Confirm the approved mode and credential scope.
 3. Resolve every pending or unknown order by looking it up at the broker with
    its persisted client order ID. Never submit it again merely because the first
-   response was uncertain.
+   response was uncertain. An order the broker never received is closed from the
+   dashboard (see [An order the venue never received](#an-order-the-venue-never-received)).
 4. Confirm the broker-authoritative balances, positions, orders, and fills.
 5. Confirm startup recovery and reconciliation are clean.
 6. Confirm required market data and risk inputs are current.
@@ -571,6 +572,59 @@ checklist. See [orders the app did not place](phase-1.5-risk-execution-portfolio
 4. Update local state through the normal recovery path.
 5. Never create a replacement order until the original is proven absent and the
    approved recovery procedure permits a new submission.
+
+If the broker has no record of the order, follow the next section.
+
+### An order the venue never received
+
+An order can be saved as `pending_submit` and never sent: the process stopped
+before it submitted the order, or the venue's order-status lookup failed first
+(for example with a `500`), so the app did not send it. The trading loop halts
+on such an order after five minutes, startup recovery halts on it, and a re-arm
+would halt again because the order is still pending. An administrator ends it
+from the dashboard once the app has proven the venue has no record of it.
+
+1. Sign in as an administrator. On the dashboard, **Orders waiting on the
+   venue** (below **Re-arm**) lists every saved order that is `pending_submit`
+   or `unknown`, with its client order ID. Operators do not see it.
+2. Enter the **reason for closing this order**, for example an incident or
+   ticket reference and who approved. It is required and limited to 500
+   characters. Do not include tokens, account identifiers, addresses, or
+   provider payloads: the server removes secrets, URLs, email addresses, and
+   long identifiers before it saves the reason.
+3. Select **Close order: never received by the venue**.
+4. At that moment the app asks the venue for the order by its client order ID,
+   then for its fills. It closes the order only when the venue answers that it
+   has no record of the order and returns no fill. The result page shows what
+   the venue answered and whether anything changed.
+
+A closed order ends as `canceled`, which is also how an order the broker
+canceled ends. History tells them apart: under **Order history**, the order is
+marked **Closed by an administrator: never received by the venue** with who
+closed it, when, the reason, and what the venue answered, and the audit event
+(`order_closed_never_received`) is under **System events**. The order keeps its
+signal, strategy version, and risk decision.
+
+The app refuses to close the order, and changes nothing, when:
+
+- the venue has any record of the order, or reports any fill for it. The order
+  was received, so let startup recovery or reconciliation resolve it;
+- a lookup fails in any way, including a `5xx` error, a timeout, or an
+  authentication error. Only a definite "not found" answer counts. Try again
+  when the venue responds;
+- the order is no longer pending or unknown;
+- the closure cannot be saved to the audit history (`503`); or
+- the caller is not an administrator (`403`) or is not signed in (`401`).
+
+A successful close and a refused attempt each send an alert to the configured
+destinations.
+
+Closing an order never submits it again, never cancels or changes anything at
+the venue, and never creates a replacement. A later order comes from a fresh
+strategy signal and a fresh risk decision. Closing also does not re-arm: the
+kill switch is unchanged, and the re-arm checklist is still required. Once the
+dashboard lists no order waiting on the venue, the checklist's third item can be
+confirmed.
 
 ### The dashboard is unavailable
 
