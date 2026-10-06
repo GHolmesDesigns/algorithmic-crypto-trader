@@ -50,7 +50,7 @@ jobs:
       MAX_AGE_HOURS: ${{ github.event.inputs.max_age_hours || '36' }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install age, rclone, and PostgreSQL client
         run: |
