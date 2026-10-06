@@ -54,6 +54,19 @@ successful refresh and never includes provider payloads or credentials.
   with the kill switch unchanged, a re-arm missing any checklist item or the
   reference (`422`), from an operator (`403`), or whose transition cannot be
   saved (`503`). The reference is redacted before it is saved.
+- `POST /operator/orders/close` (issue #119) requires the administrator role and
+  closes one `pending_submit` or `unknown` order the venue never received. Under
+  the trading lock it asks the venue for the order by `client_order_id`, then for
+  its fills, and closes the order (status `canceled`, with an
+  `order_closed_never_received` event in `system_events` written in the same
+  transaction) only when the venue answers not-found and returns no fill. It
+  refuses, with the order unchanged, an incomplete request (`422`), an unknown
+  order (`404`), an order that is not pending or unknown, or one the venue has a
+  record of or fills for (`409`), any failed lookup (`502`), and a closure that
+  cannot be saved (`503`). It can only read from the venue, never changes the
+  kill switch, tells the scheduled reconciler to stop tracking the order, and
+  alerts on a close and on a refused attempt. The dashboard lists the saved
+  pending or unknown orders, with a form for each, for an administrator.
 
 ## Kill-switch history
 

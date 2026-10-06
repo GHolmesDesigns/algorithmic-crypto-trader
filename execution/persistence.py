@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import UUID, uuid5
+from typing import Any
+from uuid import UUID, uuid4, uuid5
 
 from core.models import Fill, Order, OrderRequest, OrderSide, OrderStatus, OrderType, RiskApproval
-from db.models import FillRecord, OrderRecord
-from sqlalchemy import func, select
+from db.models import FillRecord, OrderRecord, SystemEventRecord
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from execution.engine import OrderStore, PersistenceUnavailable
@@ -115,6 +117,55 @@ class SqlAlchemyOrderStore(OrderStore):
             raise PersistenceUnavailable(
                 "database unavailable while reading pending orders"
             ) from exc
+
+    def close_unreceived(
+        self, client_order_id: str, *, event_type: str, payload: Mapping[str, Any], at: datetime
+    ) -> bool:
+        """End a still-unresolved order as ``canceled`` and journal why, in one transaction.
+
+        Only the status changes, so the order keeps its signal, strategy version, risk
+        decision, and correlation. The ``UPDATE`` is conditional on the order still being
+        pending or unknown: a row something else resolved meanwhile is left alone and
+        ``False`` is returned. If the audit event cannot be written the status change is
+        rolled back with it, so an order is never closed without its record.
+        """
+
+        try:
+            with self.session_factory() as session:
+                record = (
+                    session.query(OrderRecord)
+                    .filter_by(client_order_id=UUID(client_order_id))
+                    .one_or_none()
+                )
+                if record is None:
+                    return False
+                result = session.execute(
+                    update(OrderRecord)
+                    .where(
+                        OrderRecord.order_id == record.order_id,
+                        OrderRecord.status.in_(
+                            (OrderStatus.PENDING_SUBMIT.value, OrderStatus.UNKNOWN.value)
+                        ),
+                    )
+                    .values(status=OrderStatus.CANCELED.value)
+                )
+                if result.rowcount != 1:
+                    session.rollback()
+                    return False
+                session.add(
+                    SystemEventRecord(
+                        event_id=uuid4(),
+                        event_type=event_type,
+                        # The order's own correlation id, so history finds the event by order.
+                        correlation_id=record.correlation_id or record.client_order_id,
+                        payload={**payload, "risk_approval_id": str(record.risk_approval_id)},
+                        created_at=at,
+                    )
+                )
+                session.commit()
+                return True
+        except (SQLAlchemyError, ValueError) as exc:
+            raise PersistenceUnavailable("database unavailable while closing order") from exc
 
     def open_orders(self) -> tuple[Order, ...]:
         """Non-terminal orders with filled quantity derived from persisted fills."""

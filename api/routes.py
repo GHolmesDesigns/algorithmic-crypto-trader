@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -10,16 +11,27 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs
 
 from core.logging import redact_free_text
 from core.models import KillSwitchState, utc_now
+from execution.closure import ClosableOrderStore, ClosureCode, ClosureOutcome, OrderCloser
+from execution.engine import ExecutionEngine
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from risk.kill_switch import TransitionNotRecorded
 
-from api.controls import REARM_CHECKLIST, REASON_LIMIT, ControlResult, RearmRequest, parse_rearm
+from api.alerts import Alert
+from api.controls import (
+    REARM_CHECKLIST,
+    REASON_LIMIT,
+    ControlResult,
+    RearmRequest,
+    parse_close_order,
+    parse_rearm,
+)
 from api.dashboard import Status, build_dashboard, build_rearm_review
 from api.operator import OperatorState
 
@@ -131,6 +143,8 @@ async def _render_dashboard(request: Request, template: str) -> Response:
     state = _operator_state(request)
     await state.refresh()
     snapshot = state.to_dict()
+    if role == "admin":
+        _add_unresolved_orders(request, snapshot)
     return templates.TemplateResponse(
         request=request,
         name=template,
@@ -212,6 +226,177 @@ async def rearm(request: Request) -> Response:
     return _result_response(request, result)
 
 
+_CLOSE_STATUS = {
+    ClosureCode.CLOSED: 200,
+    ClosureCode.INVALID_ID: 422,
+    ClosureCode.ORDER_NOT_FOUND: 404,
+    ClosureCode.NOT_UNRESOLVED: 409,
+    ClosureCode.VENUE_HAS_ORDER: 409,
+    ClosureCode.VENUE_HAS_FILLS: 409,
+    ClosureCode.LOOKUP_FAILED: 502,
+    ClosureCode.NOT_RECORDED: 503,
+}
+
+
+@router.post("/operator/orders/close")
+async def close_order(request: Request) -> Response:
+    """Close a pending or unknown order the venue never received, after asking it again.
+
+    Administrator only. The venue is asked, under the trading lock, for the order by its client
+    order ID and then for its fills; the order is closed only if it answers not-found and
+    returns no fill. Refuses, with the order unchanged, when the request is incomplete (422),
+    the order is missing (404), is not pending or unknown, or the venue has a record of it
+    (409), a lookup fails (502), or the closure cannot be recorded (503). Never submits,
+    cancels, or edits anything at the venue, and never touches the kill switch.
+    """
+
+    role = _authorize(request, required_role="admin")
+    submitted = parse_close_order(await request.body(), request.headers.get("content-type", ""))
+    reason = redact_free_text(
+        submitted.reason,
+        secrets=(os.environ.get("OPERATOR_TOKEN", ""), os.environ.get("OPERATOR_ADMIN_TOKEN", "")),
+    )
+    if submitted.errors:
+        return _close_response(
+            request, role, submitted.client_order_id, 422, errors=submitted.errors, reason=reason
+        )
+    closing = _order_closing(request)
+    if closing is None:
+        return _close_response(
+            request,
+            role,
+            submitted.client_order_id,
+            503,
+            errors=("Closing orders is unavailable: no broker or order store is configured.",),
+            reason=reason,
+        )
+    engine, store, lock = closing
+    async with lock:
+        outcome = await OrderCloser(engine.broker, store).close(
+            submitted.client_order_id, actor=role, reason=reason
+        )
+        if outcome.closed:
+            scheduler = _operator_state(request).scheduled_reconciliation
+            if scheduler is not None:
+                scheduler.forget_order(outcome.client_order_id)
+    # Delivered after the lock is released: a slow alert destination must not stall trading.
+    await _alert_close(request, outcome)
+    return _close_response(
+        request,
+        role,
+        submitted.client_order_id,
+        _CLOSE_STATUS[outcome.code],
+        outcome=outcome,
+        reason=reason,
+    )
+
+
+def _order_closing(
+    request: Request,
+) -> tuple[ExecutionEngine, ClosableOrderStore, asyncio.Lock] | None:
+    """The engine, its order store, and the trading lock, when this service can close orders."""
+
+    engine = getattr(request.app.state, "execution", None)
+    lock = getattr(request.app.state, "trading_lock", None)
+    if not isinstance(engine, ExecutionEngine) or not isinstance(lock, asyncio.Lock):
+        return None
+    store = engine.store
+    if not isinstance(store, ClosableOrderStore):
+        return None
+    return engine, store, lock
+
+
+def _add_unresolved_orders(request: Request, snapshot: dict[str, Any]) -> None:
+    """Add the saved pending or unknown orders to an administrator's snapshot.
+
+    The snapshot's own order list is only what this process was handed, which the running
+    service never is, so the close control and the re-arm review read the saved orders. With no
+    order store there is nothing to add.
+    """
+
+    engine = getattr(request.app.state, "execution", None)
+    if not isinstance(engine, ExecutionEngine):
+        return
+    try:
+        orders = [order.model_dump(mode="json") for order in engine.store.pending()]
+    except Exception:
+        snapshot["unresolved_orders"] = {"readable": False, "orders": []}
+        return
+    snapshot["unresolved_orders"] = {"readable": True, "orders": orders}
+
+
+async def _alert_close(request: Request, outcome: ClosureOutcome) -> None:
+    """Tell the operator destinations about a close, and about a refused attempt."""
+
+    short = outcome.client_order_id[:8]
+    if outcome.closed:
+        alert = Alert(
+            condition="order_closed_never_received",
+            severity="warning",
+            message=(
+                f"An administrator closed pending order {short}: the venue had no record of it "
+                "and no fills. It was not resubmitted. The kill switch is unchanged."
+            ),
+        )
+    else:
+        alert = Alert(
+            condition="order_close_refused",
+            severity="warning",
+            message=f"Closing order {short} was refused and nothing changed. {outcome.detail}",
+        )
+    try:
+        await _operator_state(request).emit_alert(alert)
+    except Exception:
+        # The close already happened or was refused; an undeliverable alert is not a reason
+        # to report otherwise. The dashboard's alert list still holds it.
+        pass
+
+
+def _close_response(
+    request: Request,
+    role: str,
+    client_order_id: str,
+    status_code: int,
+    *,
+    outcome: ClosureOutcome | None = None,
+    errors: tuple[str, ...] = (),
+    reason: str = "",
+) -> Response:
+    switch = _operator_state(request).kill_switch
+    if not _wants_html(request):
+        body: dict[str, Any] = {
+            "closed": outcome is not None and outcome.closed,
+            "client_order_id": client_order_id,
+            "kill_switch": switch.state.value,
+        }
+        if outcome is not None:
+            body.update(code=outcome.code.value, detail=outcome.detail)
+            body["broker_lookup"] = outcome.broker_lookup
+        else:
+            body["errors"] = list(errors)
+        return JSONResponse(body, status_code=status_code)
+    return templates.TemplateResponse(
+        request=request,
+        name="operator_order_close.html",
+        context={
+            "page": _page(request, role),
+            "outcome": outcome,
+            "errors": errors,
+            "client_order_id": client_order_id,
+            "reason": reason,
+            "at": utc_now(),
+            "acting_role": _ROLE_LABELS.get(role, ""),
+            "kill_switch": Status(
+                switch.state.value,
+                {"running": "ok", "paused": "warn", "halted": "crit"}.get(
+                    switch.state.value, "neutral"
+                ),
+            ),
+        },
+        status_code=status_code,
+    )
+
+
 async def _tighten_kill_switch(
     request: Request, action: str, target: KillSwitchState, reason: str
 ) -> Response:
@@ -250,12 +435,14 @@ async def _render_rearm_review(
 ) -> Response:
     state = _operator_state(request)
     await state.refresh()
+    snapshot = state.to_dict()
+    _add_unresolved_orders(request, snapshot)
     return templates.TemplateResponse(
         request=request,
         name="operator_rearm.html",
         context={
             "page": _page(request, role),
-            "review": build_rearm_review(state.to_dict()),
+            "review": build_rearm_review(snapshot),
             "checklist": REARM_CHECKLIST,
             "reason_limit": REASON_LIMIT,
             "submitted": submitted,

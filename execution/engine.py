@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from brokers.interface import BrokerInterface
 from core.models import Fill, Order, OrderRequest, OrderStatus, RiskApproval
@@ -35,6 +36,8 @@ class InMemoryOrderStore:
     orders: dict[str, Order] = field(default_factory=dict)
     fills: dict[str, Fill] = field(default_factory=dict)
     approvals: dict[str, RiskApproval] = field(default_factory=dict)
+    # The audit events written by ``close_unreceived``, as (event type, payload).
+    closures: list[tuple[str, Mapping[str, Any]]] = field(default_factory=list)
 
     def reserve(self, request: OrderRequest, approval: RiskApproval) -> Order:
         if self.fail_writes:
@@ -71,6 +74,26 @@ class InMemoryOrderStore:
             for order in self.orders.values()
             if order.status in {OrderStatus.PENDING_SUBMIT, OrderStatus.UNKNOWN}
         )
+
+    def close_unreceived(
+        self, client_order_id: str, *, event_type: str, payload: Mapping[str, Any], at: datetime
+    ) -> bool:
+        """End a still-unresolved order as ``canceled`` and journal why, or change nothing.
+
+        Returns ``False`` when the order is missing or already resolved, so a caller that
+        looked the order up earlier cannot overwrite a status something else has since set.
+        """
+
+        if self.fail_writes:
+            raise PersistenceUnavailable("order close persistence is unavailable")
+        order = self.orders.get(client_order_id)
+        if order is None or order.status not in {OrderStatus.PENDING_SUBMIT, OrderStatus.UNKNOWN}:
+            return False
+        self.orders[client_order_id] = order.model_copy(
+            update={"status": OrderStatus.CANCELED, "updated_at": at}
+        )
+        self.closures.append((event_type, dict(payload)))
+        return True
 
 
 class ExecutionEngine:

@@ -114,6 +114,16 @@ class ScheduledReconciler:
         for fill in fills:
             self._fills[fill.fill_id] = fill
 
+    def forget_order(self, client_order_id: str) -> None:
+        """Stop following an order an administrator closed because the venue never received it.
+
+        Every tracked order is compared with the broker, which has no record of this one, so
+        left here it would read as a divergence and halt trading again after a re-arm. Call it
+        while holding ``lock``, which a comparison holds for its whole run.
+        """
+
+        self._orders.pop(client_order_id, None)
+
     def expected_state(self) -> PortfolioState:
         new_fills = [fill for key, fill in self._fills.items() if key not in self._applied_fill_ids]
         projected = apply_fills(

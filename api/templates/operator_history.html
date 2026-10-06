@@ -103,6 +103,9 @@
                     {%- if order.gaps %}
                     <span class="pill tone-warn"><span class="mark" aria-hidden="true">▲</span> lineage gap</span>
                     {%- endif %}
+                    {%- if order.closure %}
+                    <span class="pill tone-neutral"><span class="mark" aria-hidden="true">◐</span> closed by an administrator: never received</span>
+                    {%- endif %}
                     {%- if order.rule %}
                     <span class="rule">{{ order.rule }}</span>
                     {%- endif %}

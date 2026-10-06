@@ -35,7 +35,7 @@ from db.models import (
     SignalRecord,
     SystemEventRecord,
 )
-from execution.audit import OrderLineage
+from execution.audit import ORDER_CLOSED_EVENT, OrderLineage
 from risk.engine import RISK_GATES
 from risk.kill_switch_journal import EVENT_TYPE as KILL_SWITCH_EVENT
 from sqlalchemy import ColumnElement, and_, func, or_, select
@@ -80,6 +80,7 @@ EVENT_TYPES = (
     GAP_FILL_EVENT,
     HEARTBEAT_EVENT,
     RESTART_EVENT,
+    ORDER_CLOSED_EVENT,
 )
 KINDS = ("orders", "signals", "risk_decisions", "discrepancies", "events", "refusals")
 _PAGING = ("since", "until", "window", "limit", "before")
@@ -784,6 +785,46 @@ def _fills(session: Session, order_ids: list[UUID]) -> dict[UUID, dict[str, Any]
     return result
 
 
+def _closures(session: Session, orders: Sequence[OrderRecord]) -> dict[str, dict[str, Any]]:
+    """The audit record for each listed order an administrator closed as never received.
+
+    Such an order ends ``canceled``, the same as one the broker canceled, so this record is
+    what tells them apart. It is found by the order's correlation id, which the closure event
+    carries, and only for the orders on this page.
+    """
+
+    keys = {
+        order.correlation_id or order.client_order_id
+        for order in orders
+        if order.status == OrderStatus.CANCELED.value
+    }
+    if not keys:
+        return {}
+    events = session.scalars(
+        select(SystemEventRecord)
+        .where(
+            SystemEventRecord.event_type == ORDER_CLOSED_EVENT,
+            SystemEventRecord.correlation_id.in_(keys),
+        )
+        .order_by(SystemEventRecord.created_at)
+    )
+    return {str((event.payload or {}).get("client_order_id")): _closure(event) for event in events}
+
+
+def _closure(record: SystemEventRecord) -> dict[str, Any]:
+    payload = record.payload or {}
+    return {
+        "event_id": str(record.event_id),
+        "client_order_id": _text(payload.get("client_order_id")),
+        "closed_at": _iso(record.created_at),
+        "actor": _text(payload.get("actor")),
+        "reason": redact_free_text(str(payload.get("reason") or "")),
+        "previous_status": _text(payload.get("previous_status")),
+        "broker_lookup": _text(payload.get("broker_lookup")),
+        "outcome": _text(payload.get("outcome")),
+    }
+
+
 def _lineage_rows(session: Session, orders: Sequence[OrderRecord]) -> list[dict[str, Any]]:
     """Each order with its signal, the risk decision it cites, its fills, and any gaps."""
 
@@ -806,11 +847,13 @@ def _lineage_rows(session: Session, orders: Sequence[OrderRecord]) -> list[dict[
             )
         )
     }
+    closures = _closures(session, orders)
     rows = []
     for order in orders:
         signal = signals.get(order.signal_id)
         decision = decisions.get(order.risk_approval_id)
         row = _order(order, fills.get(order.order_id))
+        row["closure"] = closures.get(str(order.client_order_id))
         row["signal"] = _signal(signal) if signal is not None else None
         row["risk_decision"] = _decision(decision) if decision is not None else None
         row["gaps"] = list(
@@ -961,6 +1004,7 @@ def _event(record: SystemEventRecord) -> dict[str, Any]:
         "created_at": _iso(record.created_at),
         "detail": detail,
         "disconnect": disconnect,
+        "closure": _closure(record) if record.event_type == ORDER_CLOSED_EVENT else None,
     }
 
 

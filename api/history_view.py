@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
+from execution.audit import ORDER_CLOSED_EVENT
 from risk.engine import RISK_GATES
 
 from api.dashboard import _KILL_SWITCH, _ORDER, Stamp, Status, _stamp, _status
@@ -384,6 +385,7 @@ def _order_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "strategy_version": str(row.get("strategy_version", "")),
         "status": _status(row.get("status"), _ORDER),
         "rule": row.get("rule"),
+        "closure": _closure_view(row.get("closure"), now),
         "created": _stamp(row.get("created_at"), now),
         "filled": str(row.get("filled_quantity") or "0"),
         "fill_count": count,
@@ -463,6 +465,30 @@ def _discrepancy_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     }
 
 
+def _closure_view(closure: Mapping[str, Any] | None, now: datetime) -> dict[str, Any] | None:
+    """An administrator's closure of a never-received order, as the order's page shows it."""
+
+    if closure is None:
+        return None
+    return {
+        "label": "Closed by an administrator: never received by the venue",
+        "actor": _ACTORS.get(str(closure.get("actor")), "Unknown"),
+        "reason": str(closure.get("reason") or "no reason recorded"),
+        "closed": _stamp(closure.get("closed_at"), now),
+        "was": str(closure.get("previous_status") or "not recorded"),
+        "broker_lookup": str(closure.get("broker_lookup") or "not recorded"),
+        "event_href": _event_href(closure.get("client_order_id")),
+    }
+
+
+def _event_href(client_order_id: object) -> str | None:
+    """The system-events page narrowed to order closures, where the full audit event is."""
+
+    if not client_order_id:
+        return None
+    return f"{PATHS['events']}?" + urlencode({"event_type": ORDER_CLOSED_EVENT})
+
+
 def _event_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     detail = row.get("detail")
     event: dict[str, Any] = {
@@ -471,6 +497,8 @@ def _event_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "correlation_id": _copy(row.get("correlation_id")),
         "change": None,
         "disconnect": None,
+        "closure": _closure_view(row.get("closure"), now),
+        "closed_order": _copy((row.get("closure") or {}).get("client_order_id")),
     }
     disconnect = row.get("disconnect")
     if disconnect is not None:
