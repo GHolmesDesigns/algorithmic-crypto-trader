@@ -60,6 +60,30 @@ The Sandbox credited 5.23220 and 3.20316, each piece cut to 5 decimals. Rounding
 
 `tests/test_balance_precision.py` pins the recorded trades, the split sell, a partial fill, and the cases that must still halt.
 
+## Filled orders with delayed fills
+
+On 2026-10-07, Gemini Sandbox acknowledged an app sell as filled, but the immediate
+`order/status` read returned 404. The execution store correctly kept the order
+`pending_submit` with no fill. The next scheduled reconciliation skipped the
+terminal order and halted on the missing fill and resulting exact balance and
+position differences. The next trading cycle recovered the fill, and subsequent
+reconciliations were clean (issue #137).
+
+Before each comparison, the scheduler now refreshes every tracked open order and
+every tracked filled order whose recorded fill quantities total less than the
+venue-reported filled quantity. Recovery persists newly readable fills before the
+ledger projects balances. A fully recorded filled order needs no refresh. When
+an accepted or recovered order still lacks fills, execution logs a redacted
+`order step=fill ... result=pending` line with filled and recorded quantities, and
+its durable row stays pending. If fills remain unreadable at reconciliation,
+the exact comparison still diverges, alerts, and halts. This rule does not add a
+tolerance, skip a run, or change the settlement rule from #133.
+
+The local tests replay the delayed read and the persistent lag, plus partial and
+complete fill quantities and an adapter-level 404. Sandbox timing cannot be forced;
+provider behavior remains unverified until a later natural lag event shows the
+pending log line followed by a clean reconciliation.
+
 ## Validation boundary
 
-The automated suite uses only `SimulatedBroker`, deterministic fixtures, and temporary local state. No provider credentials, exchange writes, or live trading are used. Owner-run provider verification is not required for this broker-independent safety layer; adapter and end-to-end evidence remains deferred to Phase 1.6 and the Phase 1 gate.
+The automated suite uses only `SimulatedBroker`, deterministic fixtures, and temporary local state. No provider credentials, exchange writes, or live trading are used. The delayed-fill fix has adapter-level fixture coverage, but its real Sandbox timing remains owner-run verification when a natural lag event occurs. Other adapter and end-to-end evidence remains in Phase 1.6 and the Phase 1 gate.

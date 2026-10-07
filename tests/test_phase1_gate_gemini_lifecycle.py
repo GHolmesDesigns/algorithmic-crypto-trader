@@ -42,6 +42,8 @@ class GeminiSandboxBook:
         # "timeout_after_accept" | "timeout_before_accept" | "insufficient_funds"
         self.fail_next_new: str | None = None
         self.ticker_failures = 0
+        self.status_404_once = False
+        self.status_404_after_new = False
         self.quote = {"bid": "60000", "ask": "60010"}
         self.execution_ask = Decimal("60010")
         self.execution_bid = Decimal("60000")
@@ -109,6 +111,9 @@ class GeminiSandboxBook:
         if path == "/v1/order/new":
             return self.new_order(request, payload)
         if path == "/v1/order/status":
+            if self.status_404_once:
+                self.status_404_once = False
+                return httpx.Response(404, json={"result": "error", "reason": "OrderNotFound"})
             order_id = payload.get("order_id")
             if order_id is None:
                 order_id = self.by_client.get(payload.get("client_order_id"))
@@ -132,6 +137,9 @@ class GeminiSandboxBook:
 
     def new_order(self, request: httpx.Request, payload: dict[str, Any]) -> httpx.Response:
         self.new_order_calls += 1
+        if self.status_404_after_new:
+            self.status_404_once = True
+            self.status_404_after_new = False
         self.new_payloads.append(payload)
         failure, self.fail_next_new = self.fail_next_new, None
         if failure == "timeout_before_accept":
@@ -358,6 +366,31 @@ async def test_timeout_after_the_venue_accepted_is_recovered_without_a_second_or
     assert len(store.fills) == 1
     await broker.close()
     await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_filled_order_status_404_just_after_new_remains_pending_until_recovery() -> None:
+    book = GeminiSandboxBook()
+    book.status_404_after_new = True
+    broker = gemini(book)
+    store = InMemoryOrderStore()
+    order_request, approval = request()
+    engine = ExecutionEngine(broker, store)
+    key = str(order_request.client_order_id)
+
+    accepted = await engine.submit(order_request, approval)
+    assert accepted.status is OrderStatus.FILLED
+    pending = store.get(key)
+    assert pending is not None and pending.status is OrderStatus.PENDING_SUBMIT
+    assert store.fills == {}
+
+    recovered = await engine.recover(key)
+    assert recovered is not None and recovered.status is OrderStatus.FILLED
+    settled = store.get(key)
+    assert settled is not None and settled.status is OrderStatus.FILLED
+    assert len(store.fills) == 1
+    assert book.new_order_calls == 1
+    await broker.close()
 
 
 @pytest.mark.asyncio

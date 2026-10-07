@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from brokers.simulated import SimulatedBroker
+from core.logging import short_reference
 from core.models import (
     Fill,
     OrderRequest,
@@ -162,6 +164,37 @@ async def test_fill_failures_leave_terminal_orders_pending_for_recovery(failure)
     assert recovered is not None and recovered.status is OrderStatus.FILLED
     assert len(store.fills) == 1
     assert {item.order_id for item in store.fills.values()} == {request.client_order_id}
+
+
+@pytest.mark.asyncio
+async def test_missing_accepted_fills_log_pending_quantities_without_secrets(caplog) -> None:
+    broker = SimulatedBroker()
+    original_get_fills = broker.get_fills
+    calls = 0
+
+    async def lagged_fills(client_order_id: str):
+        nonlocal calls
+        calls += 1
+        return () if calls == 1 else await original_get_fills(client_order_id)
+
+    broker.get_fills = lagged_fills  # type: ignore[method-assign]
+    request = order_request()
+    store = InMemoryOrderStore()
+    engine = ExecutionEngine(broker, store)
+    with caplog.at_level(logging.WARNING, logger="execution.engine"):
+        await engine.submit(request, approve(request))
+
+    warning = [record for record in caplog.records if "result=pending" in record.message]
+    assert len(warning) == 1
+    assert warning[0].message == (
+        f"order step=fill ref={short_reference(request.client_order_id)} "
+        "result=pending filled_quantity=0.5 recorded_quantity=0"
+    )
+    pending = store.get(str(request.client_order_id))
+    assert pending is not None and pending.status is OrderStatus.PENDING_SUBMIT
+    assert await engine.recover_pending()
+    recovered = store.get(str(request.client_order_id))
+    assert recovered is not None and recovered.status is OrderStatus.FILLED
 
 
 def outage():
