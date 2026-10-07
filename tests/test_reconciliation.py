@@ -2,13 +2,26 @@ import base64
 import json
 from collections.abc import Callable
 from decimal import Decimal
+from uuid import uuid4
 
 import httpx
 import pytest
 from brokers.coinbase import CoinbaseBroker
 from brokers.gemini import GeminiBroker
 from brokers.simulated import SimulatedBroker
-from core.models import Balance, KillSwitchState, Position, utc_now
+from core.models import (
+    Balance,
+    Fill,
+    KillSwitchState,
+    Order,
+    OrderRequest,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+    RiskApproval,
+    utc_now,
+)
 from core.resilience import TokenBucketRateLimiter
 from db.models import (
     BalanceSnapshotRecord,
@@ -16,8 +29,9 @@ from db.models import (
     PortfolioSnapshotRecord,
     PositionSnapshotRecord,
 )
+from execution.engine import ExecutionEngine, InMemoryOrderStore
 from portfolio.ledger import apply_fills
-from portfolio.reconciliation import PortfolioState, Reconciler
+from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
 from portfolio.store import SqlAlchemyPortfolioStore
 from risk.kill_switch import KillSwitch
@@ -29,7 +43,7 @@ from sqlalchemy.orm import sessionmaker
 async def test_reconciliation_is_broker_authoritative_and_trips_on_divergence() -> None:
     broker = SimulatedBroker()
     balances = await broker.get_balances()
-    alerts = []
+    alerts: list[Discrepancy] = []
     switch = KillSwitch()
     local = PortfolioState(
         positions=(
@@ -60,6 +74,128 @@ async def test_reconciliation_accepts_matching_empty_portfolio() -> None:
     result = await Reconciler(broker, KillSwitch()).reconcile(local)
     assert result.discrepancies == ()
     assert result.safety_tripped is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("still_lagging", [False, True])
+async def test_filled_order_missing_fills_is_recovered_before_exact_comparison(
+    still_lagging: bool,
+) -> None:
+    broker = SimulatedBroker()
+    baseline = PortfolioState(
+        balances=await broker.get_balances(), positions=await broker.get_positions()
+    )
+    switch = KillSwitch()
+    alerts: list[Discrepancy] = []
+    scheduler = ScheduledReconciler(
+        Reconciler(broker, switch),
+        baseline=baseline,
+        interval_seconds=60,
+        on_divergence=lambda differences: _record_alert(alerts, differences),
+    )
+    store = InMemoryOrderStore()
+    execution = ExecutionEngine(broker, store, on_recorded=scheduler.observe)
+    scheduler.refresh_order = execution.recover
+    request = OrderRequest(
+        signal_id=uuid4(),
+        strategy_version="fill-lag",
+        symbol="BTC-USD",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("0.0001"),
+        correlation_id=uuid4(),
+    )
+    approval = RiskApproval(
+        signal_id=request.signal_id,
+        approved=True,
+        reason="test",
+        correlation_id=request.correlation_id,
+    )
+    original_get_fills = broker.get_fills
+    reads = 0
+
+    async def lagged_fills(client_order_id: str):
+        nonlocal reads
+        reads += 1
+        if reads == 1 or still_lagging:
+            return ()
+        return await original_get_fills(client_order_id)
+
+    broker.get_fills = lagged_fills  # type: ignore[method-assign]
+    order = await execution.submit(request, approval)
+    key = str(request.client_order_id)
+    assert order.status is OrderStatus.FILLED
+    pending = store.get(key)
+    assert pending is not None and pending.status is OrderStatus.PENDING_SUBMIT
+    assert store.pending()
+
+    result = await scheduler.run_once()
+    assert result is not None
+    if still_lagging:
+        assert result.safety_tripped
+        assert switch.state is KillSwitchState.HALTED
+        assert alerts
+        pending = store.get(key)
+        assert pending is not None and pending.status is OrderStatus.PENDING_SUBMIT
+    else:
+        assert result.discrepancies == ()
+        assert switch.state is KillSwitchState.RUNNING
+        recovered = store.get(key)
+        assert recovered is not None and recovered.status is OrderStatus.FILLED
+        assert len(store.fills) == 1
+        assert reads >= 2
+
+
+async def _record_alert(alerts, differences) -> None:
+    alerts.extend(differences)
+
+
+@pytest.mark.asyncio
+async def test_only_filled_orders_with_unrecorded_quantity_are_refreshed() -> None:
+    broker = SimulatedBroker()
+    scheduler = ScheduledReconciler(
+        Reconciler(broker, KillSwitch()), baseline=PortfolioState(), interval_seconds=60
+    )
+    request = OrderRequest(
+        signal_id=uuid4(),
+        strategy_version="fill-lag",
+        symbol="BTC-USD",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("1"),
+        correlation_id=uuid4(),
+    )
+    order = Order(
+        order_id=request.client_order_id,
+        request=request,
+        status=OrderStatus.FILLED,
+        filled_quantity=Decimal("1"),
+    )
+    partial = Fill(
+        fill_id="first",
+        order_id=order.order_id,
+        symbol="BTC-USD",
+        side=OrderSide.BUY,
+        quantity=Decimal("0.4"),
+        price=Decimal("100"),
+        fee=Decimal("0"),
+        fee_asset="USD",
+        occurred_at=utc_now(),
+    )
+    refreshed = []
+
+    async def refresh(client_order_id: str) -> None:
+        refreshed.append(client_order_id)
+
+    scheduler.refresh_order = refresh
+    scheduler.observe(order, (partial,))
+    await scheduler._refresh_tracked_orders()
+    assert refreshed == [str(request.client_order_id)]
+
+    rest = partial.model_copy(update={"fill_id": "second", "quantity": Decimal("0.6")})
+    scheduler.observe(order, (rest,))
+    await scheduler._refresh_tracked_orders()
+    assert refreshed == [str(request.client_order_id)]
 
 
 @pytest.mark.asyncio

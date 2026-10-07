@@ -65,10 +65,9 @@ class ScheduledReconciler:
     A divergence trips the kill switch (through ``Reconciler``), is persisted as a
     discrepancy, and is reported to ``on_divergence`` for operator alerts.
 
-    Orders still open at the baseline, or seen since, are re-read before each
-    comparison, so an order that filled between runs is progress rather than a
-    divergence. Wire ``refresh_order`` to ``ExecutionEngine.recover`` so the refresh
-    also persists the order's status and fills. The trading loop must hold
+    Open orders and filled orders with missing recorded quantity are re-read before
+    each comparison. Wire ``refresh_order`` to ``ExecutionEngine.recover`` so the
+    refresh also persists the order's status and fills. The trading loop must hold
     ``lock`` while it trades: an order placed mid-comparison could not be
     attributed to either side of the broker's snapshot.
 
@@ -100,11 +99,11 @@ class ScheduledReconciler:
         self.on_reconciled = on_reconciled
         self.lock = asyncio.Lock()
         self._baseline = PortfolioState(positions=baseline.positions, balances=baseline.balances)
-        # Orders open at the baseline stay tracked; their fills are already in its balances.
-        self._orders: dict[str, Order] = {
-            key: order for key, order in baseline.orders.items() if order.status not in TERMINAL
-        }
+        # Open and incompletely recorded filled orders at the baseline stay tracked.
         self._fills: dict[str, Fill] = dict(baseline.fills)
+        self._orders: dict[str, Order] = {
+            key: order for key, order in baseline.orders.items() if self._needs_refresh(key, order)
+        }
         self._applied_fill_ids: set[str] = set(baseline.fills)
         self.status = ReconciliationStatus(started_at=utc_now())
 
@@ -161,7 +160,7 @@ class ScheduledReconciler:
         """Refresh, project, and reconcile; a string explains why the run was unavailable."""
 
         try:
-            await self._refresh_open_orders()
+            await self._refresh_tracked_orders()
         except Exception as exc:
             logger.exception(
                 "open orders could not be refreshed before reconciliation: %s",
@@ -182,10 +181,22 @@ class ScheduledReconciler:
         self._adopt(result, local)
         return result
 
-    async def _refresh_open_orders(self) -> None:
-        open_ids = [key for key, order in self._orders.items() if order.status not in TERMINAL]
-        for client_order_id in open_ids:
-            await self.refresh_order(client_order_id)
+    async def _refresh_tracked_orders(self) -> None:
+        for client_order_id, order in tuple(self._orders.items()):
+            if self._needs_refresh(client_order_id, order):
+                await self.refresh_order(client_order_id)
+
+    def _needs_refresh(self, client_order_id: str, order: Order) -> bool:
+        if order.status not in TERMINAL:
+            return True
+        if order.status is not OrderStatus.FILLED:
+            return False
+        order_ids = {client_order_id, str(order.order_id)}
+        recorded = sum(
+            (fill.quantity for fill in self._fills.values() if str(fill.order_id) in order_ids),
+            Decimal("0"),
+        )
+        return recorded < order.filled_quantity
 
     async def _read_order(self, client_order_id: str) -> None:
         broker = self.reconciler.broker

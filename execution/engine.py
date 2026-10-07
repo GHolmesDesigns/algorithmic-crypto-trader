@@ -201,6 +201,15 @@ class ExecutionEngine:
         recorded = sum((fill.quantity for fill in linked), Decimal("0"))
         if recorded >= order.filled_quantity:
             self.store.update(order)
+        else:
+            _log_step(
+                "fill",
+                short_reference(order.request.client_order_id),
+                level=logging.WARNING,
+                result="pending",
+                filled_quantity=order.filled_quantity,
+                recorded_quantity=recorded,
+            )
         if self.on_recorded is not None:
             self.on_recorded(order, linked)
         return order
