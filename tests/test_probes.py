@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from itertools import count
 from pathlib import Path
@@ -16,7 +16,12 @@ from brokers.gemini import GeminiBroker
 from core.models import Position
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
-from probes import coinbase_readonly_reconcile, coinbase_sandbox_capture, gemini_sandbox_lifecycle
+from probes import (
+    coinbase_readonly_reconcile,
+    coinbase_sandbox_capture,
+    gemini_sandbox_lifecycle,
+)
+from probes import common as probes_common
 from probes.common import (
     BoundedTransport,
     BudgetExhausted,
@@ -676,6 +681,9 @@ def coinbase_account(permissions: dict[str, bool], reads: list[dict[str, str]], 
 
 VIEW_ONLY = {"can_view": True, "can_trade": False, "can_transfer": False}
 HOLDINGS = {"USD": "123.456789", "BTC": "0.98765432"}
+# The BTC balance the second read moves to. It has more decimals than a timestamp's fraction
+# (six digits), so the report's own start time can never contain it.
+MOVED_BTC = "0.45678901"
 
 
 @pytest.fixture
@@ -711,15 +719,36 @@ async def test_a_key_that_can_trade_or_transfer_is_refused_before_any_account_re
         assert requests == ["/key_permissions"]
 
 
+async def reconcile_with_moved_second_read(ecdsa_key) -> ProbeReport:
+    moved = dict(HOLDINGS, BTC=MOVED_BTC)
+    transport, _ = coinbase_account(VIEW_ONLY, [HOLDINGS, moved])
+    return await coinbase_readonly_reconcile.reconcile(ecdsa_key, inner=transport)
+
+
 @pytest.mark.asyncio
 async def test_a_changed_second_read_is_a_divergence(ecdsa_key) -> None:
-    moved = dict(HOLDINGS, BTC="0.5")
-    transport, _ = coinbase_account(VIEW_ONLY, [HOLDINGS, moved])
-    report = await coinbase_readonly_reconcile.reconcile(ecdsa_key, inner=transport)
+    report = await reconcile_with_moved_second_read(ecdsa_key)
     assert report.outcome == "diverged"
     step = next(item for item in report.steps if item["step"] == "reconcile_second_read")
     assert step["by_kind"] == {"balance": 1, "position": 1}
-    assert "0.5" not in report.render()
+    assert MOVED_BTC not in report.render()
+
+
+@pytest.mark.asyncio
+async def test_the_moved_balance_check_does_not_depend_on_the_clock(ecdsa_key, monkeypatch) -> None:
+    """The report records when it started, and a stamp such as ``...:50.586269`` contains "0.5"."""
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return datetime(2026, 10, 7, 19, 18, 50, 586269, tzinfo=tz)
+
+    monkeypatch.setattr(probes_common, "datetime", Frozen)
+    text = (await reconcile_with_moved_second_read(ecdsa_key)).render()
+
+    assert '"started_at": "2026-10-07T19:18:50.586269+00:00"' in text  # the pinned time took effect
+    assert "0.5" in text  # the stamp alone holds the digits the earlier assertion searched for
+    assert MOVED_BTC not in text
 
 
 @pytest.mark.asyncio
