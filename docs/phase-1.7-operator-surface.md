@@ -67,6 +67,21 @@ successful refresh and never includes provider payloads or credentials.
   kill switch, tells the scheduled reconciler to stop tracking the order, and
   alerts on a close and on a refused attempt. The dashboard lists the saved
   pending or unknown orders, with a form for each, for an administrator.
+- `POST /operator/alerts/dismiss` (issue #141) requires the administrator role
+  and marks the alerts the page showed as dismissed. The request carries
+  `through`, the alert count on that page, so an alert that arrived after the page
+  rendered stays new. Alerts are kept, never deleted: each gets the dismissing role
+  and time, the Overview Alerts tile and its summary count only alerts not
+  dismissed ("0 new" once all are), and dismissed alerts stay listed under
+  "Dismissed". A dismissed alert's failed delivery stays on its row but no longer
+  colors the tile. One `alerts_dismissed` event (role, count, and the newest
+  alert's time; no alert text) is saved to `system_events` first, and the request
+  answers `503` with every alert still new if it cannot be saved. It refuses a
+  missing or non-numeric `through` (`422`) and an operator (`403`); dismissing
+  nothing new answers `{"dismissed": 0}` and saves nothing. Alerts are held in
+  memory, so a restart still clears the list; there is no per-login marker. It
+  never touches the kill switch, the errors, or what was sent to the alert
+  destinations.
 
 ## Kill-switch history
 

@@ -97,6 +97,12 @@
           <p class="card-status">{{ ui.pill(card.status, "pill-large") }}</p>
           <p class="card-detail">{{ card.detail }}</p>
           <p class="card-fresh">{{ card.fresh_label }}{% if card.fresh %} {{ ui.stamp(card.fresh) }}{% endif %}</p>
+          {%- if card.anchor == "alerts" and view.alerts.can_dismiss %}
+          <form class="dismiss" method="post" action="/operator/alerts/dismiss">
+            <input type="hidden" name="through" value="{{ view.alerts.through }}">
+            <button class="button button-quiet" type="submit">Dismiss alerts</button>
+          </form>
+          {%- endif %}
         </li>
         {%- endfor %}
       </ul>
@@ -244,7 +250,15 @@
       </div>
       <div class="split split-wide">
         <div class="panel">
-          <h3>Alerts</h3>
+          <div class="panel-head">
+            <h3>Alerts</h3>
+            {%- if view.alerts.can_dismiss %}
+            <form class="dismiss" method="post" action="/operator/alerts/dismiss">
+              <input type="hidden" name="through" value="{{ view.alerts.through }}">
+              <button class="button button-quiet" type="submit">Dismiss alerts</button>
+            </form>
+            {%- endif %}
+          </div>
           {%- if view.alerts.rows %}
           <ol class="events">
             {%- for alert in view.alerts.rows %}
@@ -259,9 +273,27 @@
             </li>
             {%- endfor %}
           </ol>
-          {{ ui.more(view.alerts.total, view.alerts.limit, "alerts") }}
+          {{ ui.more(view.alerts.new_total, view.alerts.limit, "new alerts") }}
+          {%- elif view.alerts.dismissed_total %}
+          <p class="empty"><span class="count">0</span> new alerts since this process started.</p>
           {%- else %}
           <p class="empty"><span class="count">0</span> alerts since this process started.</p>
+          {%- endif %}
+          {%- if view.alerts.dismissed_rows %}
+          <h4 class="dismissed-label">Dismissed ({{ view.alerts.dismissed_total }})</h4>
+          <ol class="events events-dismissed">
+            {%- for alert in view.alerts.dismissed_rows %}
+            <li class="event">
+              <p class="event-head">{{ ui.pill(alert.severity) }} <span class="mono">{{ alert.condition }}</span></p>
+              <p>{{ alert.message }}</p>
+              <p class="event-meta">{{ ui.stamp(alert.created) }}</p>
+              <p class="event-meta">Dismissed {{ ui.stamp(alert.dismissed_at) }} by {{ alert.dismissed_by }}.
+                {%- for delivery in alert.deliveries %}{% if delivery.status.word == "failed" %} Delivery to {{ delivery.destination }} failed.{% endif %}{% endfor %}
+              </p>
+            </li>
+            {%- endfor %}
+          </ol>
+          {{ ui.more(view.alerts.dismissed_total, view.alerts.limit, "dismissed alerts") }}
           {%- endif %}
         </div>
         <div class="panel">

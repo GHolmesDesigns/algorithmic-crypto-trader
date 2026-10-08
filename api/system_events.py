@@ -21,6 +21,8 @@ HEARTBEAT_EVENT = "heartbeat"
 RESTART_EVENT = "restart"
 DISCONNECT_EVENT = "disconnect"
 GAP_FILL_EVENT = "gap_fill"
+# An administrator marked the alerts held so far as read. The payload is counts and times only.
+ALERTS_DISMISSED_EVENT = "alerts_dismissed"
 
 # Bounded heartbeat cadence for the digest's uptime gap check: not every tick.
 HEARTBEAT_INTERVAL_SECONDS = 3600.0

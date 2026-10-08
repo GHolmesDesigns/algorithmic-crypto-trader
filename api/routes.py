@@ -6,6 +6,8 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
+import logging
 import os
 import secrets
 import time
@@ -35,6 +37,7 @@ from api.controls import (
 from api.dashboard import Status, build_dashboard, build_rearm_review
 from api.operator import OperatorState
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
 _SESSION_COOKIE = "operator_session"
@@ -224,6 +227,61 @@ async def rearm(request: Request) -> Response:
         previous=previous.value,
     )
     return _result_response(request, result)
+
+
+@router.post("/operator/alerts/dismiss")
+async def dismiss_alerts(request: Request) -> Response:
+    """Mark the alerts the administrator has read as dismissed. Nothing is deleted.
+
+    Administrator only. The request carries ``through``: the alert count the page showed, so an
+    alert that arrived afterwards stays new. Answers 422 when it is missing or not a count, and
+    503, with every alert still new, when the dismissal cannot be saved to ``system_events``.
+    Dismissing nothing new answers 0 and saves nothing. Never touches the kill switch, the
+    errors, or what was sent to the alert destinations.
+    """
+
+    role = _authorize(request, required_role="admin")
+    through = _parse_dismiss_through(await request.body(), request.headers.get("content-type", ""))
+    if through is None:
+        raise HTTPException(
+            status_code=422, detail="through must be the number of alerts the page showed"
+        )
+    journal = getattr(request.app.state, "system_events", None)
+    if journal is None:
+        raise HTTPException(
+            status_code=503, detail="alerts were not dismissed: the event journal is unavailable"
+        )
+    try:
+        dismissed = _operator_state(request).dismiss_alerts(
+            through=through, actor=role, journal=journal
+        )
+    except Exception:
+        # The journal raised before any alert changed. Name the failure, never the payload.
+        logger.exception("alert dismissal could not be recorded")
+        raise HTTPException(
+            status_code=503, detail="alerts were not dismissed: the event could not be saved"
+        ) from None
+    if _wants_html(request):
+        return RedirectResponse("/operator#alerts", status_code=303)
+    return JSONResponse({"dismissed": dismissed})
+
+
+def _parse_dismiss_through(body: bytes, content_type: str) -> int | None:
+    if content_type.split(";", 1)[0].strip().lower() == "application/json":
+        try:
+            payload = json.loads(body or b"{}")
+        except ValueError:
+            return None
+        raw = payload.get("through") if isinstance(payload, dict) else None
+        if isinstance(raw, bool):
+            return None
+        raw = str(raw) if isinstance(raw, int) else raw
+    else:
+        form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+        raw = form.get("through", [None])[0]
+    if not isinstance(raw, str) or not raw.isascii() or not raw.isdigit():
+        return None
+    return int(raw)
 
 
 _CLOSE_STATUS = {

@@ -460,7 +460,7 @@ The next UI should treat `GET /operator/state` as the primary merged read model.
 | `fills[]` | Fill table with side, quantity, price, fee, fee asset, and time. |
 | `signals[]` | Signal table with strategy version and correlation link. |
 | `strategies[]` | Heartbeat status, version, detail, last seen, and staleness. |
-| `alerts[]` | Severity timeline with delivery outcomes. |
+| `alerts[]` | Severity timeline with delivery outcomes. A dismissed alert also carries `dismissed_at` and `dismissed_by`; the Alerts tile counts only alerts without them, and an administrator's **Dismiss alerts** button posts `/operator/alerts/dismiss` (issue #141). |
 | `errors[]` | Redacted error timeline. |
 | `alert_destinations[]` | Configured/not-configured indicators only. |
 | `updated_at` | Page snapshot time and age. |
