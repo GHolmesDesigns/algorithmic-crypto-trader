@@ -7,6 +7,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from brokers.http import ProviderHTTPError
 from brokers.simulated import SimulatedBroker
 from core.logging import short_reference
 from core.models import (
@@ -80,6 +81,103 @@ async def test_execution_refuses_foreign_or_unapproved_decisions() -> None:
         await ExecutionEngine(broker).submit(request, approve(request, approved=False))
     order = await submit_approved_order(broker, request, approve(request))
     assert order.filled_quantity == request.quantity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("lookup timed out"),
+        ProviderHTTPError(503, "unavailable"),
+        PermissionError("credentials rejected"),
+    ],
+)
+async def test_new_order_is_audited_closed_when_pre_submit_lookup_fails(failure) -> None:
+    broker = SimulatedBroker()
+    submit_calls = 0
+
+    async def fail_lookup(_client_order_id):
+        raise failure
+
+    async def count_submit(_request, _approval):
+        nonlocal submit_calls
+        submit_calls += 1
+        raise AssertionError("submit_order must not run after the lookup failed")
+
+    broker.get_order = fail_lookup
+    broker.submit_order = count_submit
+    request = order_request()
+    store = InMemoryOrderStore()
+    alerts = []
+
+    async def alert(order, error):
+        alerts.append((order, error))
+
+    engine = ExecutionEngine(broker, store, on_order_closed=alert)
+    with pytest.raises(type(failure)):
+        await engine.submit(request, approve(request))
+
+    saved = store.get(str(request.client_order_id))
+    assert saved is not None and saved.status is OrderStatus.CANCELED
+    assert store.pending() == ()
+    assert submit_calls == 0
+    assert len(store.closures) == 1
+    event_type, payload = store.closures[0]
+    assert event_type == "order_closed_never_received"
+    assert payload["actor"] == "system"
+    assert "pre-submit" in payload["reason"].lower()
+    assert payload["outcome"] == "never received by the venue"
+    assert payload["signal_id"] == str(request.signal_id)
+    assert payload["strategy_version"] == request.strategy_version
+    assert len(alerts) == 1 and alerts[0][1] is failure
+
+
+@pytest.mark.asyncio
+async def test_lookup_failure_does_not_close_an_order_that_preexisted_this_call() -> None:
+    broker = SimulatedBroker()
+    request = order_request()
+    approval = approve(request)
+    store = InMemoryOrderStore()
+    original = store.reserve(request, approval)
+
+    async def fail_lookup(_client_order_id):
+        raise TimeoutError("lookup timed out")
+
+    broker.get_order = fail_lookup
+    with pytest.raises(TimeoutError):
+        await ExecutionEngine(broker, store).submit(request, approval)
+
+    assert store.get(str(request.client_order_id)) == original
+    assert store.pending() == (original,)
+    assert store.closures == []
+
+
+@pytest.mark.asyncio
+async def test_failed_audit_close_preserves_the_new_pending_order_and_skips_alert() -> None:
+    class UnclosableStore(InMemoryOrderStore):
+        def close_unreceived(self, client_order_id, *, event_type, payload, at):
+            raise PersistenceUnavailable("audit journal unavailable")
+
+    broker = SimulatedBroker()
+
+    async def fail_lookup(_client_order_id):
+        raise TimeoutError("lookup timed out")
+
+    broker.get_order = fail_lookup
+    request = order_request()
+    store = UnclosableStore()
+    alerts = []
+
+    async def alert(order, error):
+        alerts.append((order, error))
+
+    with pytest.raises(PersistenceUnavailable):
+        await ExecutionEngine(broker, store, on_order_closed=alert).submit(
+            request, approve(request)
+        )
+
+    assert store.pending() and store.pending()[0].status is OrderStatus.PENDING_SUBMIT
+    assert store.closures == [] and alerts == []
 
 
 def test_in_memory_stores_fail_closed_and_refuse_a_rebound_client_order_id() -> None:

@@ -23,6 +23,11 @@ class SqlAlchemyOrderStore(OrderStore):
         self.session_factory = session_factory
 
     def reserve(self, request: OrderRequest, approval: RiskApproval) -> Order:
+        return self.reserve_with_created(request, approval)[0]
+
+    def reserve_with_created(
+        self, request: OrderRequest, approval: RiskApproval
+    ) -> tuple[Order, bool]:
         try:
             with self.session_factory() as session:
                 record = (
@@ -48,7 +53,8 @@ class SqlAlchemyOrderStore(OrderStore):
                     )
                     session.add(record)
                     session.commit()
-                return self._to_order(record)
+                    return self._to_order(record), True
+                return self._to_order(record), False
         except SQLAlchemyError as exc:
             raise PersistenceUnavailable("database unavailable before order submission") from exc
 

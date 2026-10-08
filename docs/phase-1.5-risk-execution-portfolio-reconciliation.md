@@ -84,6 +84,26 @@ complete fill quantities and an adapter-level 404. Sandbox timing cannot be forc
 provider behavior remains unverified until a later natural lag event shows the
 pending log line followed by a clean reconciliation.
 
+## Failed pre-submit lookup on a new order
+
+The execution engine saves each approved order before looking it up by
+`client_order_id`. If that lookup fails during the same call that created the
+saved row, the engine knows it has not called `submit_order`; the order was
+never sent. It closes the row as `canceled` and writes the same
+`order_closed_never_received` event used by the administrator close, with actor
+`system`, the lookup failure as the reason, and the signal, strategy version,
+and risk-decision links preserved. The operator receives one warning alert
+through the configured destinations.
+
+That cycle still reports a broker error. The kill switch stays unchanged, and
+the next cycle creates a new signal and risk decision. The closed order cannot
+be resubmitted. A row that existed when this call began remains unresolved and
+follows recovery and the five-minute operator-review halt. If `submit_order`
+itself fails or times out, the order remains `unknown` for recovery because the
+venue may have received it. These paths have deterministic simulator coverage;
+provider timing and alert delivery remain unverified until an owner-run
+observation.
+
 ## Validation boundary
 
 The automated suite uses only `SimulatedBroker`, deterministic fixtures, and temporary local state. No provider credentials, exchange writes, or live trading are used. The delayed-fill fix has adapter-level fixture coverage, but its real Sandbox timing remains owner-run verification when a natural lag event occurs. Other adapter and end-to-end evidence remains in Phase 1.6 and the Phase 1 gate.

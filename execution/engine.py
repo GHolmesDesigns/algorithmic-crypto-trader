@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from brokers.http import provider_failure_fields
 from brokers.interface import BrokerInterface
 from core.logging import fill_reference, short_reference
-from core.models import Fill, Order, OrderRequest, OrderStatus, RiskApproval
+from core.models import Fill, Order, OrderRequest, OrderStatus, RiskApproval, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,10 @@ class PersistenceUnavailable(RuntimeError):
 class OrderStore(Protocol):
     def reserve(self, request: OrderRequest, approval: RiskApproval) -> Order: ...
 
+    def reserve_with_created(
+        self, request: OrderRequest, approval: RiskApproval
+    ) -> tuple[Order, bool]: ...
+
     def update(self, order: Order) -> None: ...
 
     def add_fills(self, fills: tuple[Fill, ...]) -> None: ...
@@ -34,6 +38,10 @@ class OrderStore(Protocol):
     def get(self, client_order_id: str) -> Order | None: ...
 
     def pending(self) -> tuple[Order, ...]: ...
+
+    def close_unreceived(
+        self, client_order_id: str, *, event_type: str, payload: Mapping[str, Any], at: datetime
+    ) -> bool: ...
 
 
 @dataclass
@@ -48,6 +56,11 @@ class InMemoryOrderStore:
     closures: list[tuple[str, Mapping[str, Any]]] = field(default_factory=list)
 
     def reserve(self, request: OrderRequest, approval: RiskApproval) -> Order:
+        return self.reserve_with_created(request, approval)[0]
+
+    def reserve_with_created(
+        self, request: OrderRequest, approval: RiskApproval
+    ) -> tuple[Order, bool]:
         if self.fail_writes:
             raise PersistenceUnavailable("order pre-submit persistence is unavailable")
         key = str(request.client_order_id)
@@ -55,12 +68,12 @@ class InMemoryOrderStore:
         if existing is not None:
             if existing.request != request:
                 raise ValueError("client_order_id is already bound to a different order request")
-            return existing
+            return existing, False
         assert request.client_order_id is not None
         order = Order(order_id=request.client_order_id, request=request)
         self.orders[key] = order
         self.approvals[key] = approval
-        return order
+        return order, True
 
     def update(self, order: Order) -> None:
         if self.fail_writes:
@@ -111,11 +124,13 @@ class ExecutionEngine:
         store: OrderStore | None = None,
         *,
         on_recorded: Callable[[Order, tuple[Fill, ...]], None] | None = None,
+        on_order_closed: Callable[[Order, Exception], Awaitable[None]] | None = None,
     ) -> None:
         self.broker = broker
         self.store = store or InMemoryOrderStore()
         # Observers such as the scheduled reconciler see each persisted order and its fills.
         self.on_recorded = on_recorded
+        self.on_order_closed = on_order_closed
         self._logged_fills: dict[str, None] = {}
 
     async def submit(self, request: OrderRequest, approval: RiskApproval) -> Order:
@@ -124,7 +139,7 @@ class ExecutionEngine:
         if not approval.approved:
             raise PermissionError("order is not approved by risk engine")
 
-        persisted = self.store.reserve(request, approval)
+        persisted, created = self.store.reserve_with_created(request, approval)
         reference = short_reference(request.client_order_id)
         _log_step(
             "saved",
@@ -141,6 +156,8 @@ class ExecutionEngine:
             existing = await self.broker.get_order(str(request.client_order_id))
         except Exception as exc:
             _log_step("lookup", reference, level=logging.WARNING, **_failure(exc))
+            if created:
+                await self._close_never_sent(persisted, exc)
             raise
         _log_step(
             "lookup",
@@ -172,6 +189,56 @@ class ExecutionEngine:
             filled_quantity=result.filled_quantity,
         )
         return await self._record(result)
+
+    async def _close_never_sent(self, order: Order, failure: Exception) -> None:
+        """Audit-close a row created by this call when its pre-submit lookup fails.
+
+        ``submit_order`` has not run, so this new row cannot represent an ambiguous venue write.
+        Existing rows are deliberately left unresolved for normal recovery and operator review.
+        """
+
+        from brokers.http import describe_provider_failure
+
+        from execution.audit import ORDER_CLOSED_EVENT, OrderClosureRecord
+
+        reason = f"Pre-submit order-status lookup failed: {describe_provider_failure(failure)}"
+        closed_at = utc_now()
+        record = OrderClosureRecord(
+            order=order,
+            previous_status=order.status,
+            actor="system",
+            reason=reason,
+            closed_at=closed_at,
+            broker_lookup=f"failed ({type(failure).__name__})",
+        )
+        close = getattr(self.store, "close_unreceived", None)
+        if close is None:
+            raise PersistenceUnavailable("order store cannot audit-close a never-submitted order")
+        if not close(
+            str(order.request.client_order_id),
+            event_type=ORDER_CLOSED_EVENT,
+            payload=record.to_payload(),
+            at=closed_at,
+        ):
+            raise PersistenceUnavailable("new pending order could not be audit-closed")
+        logger.warning(
+            "order closed as never sent ref=%s lookup_failure=%s",
+            short_reference(order.request.client_order_id),
+            type(failure).__name__,
+            extra={
+                "event": {
+                    "step": "close",
+                    "ref": short_reference(order.request.client_order_id),
+                    "result": "never_sent",
+                    "lookup_failure": type(failure).__name__,
+                }
+            },
+        )
+        if self.on_order_closed is not None:
+            try:
+                await self.on_order_closed(order, failure)
+            except Exception:
+                logger.exception("never-sent order alert could not be delivered")
 
     async def recover(self, client_order_id: str) -> Order | None:
         existing = await self.broker.get_order(client_order_id)

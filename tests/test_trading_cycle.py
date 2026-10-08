@@ -20,6 +20,7 @@ from core.models import (
     Position,
     Quote,
     RiskApproval,
+    Signal,
     utc_now,
 )
 from execution.audit import InMemoryAuditStore, OrderLineage, SqlAlchemyAuditStore
@@ -109,8 +110,53 @@ async def test_broker_failures_are_classified_and_block_new_entries() -> None:
     failed = await broken.on_market_state(STATE)
     assert failed.status is CycleStatus.BROKER_ERROR
     assert [order.status for order in store.pending()] == [OrderStatus.PENDING_SUBMIT]
+    assert store.closures == []
     # The venue never saw it, so the next loop cannot confirm it and takes no new entry.
     assert (await broken.on_market_state(STATE)).status is CycleStatus.UNRESOLVED
+
+
+@pytest.mark.asyncio
+async def test_new_order_lookup_failure_closes_without_halt_and_next_loop_uses_fresh_approval() -> (
+    None
+):
+    store = InMemoryOrderStore()
+    switch = KillSwitch()
+    broker = SimulatedBroker(quote(), fault_plan=FaultPlan(get_order=(SimulatedFault.UNAVAILABLE,)))
+
+    class FreshSignals:
+        def on_market_state(self, state):
+            return Signal(
+                symbol=state.symbol,
+                side=OrderSide.BUY,
+                quantity=Decimal("0.0001"),
+                strategy_version="fresh-v1",
+            )
+
+    trading = paper_cycle(
+        broker,
+        FreshSignals(),
+        store=store,
+        audit=InMemoryAuditStore(store),
+        kill_switch=switch,
+    )
+
+    failed = await trading.on_market_state(STATE)
+    assert failed.status is CycleStatus.BROKER_ERROR
+    assert failed.signal is not None and failed.decision is not None
+    assert failed.decision.approved
+    closed_client_order_id = store.closures[0][1]["client_order_id"]
+    assert switch.state is KillSwitchState.RUNNING
+    assert store.pending() == ()
+    assert len(store.closures) == 1
+
+    next_loop = await trading.on_market_state(STATE)
+    assert next_loop.status is CycleStatus.SUBMITTED
+    assert next_loop.signal is not None and next_loop.decision is not None
+    assert next_loop.signal.signal_id != failed.signal.signal_id
+    assert next_loop.decision.approval_id != failed.decision.approval_id
+    assert str(next_loop.order.request.client_order_id) != closed_client_order_id
+    assert switch.state is KillSwitchState.RUNNING
+    assert len(store.closures) == 1
 
 
 @pytest.mark.asyncio
