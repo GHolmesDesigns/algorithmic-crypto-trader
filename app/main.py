@@ -30,6 +30,7 @@ from api.system_events import (
 )
 from api.trends import SqlAlchemyTrends
 from api.watchlist_routes import router as watchlist_router
+from brokers.http import describe_provider_failure
 from core.guards import (
     StartupGuardError,
     StartupSettings,
@@ -37,7 +38,7 @@ from core.guards import (
     startup_banner,
 )
 from core.logging import configure_logging
-from core.models import TradingMode
+from core.models import Order, TradingMode
 from core.reconnect import ReconnectSettings
 from core.version import application_version
 from data.coinbase import CoinbaseRESTClient
@@ -372,7 +373,23 @@ def start_scheduled_reconciliation(
 
     equity_store = SqlAlchemyEquityStore(session_factory)
     sampler = EquitySampler(operator_state.broker, equity_store, equity_store)
-    execution = ExecutionEngine(operator_state.broker, order_store)
+    async def alert_never_sent_order(order: Order, failure: Exception) -> None:
+        reference = str(order.request.client_order_id)[:8]
+        await operator_state.emit_alert(
+            Alert(
+                condition="order_closed_never_received",
+                severity="warning",
+                message=(
+                    f"Order {reference} was closed as never sent because its pre-submit status "
+                    f"lookup failed ({describe_provider_failure(failure)}). It was not submitted "
+                    "or resubmitted; the kill switch is unchanged."
+                ),
+            )
+        )
+
+    execution = ExecutionEngine(
+        operator_state.broker, order_store, on_order_closed=alert_never_sent_order
+    )
     scheduler = ScheduledReconciler(
         Reconciler(
             operator_state.broker,

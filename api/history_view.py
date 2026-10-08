@@ -466,13 +466,18 @@ def _discrepancy_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
 
 
 def _closure_view(closure: Mapping[str, Any] | None, now: datetime) -> dict[str, Any] | None:
-    """An administrator's closure of a never-received order, as the order's page shows it."""
+    """A system or administrator closure of a never-received order."""
 
     if closure is None:
         return None
+    actor = str(closure.get("actor"))
     return {
-        "label": "Closed by an administrator: never received by the venue",
-        "actor": _ACTORS.get(str(closure.get("actor")), "Unknown"),
+        "label": (
+            "Closed by the system: never received by the venue"
+            if actor == "system"
+            else "Closed by an administrator: never received by the venue"
+        ),
+        "actor": _ACTORS.get(actor, "Unknown"),
         "reason": str(closure.get("reason") or "no reason recorded"),
         "closed": _stamp(closure.get("closed_at"), now),
         "was": str(closure.get("previous_status") or "not recorded"),

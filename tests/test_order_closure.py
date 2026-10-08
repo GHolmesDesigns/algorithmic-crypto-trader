@@ -384,6 +384,69 @@ async def test_a_closed_order_is_never_resubmitted_by_the_engine(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_new_order_lookup_failure_is_audited_as_system_close_and_visible_in_history(tmp_path):
+    venue = Venue(order_error=TimeoutError("status lookup timed out"))
+    application, factory = closing_app(tmp_path, venue)
+    signal = Signal(
+        symbol="BTC-USD", side=OrderSide.BUY, quantity=Decimal("0.0001"), strategy_version="ma-v1"
+    )
+    approval = RiskApproval(
+        signal_id=signal.signal_id,
+        approved=True,
+        reason="all gates passed",
+        correlation_id=signal.correlation_id,
+    )
+    audit = SqlAlchemyAuditStore(factory)
+    audit.record_signal(signal)
+    audit.record_risk_decision(approval)
+    request = OrderRequest(
+        signal_id=signal.signal_id,
+        strategy_version=signal.strategy_version,
+        symbol=signal.symbol,
+        side=signal.side,
+        order_type=OrderType.MARKET,
+        quantity=signal.quantity,
+        correlation_id=signal.correlation_id,
+    )
+    store = SqlAlchemyOrderStore(factory)
+    engine = ExecutionEngine(venue, store)
+    application.state.execution = engine
+
+    with pytest.raises(TimeoutError):
+        await engine.submit(request, approval)
+
+    order = store.get(str(request.client_order_id))
+    assert order is not None and order.status is OrderStatus.CANCELED
+    assert store.pending() == () and venue.writes == []
+    order_record = stored(factory, order)
+    assert (
+        order_record.signal_id,
+        order_record.strategy_version,
+        order_record.risk_approval_id,
+    ) == (
+        signal.signal_id,
+        signal.strategy_version,
+        approval.approval_id,
+    )
+    [event] = closure_events(factory)
+    assert event.payload["actor"] == "system"
+    assert "pre-submit" in event.payload["reason"].lower()
+    assert event.payload["outcome"] == NEVER_RECEIVED
+    assert event.created_at.replace(tzinfo=UTC).isoformat() == event.payload["closed_at"]
+
+    orders = await get_page(application, "/operator/history/orders")
+    mine = row_for(orders, order)
+    assert "Closed by the system: never received" in mine
+    assert "The system" in mine
+    assert "pre-submit" in mine.lower()
+    assert "TimeoutError" in mine
+    events = await get_page(
+        application, f"/operator/history/events?event_type={ORDER_CLOSED_EVENT}"
+    )
+    assert ORDER_CLOSED_EVENT in events and "The system" in events and NEVER_RECEIVED in events
+
+
+@pytest.mark.asyncio
 async def test_the_in_memory_store_closes_only_what_is_still_unresolved():
     store = InMemoryOrderStore()
     signal = Signal(
@@ -974,7 +1037,7 @@ async def test_history_shows_a_closed_order_and_its_audit_event_apart_from_a_bro
     orders = await get_page(application, "/operator/history/orders")
 
     mine = row_for(orders, closed)
-    assert "canceled" in mine and "closed by an administrator: never received" in mine
+    assert "canceled" in mine and "Closed by an administrator: never received" in mine
     assert CLOSED_LABEL in mine and "Administrator closed it" in mine
     assert "was pending_submit" in mine and REASON in mine
     assert "the venue answered: not found" in mine

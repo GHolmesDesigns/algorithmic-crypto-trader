@@ -577,12 +577,20 @@ If the broker has no record of the order, follow the next section.
 
 ### An order the venue never received
 
-An order can be saved as `pending_submit` and never sent: the process stopped
-before it submitted the order, or the venue's order-status lookup failed first
-(for example with a `500`), so the app did not send it. The trading loop halts
-on such an order after five minutes, startup recovery halts on it, and a re-arm
-would halt again because the order is still pending. An administrator ends it
-from the dashboard once the app has proven the venue has no record of it.
+An order can be saved as `pending_submit` and never sent if the process stops
+between saving it and submitting it. Such a saved order stays unresolved; the
+trading loop halts after five minutes, startup recovery halts on it, and a
+re-arm would halt again while it remains pending. An administrator can close
+it from the dashboard after the venue confirms it has no record and no fills.
+
+If the pre-submit status lookup fails during the same call that created a new
+order row, the app knows it has not called the venue's submit operation. It
+closes that row as never sent, records an audit event with actor `system`, and
+sends one warning alert through configured destinations. That loop reports a
+broker error, but does not halt or change the kill switch. The next loop makes
+a fresh signal and risk decision. A row that existed before the call, or any
+order whose submission may have reached the venue, stays unresolved for
+recovery and operator review.
 
 1. Sign in as an administrator. On the dashboard, **Orders waiting on the
    venue** (below **Re-arm**) lists every saved order that is `pending_submit`
