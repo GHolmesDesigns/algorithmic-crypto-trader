@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session, aliased
 
 from api.controls import REARM_CHECKLIST
 from api.system_events import (
+    ALERTS_DISMISSED_EVENT,
     DISCONNECT_EVENT,
     GAP_FILL_EVENT,
     HEARTBEAT_EVENT,
@@ -81,6 +82,7 @@ EVENT_TYPES = (
     HEARTBEAT_EVENT,
     RESTART_EVENT,
     ORDER_CLOSED_EVENT,
+    ALERTS_DISMISSED_EVENT,
 )
 KINDS = ("orders", "signals", "risk_decisions", "discrepancies", "events", "refusals")
 _PAGING = ("since", "until", "window", "limit", "before")

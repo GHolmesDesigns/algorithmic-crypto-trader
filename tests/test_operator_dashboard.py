@@ -829,3 +829,143 @@ async def test_dashboard_and_sign_in_pages_link_the_icon(monkeypatch):
     application = dashboard_app(monkeypatch)
     assert ICON_LINK in await page(application)
     assert ICON_LINK in await page(application, headers={}, path="/operator/login")
+
+
+# Dismissing alerts
+
+
+class MemoryJournal:
+    def __init__(self):
+        self.events = []
+
+    def record(self, event_type, payload, *, now=None):
+        self.events.append((event_type, dict(payload)))
+
+
+class BrokenJournal:
+    def record(self, event_type, payload, *, now=None):
+        raise RuntimeError("database is locked")
+
+
+async def alerts_app(monkeypatch, count=3, severity="warning", **kw):
+    application = dashboard_app(monkeypatch, broker=HealthyBroker(), **kw)
+    for index in range(count):
+        await application.state.operator_state.emit_alert(
+            Alert(condition=f"feed_lost_{index}", severity=severity, message=f"feed lost {index}")
+        )
+    return application
+
+
+@pytest.mark.asyncio
+async def test_administrator_sees_dismiss_on_the_tile_and_the_panel(monkeypatch):
+    application = await alerts_app(monkeypatch)
+    html = await page(application, ADMIN)
+    assert html.count('action="/operator/alerts/dismiss"') == 2
+    assert 'action="/operator/alerts/dismiss"' in card(html, "Alerts")
+    assert 'action="/operator/alerts/dismiss"' in section(html, "alerts")
+    assert html.count('<input type="hidden" name="through" value="3">') == 2
+
+
+@pytest.mark.asyncio
+async def test_operator_and_an_empty_list_get_no_dismiss_button(monkeypatch):
+    application = await alerts_app(monkeypatch)
+    assert "/operator/alerts/dismiss" not in await page(application, OPERATOR)
+    empty = dashboard_app(monkeypatch, broker=HealthyBroker())
+    assert "/operator/alerts/dismiss" not in await page(empty, ADMIN)
+
+
+@pytest.mark.asyncio
+async def test_dismissed_alerts_leave_the_tile_neutral_and_stay_readable(monkeypatch):
+    application = await alerts_app(monkeypatch)
+    state = application.state.operator_state
+    assert has_pill(card(await page(application, ADMIN), "Alerts"), "3 warning", "warn")
+
+    assert state.dismiss_alerts(through=3, actor="admin", journal=MemoryJournal()) == 3
+    html = await page(application, ADMIN)
+    tile = card(html, "Alerts")
+    assert has_pill(tile, "0 new", "neutral")
+    assert "0 new alert(s); 3 dismissed, since this process started." in tile
+    assert "/operator/alerts/dismiss" not in html
+    alerts = section(html, "alerts")
+    assert '<span class="count">0</span> new alerts since this process started.' in alerts
+    assert "Dismissed (3)" in alerts
+    for index in range(3):
+        assert f"feed lost {index}" in alerts
+    assert alerts.count("by Administrator.") == 3
+
+
+@pytest.mark.asyncio
+async def test_an_alert_after_the_dismissal_is_new_again(monkeypatch):
+    application = await alerts_app(monkeypatch, count=2)
+    state = application.state.operator_state
+    state.dismiss_alerts(through=2, actor="admin", journal=MemoryJournal())
+    await state.emit_alert(Alert(condition="late", severity="critical", message="broker offline"))
+    html = await page(application, ADMIN)
+    tile = card(html, "Alerts")
+    assert has_pill(tile, "1 critical", "crit")
+    assert "1 new alert(s); 2 dismissed" in tile
+    assert 'name="through" value="3"' in html
+    alerts = section(html, "alerts")
+    assert (
+        alerts.index("broker offline") < alerts.index("Dismissed (2)") < alerts.index("feed lost 0")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dismissed_failed_delivery_stays_on_its_row_but_not_on_the_tile(monkeypatch):
+    router = AlertRouter(email=FailingSink())
+    application = await alerts_app(monkeypatch, count=1, alert_router=router)
+    assert "1 delivery attempt(s) failed." in card(await page(application, ADMIN), "Alerts")
+    application.state.operator_state.dismiss_alerts(
+        through=1, actor="admin", journal=MemoryJournal()
+    )
+    html = await page(application, ADMIN)
+    assert has_pill(card(html, "Alerts"), "0 new", "neutral")
+    assert "delivery attempt(s) failed" not in card(html, "Alerts")
+    assert "Delivery to Email failed." in section(html, "alerts")
+
+
+@pytest.mark.asyncio
+async def test_dismissal_keeps_the_alert_text_and_the_kill_switch(monkeypatch):
+    application = await alerts_app(monkeypatch, count=1, severity="critical")
+    state = application.state.operator_state
+    before = state.kill_switch.state
+    errors = state.snapshot.errors
+    state.dismiss_alerts(through=1, actor="admin", journal=MemoryJournal())
+    assert state.kill_switch.state == before
+    assert state.snapshot.errors == errors
+    assert state.snapshot.alerts[0]["message"] == "feed lost 0"
+
+
+@pytest.mark.asyncio
+async def test_dismissal_covers_only_the_alerts_the_page_showed(monkeypatch):
+    application = await alerts_app(monkeypatch, count=3)
+    state = application.state.operator_state
+    journal = MemoryJournal()
+    assert state.dismiss_alerts(through=2, actor="admin", journal=journal) == 2
+    assert [("dismissed_at" in alert) for alert in state.snapshot.alerts] == [True, True, False]
+    assert state.dismiss_alerts(through=99, actor="admin", journal=journal) == 1
+    assert state.dismiss_alerts(through=99, actor="admin", journal=journal) == 0
+    assert [event["count"] for _, event in journal.events] == [2, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_journal_failure_dismisses_nothing(monkeypatch):
+    application = await alerts_app(monkeypatch, count=2)
+    state = application.state.operator_state
+    with pytest.raises(RuntimeError):
+        state.dismiss_alerts(through=2, actor="admin", journal=BrokenJournal())
+    assert all("dismissed_at" not in alert for alert in state.snapshot.alerts)
+    assert has_pill(card(await page(application, ADMIN), "Alerts"), "2 warning", "warn")
+
+
+@pytest.mark.asyncio
+async def test_the_event_names_counts_and_times_but_no_alert_text(monkeypatch):
+    application = await alerts_app(monkeypatch, count=2)
+    journal = MemoryJournal()
+    application.state.operator_state.dismiss_alerts(through=2, actor="admin", journal=journal)
+    ((event_type, payload),) = journal.events
+    assert event_type == "alerts_dismissed"
+    assert set(payload) == {"actor", "count", "newest_alert_at"}
+    assert payload["actor"] == "admin" and payload["count"] == 2
+    assert "feed lost" not in repr(payload)

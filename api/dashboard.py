@@ -70,6 +70,7 @@ _ORDER = {
 _ALERT = {"critical": "crit", "warning": "warn"}
 _DELIVERY = {"sent": "ok", "failed": "crit"}
 _DESTINATIONS = (("phone_push", "Phone push"), ("email", "Email"))
+_ROLE_WORDS = {"admin": "Administrator", "operator": "Operator"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +137,7 @@ def build_dashboard(
     trading = snapshot.get("trading", {})
     mode = str(trading.get("mode", "unknown"))
     strategies = [_heartbeat(item, now) for item in snapshot.get("strategies", ())]
-    alerts = _alerts(snapshot, now)
+    alerts = _alerts(snapshot, now, is_admin=role == "admin")
     safety = _safety(snapshot, now)
     return {
         "header": {
@@ -609,7 +610,9 @@ def _newest(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: row["sort"], reverse=True)[:ROW_LIMIT]
 
 
-def _alerts(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+def _alerts(
+    snapshot: Mapping[str, Any], now: datetime, *, is_admin: bool = False
+) -> dict[str, Any]:
     configured = set(snapshot.get("alert_destinations", ()))
     rows: list[dict[str, Any]] = []
     for index, alert in enumerate(snapshot.get("alerts", ())):
@@ -620,6 +623,7 @@ def _alerts(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
             }
             for item in alert.get("deliveries", ())
         ]
+        dismissed = "dismissed_at" in alert
         rows.append(
             {
                 "severity": _status(alert.get("severity"), _ALERT, "neutral"),
@@ -629,12 +633,19 @@ def _alerts(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
                 "deliveries": deliveries,
                 "undelivered": "" if deliveries else _undelivered(configured),
                 "order": index,
+                "dismissed": dismissed,
+                "dismissed_at": _stamp(alert.get("dismissed_at"), now) if dismissed else None,
+                "dismissed_by": _ROLE_WORDS.get(str(alert.get("dismissed_by")), "Operator")
+                if dismissed
+                else "",
             }
         )
     total = len(rows)
-    critical = sum(1 for row in rows if row["severity"].tone == "crit")
-    warnings = sum(1 for row in rows if row["severity"].tone == "warn")
-    failed = sum(1 for row in rows for item in row["deliveries"] if item["status"].word == "failed")
+    new = [row for row in rows if not row["dismissed"]]
+    dismissed_rows = [row for row in rows if row["dismissed"]]
+    critical = sum(1 for row in new if row["severity"].tone == "crit")
+    warnings = sum(1 for row in new if row["severity"].tone == "warn")
+    failed = sum(1 for row in new for item in row["deliveries"] if item["status"].word == "failed")
     # A failed delivery means someone may not have been told, so it is never neutral.
     if critical:
         summary = Status(f"{critical} critical", "crit")
@@ -642,17 +653,30 @@ def _alerts(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         summary = Status(f"{warnings} warning", "warn")
     elif failed:
         summary = Status("delivery failed", "warn")
+    elif dismissed_rows and not new:
+        summary = Status("0 new", "neutral")
     else:
-        summary = Status(f"{total} recorded", "neutral")
-    notes = [f"{total} alert(s) since this process started."]
+        summary = Status(f"{len(new)} recorded", "neutral")
+    if dismissed_rows:
+        notes = [
+            f"{len(new)} new alert(s); {len(dismissed_rows)} dismissed, since this process started."
+        ]
+    else:
+        notes = [f"{total} alert(s) since this process started."]
     if failed:
         notes.append(f"{failed} delivery attempt(s) failed.")
     if not configured:
         notes.append("No destination is configured, so nobody is notified.")
     newest = _newest_events(rows)
     return {
-        "rows": newest[:ROW_LIMIT],
+        "rows": _newest_events(new)[:ROW_LIMIT],
+        "dismissed_rows": _newest_events(dismissed_rows)[:ROW_LIMIT],
         "total": total,
+        "new_total": len(new),
+        "dismissed_total": len(dismissed_rows),
+        # What the page showed, sent back so an alert that arrives later stays new.
+        "through": total,
+        "can_dismiss": is_admin and bool(new),
         "summary": summary,
         "summary_detail": " ".join(notes),
         "latest": newest[0]["created"] if newest and newest[0]["created"].iso else None,

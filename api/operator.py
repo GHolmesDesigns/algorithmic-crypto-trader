@@ -15,6 +15,7 @@ from core.version import application_version
 from risk.kill_switch import KillSwitch
 
 from api.alerts import Alert, AlertDelivery, AlertRouter
+from api.system_events import ALERTS_DISMISSED_EVENT, SystemEventJournal
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,39 @@ class OperatorState:
             updated_at=utc_now(),
         )
         return deliveries
+
+    def dismiss_alerts(self, *, through: int, actor: str, journal: SystemEventJournal) -> int:
+        """Mark the first ``through`` alerts read; return how many were newly dismissed.
+
+        ``through`` is the alert count the administrator's page showed, so an alert that arrived
+        after that page rendered stays new. Alerts are kept, never removed. The event is saved
+        first: if the journal raises, nothing is dismissed. No ``await`` sits between reading
+        the list and replacing it, so a concurrent ``emit_alert`` cannot be lost.
+        """
+
+        alerts = self.snapshot.alerts
+        covered = alerts[: max(through, 0)]
+        fresh = [alert for alert in covered if "dismissed_at" not in alert]
+        if not fresh:
+            return 0
+        now = utc_now()
+        journal.record(
+            ALERTS_DISMISSED_EVENT,
+            {
+                "actor": actor,
+                "count": len(fresh),
+                "newest_alert_at": max(str(alert.get("created_at", "")) for alert in fresh),
+            },
+            now=now,
+        )
+        marked = tuple(
+            {**alert, "dismissed_at": now.isoformat(), "dismissed_by": actor}
+            if index < len(covered) and "dismissed_at" not in alert
+            else alert
+            for index, alert in enumerate(alerts)
+        )
+        self.snapshot = replace(self.snapshot, alerts=marked, updated_at=now)
+        return len(fresh)
 
     def health(self) -> dict[str, Any]:
         return {

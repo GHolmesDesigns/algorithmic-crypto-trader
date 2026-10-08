@@ -7,9 +7,10 @@ from pathlib import Path
 
 import httpx
 import pytest
+from api.alerts import Alert
 from api.controls import REARM_CHECKLIST, REASON_LIMIT
 from api.dashboard import Status, build_rearm_review
-from app.main import create_app
+from app.main import attach_system_events, create_app
 from core.models import KillSwitchState
 from db.models import SystemEventRecord
 from risk.kill_switch import KillSwitch
@@ -575,3 +576,136 @@ def test_review_flags_pending_and_unknown_orders_and_a_missing_heartbeat():
     assert clear["attention"] == 3
     assert clear["transitions"] == []
     assert clear["safety"].last_change is None
+
+
+# Dismissing alerts
+
+
+async def dismissal_app(tmp_path, count=3):
+    application = journaled_app(tmp_path)
+    attach_system_events(application)
+    for index in range(count):
+        await application.state.operator_state.emit_alert(
+            Alert(condition=f"feed_lost_{index}", severity="warning", message=f"feed lost {index}")
+        )
+    return application
+
+
+def saved_dismissals(tmp_path: Path) -> list[dict]:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trader.db'}", future=True)
+    with Session(engine) as session:
+        rows = session.scalars(
+            select(SystemEventRecord).where(SystemEventRecord.event_type == "alerts_dismissed")
+        ).all()
+        payloads = [dict(row.payload) for row in rows]
+    engine.dispose()
+    return payloads
+
+
+async def alert_rows(client) -> list[dict]:
+    return (await client.get("/operator/state", headers=ADMIN)).json()["alerts"]
+
+
+@pytest.mark.asyncio
+async def test_dismiss_marks_the_alerts_read_and_saves_one_event(tokens, tmp_path):
+    async with client_for(await dismissal_app(tmp_path)) as client:
+        before = await alert_rows(client)
+        response = await client.post("/operator/alerts/dismiss", headers=ADMIN, json={"through": 3})
+        assert response.status_code == 200
+        assert response.json() == {"dismissed": 3}
+        rows = await alert_rows(client)
+    assert [row["message"] for row in rows] == [row["message"] for row in before]
+    assert [row["deliveries"] for row in rows] == [row["deliveries"] for row in before]
+    assert all(row["dismissed_by"] == "admin" and row["dismissed_at"] for row in rows)
+    (event,) = saved_dismissals(tmp_path)
+    assert set(event) == {"actor", "count", "newest_alert_at"}
+    assert event["actor"] == "admin" and event["count"] == 3
+    assert "feed lost" not in repr(event) and ADMIN_TOKEN not in repr(event)
+
+
+@pytest.mark.asyncio
+async def test_dismiss_leaves_a_later_alert_new_and_a_repeat_does_nothing(tokens, tmp_path):
+    application = await dismissal_app(tmp_path, count=2)
+    async with client_for(application) as client:
+        first = await client.post("/operator/alerts/dismiss", headers=ADMIN, json={"through": 1})
+        assert first.json() == {"dismissed": 1}
+        rows = await alert_rows(client)
+        assert ["dismissed_at" in row for row in rows] == [True, False]
+        again = await client.post("/operator/alerts/dismiss", headers=ADMIN, json={"through": 1})
+        assert again.json() == {"dismissed": 0}
+        assert len(saved_dismissals(tmp_path)) == 1
+        both = await client.post("/operator/alerts/dismiss", headers=ADMIN, json={"through": 2})
+        assert both.json() == {"dismissed": 1}
+    assert [event["count"] for event in saved_dismissals(tmp_path)] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_form_post_returns_to_the_alerts_section(tokens, tmp_path):
+    async with client_for(await dismissal_app(tmp_path)) as client:
+        await sign_in(client, ADMIN_TOKEN)
+        response = await client.post(
+            "/operator/alerts/dismiss",
+            headers=BROWSER,
+            data={"through": "3"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/operator#alerts"
+        page = (await client.get("/operator", headers=BROWSER)).text
+    assert "0 new alert(s); 3 dismissed" in page
+    assert "/operator/alerts/dismiss" not in page
+
+
+@pytest.mark.asyncio
+async def test_only_an_administrator_can_dismiss(tokens, tmp_path):
+    async with client_for(await dismissal_app(tmp_path)) as client:
+        body = {"through": 3}
+        assert (await client.post("/operator/alerts/dismiss", json=body)).status_code == 401
+        refused = await client.post("/operator/alerts/dismiss", headers=OPERATOR, json=body)
+        assert refused.status_code == 403
+        assert all("dismissed_at" not in row for row in await alert_rows(client))
+    assert saved_dismissals(tmp_path) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{}, {"through": "abc"}, {"through": -1}, {"through": True}])
+async def test_dismiss_refuses_a_request_without_a_count(tokens, tmp_path, body):
+    async with client_for(await dismissal_app(tmp_path)) as client:
+        response = await client.post("/operator/alerts/dismiss", headers=ADMIN, json=body)
+        assert response.status_code == 422
+        assert all("dismissed_at" not in row for row in await alert_rows(client))
+    assert saved_dismissals(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_dismiss_fails_closed_when_the_event_cannot_be_saved(tokens, tmp_path):
+    application = await dismissal_app(tmp_path)
+
+    class Broken:
+        def record(self, event_type, payload, *, now=None):
+            raise RuntimeError("database is locked")
+
+    application.state.system_events = Broken()
+    async with client_for(application) as client:
+        response = await client.post("/operator/alerts/dismiss", headers=ADMIN, json={"through": 3})
+        assert response.status_code == 503
+        assert "database is locked" not in response.text
+        assert all("dismissed_at" not in row for row in await alert_rows(client))
+        del application.state.system_events
+        response = await client.post("/operator/alerts/dismiss", headers=ADMIN, json={"through": 3})
+        assert response.status_code == 503
+        assert all("dismissed_at" not in row for row in await alert_rows(client))
+
+
+@pytest.mark.asyncio
+async def test_dismiss_leaves_the_kill_switch_and_errors_alone(tokens, tmp_path):
+    async with client_for(await dismissal_app(tmp_path)) as client:
+        await client.post("/operator/pause", headers=OPERATOR)
+        before = (await client.get("/operator/state", headers=ADMIN)).json()
+        await client.post("/operator/alerts/dismiss", headers=ADMIN, json={"through": 3})
+        after = (await client.get("/operator/state", headers=ADMIN)).json()
+        assert (await client.get("/operator/kill-switch", headers=ADMIN)).json() == {
+            "state": "paused"
+        }
+    assert after["errors"] == before["errors"]
+    assert after["alert_destinations"] == before["alert_destinations"]
