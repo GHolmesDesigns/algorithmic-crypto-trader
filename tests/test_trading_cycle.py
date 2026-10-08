@@ -116,13 +116,12 @@ async def test_broker_failures_are_classified_and_block_new_entries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_new_order_lookup_failure_closes_without_halt_and_next_loop_uses_fresh_approval(
-) -> None:
+async def test_new_order_lookup_failure_closes_without_halt_and_next_loop_uses_fresh_approval() -> (
+    None
+):
     store = InMemoryOrderStore()
     switch = KillSwitch()
-    broker = SimulatedBroker(
-        quote(), fault_plan=FaultPlan(get_order=(SimulatedFault.UNAVAILABLE,))
-    )
+    broker = SimulatedBroker(quote(), fault_plan=FaultPlan(get_order=(SimulatedFault.UNAVAILABLE,)))
 
     class FreshSignals:
         def on_market_state(self, state):

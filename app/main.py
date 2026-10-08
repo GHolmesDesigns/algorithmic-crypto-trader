@@ -373,6 +373,7 @@ def start_scheduled_reconciliation(
 
     equity_store = SqlAlchemyEquityStore(session_factory)
     sampler = EquitySampler(operator_state.broker, equity_store, equity_store)
+
     async def alert_never_sent_order(order: Order, failure: Exception) -> None:
         reference = str(order.request.client_order_id)[:8]
         await operator_state.emit_alert(

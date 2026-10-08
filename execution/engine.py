@@ -198,6 +198,7 @@ class ExecutionEngine:
         """
 
         from brokers.http import describe_provider_failure
+
         from execution.audit import ORDER_CLOSED_EVENT, OrderClosureRecord
 
         reason = f"Pre-submit order-status lookup failed: {describe_provider_failure(failure)}"
