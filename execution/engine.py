@@ -224,6 +224,14 @@ class ExecutionEngine:
             "order closed as never sent ref=%s lookup_failure=%s",
             short_reference(order.request.client_order_id),
             type(failure).__name__,
+            extra={
+                "event": {
+                    "step": "close",
+                    "ref": short_reference(order.request.client_order_id),
+                    "result": "never_sent",
+                    "lookup_failure": type(failure).__name__,
+                }
+            },
         )
         if self.on_order_closed is not None:
             try:

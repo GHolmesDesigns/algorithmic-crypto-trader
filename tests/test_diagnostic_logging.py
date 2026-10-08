@@ -360,7 +360,7 @@ async def test_the_http_client_attaches_the_path_and_reason_but_not_the_body() -
 
 
 @pytest.mark.asyncio
-async def test_the_presubmit_lookup_that_halted_the_app_now_logs_its_status_path_and_reason(
+async def test_the_presubmit_lookup_that_closes_a_new_order_logs_its_status_path_and_reason(
     caplog,
 ) -> None:
     caplog.set_level(logging.INFO)
@@ -397,10 +397,13 @@ async def test_the_presubmit_lookup_that_halted_the_app_now_logs_its_status_path
         CycleStatus.BROKER_ERROR,
         "broker failure: ProviderHTTPError",
     )
-    # No body, header, or credential, and the order is still saved but never sent.
+    # No body, header, or credential; the app closes the new row before any submit call.
     for secret in ("LEAKED", "sandbox-key", "sandbox-secret", "X-GEMINI", "internal"):
         assert secret not in caplog.text
-    assert store.get(str(order_request.client_order_id)).status is OrderStatus.PENDING_SUBMIT
+    assert store.get(str(order_request.client_order_id)).status is OrderStatus.CANCELED
+    assert store.pending() == ()
+    assert store.closures[0][0] == "order_closed_never_received"
+    assert store.closures[0][1]["actor"] == "system"
 
 
 @pytest.mark.asyncio
