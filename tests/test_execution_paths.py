@@ -180,6 +180,74 @@ async def test_failed_audit_close_preserves_the_new_pending_order_and_skips_aler
     assert store.closures == [] and alerts == []
 
 
+@pytest.mark.asyncio
+async def test_each_never_sent_close_is_counted_and_a_working_lookup_resets_the_count() -> None:
+    broker = SimulatedBroker()
+    failing = True
+
+    async def lookup(_client_order_id):
+        if failing:
+            raise TimeoutError("lookup timed out")
+        return None
+
+    broker.get_order = lookup
+    store = InMemoryOrderStore()
+    engine = ExecutionEngine(broker, store)
+
+    for expected in (1, 2):
+        request = order_request()
+        with pytest.raises(TimeoutError):
+            await engine.submit(request, approve(request))
+        assert engine.consecutive_never_sent == expected
+
+    failing = False
+    request = order_request()
+    await engine.submit(request, approve(request))  # the venue has no record, so it submits
+    assert engine.consecutive_never_sent == 0
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_failure_on_an_existing_order_leaves_the_count_alone() -> None:
+    broker = SimulatedBroker()
+    request = order_request()
+    approval = approve(request)
+    store = InMemoryOrderStore()
+    store.reserve(request, approval)
+
+    async def fail_lookup(_client_order_id):
+        raise TimeoutError("lookup timed out")
+
+    broker.get_order = fail_lookup
+    engine = ExecutionEngine(broker, store)
+    engine.consecutive_never_sent = 1
+
+    with pytest.raises(TimeoutError):
+        await engine.submit(request, approval)
+
+    assert engine.consecutive_never_sent == 1 and store.closures == []
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_finds_the_order_already_resolved_says_so_and_is_not_counted() -> None:
+    class ResolvedElsewhere(InMemoryOrderStore):
+        def close_unreceived(self, client_order_id, *, event_type, payload, at):
+            return False
+
+    broker = SimulatedBroker()
+
+    async def fail_lookup(_client_order_id):
+        raise TimeoutError("lookup timed out")
+
+    broker.get_order = fail_lookup
+    request = order_request()
+    engine = ExecutionEngine(broker, ResolvedElsewhere())
+
+    with pytest.raises(PersistenceUnavailable, match="already resolved elsewhere"):
+        await engine.submit(request, approve(request))
+
+    assert engine.consecutive_never_sent == 0
+
+
 def test_in_memory_stores_fail_closed_and_refuse_a_rebound_client_order_id() -> None:
     store = InMemoryOrderStore()
     request = order_request()

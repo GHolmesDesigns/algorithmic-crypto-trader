@@ -66,6 +66,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PENDING_TIMEOUT = timedelta(minutes=5)
 
+# Orders closed as never sent in a row, because the venue's status lookup kept failing, before
+# the loop halts for operator review. One failure closes its order and carries on (#143).
+NEVER_SENT_HALT_THRESHOLD = 3
+
 HaltHook = Callable[[str], Awaitable[None]]
 
 
@@ -207,6 +211,17 @@ class TradingCycle:
                 decision=decision,
             )
         except Exception as exc:
+            closed_in_a_row = self.execution.consecutive_never_sent
+            if closed_in_a_row >= NEVER_SENT_HALT_THRESHOLD:
+                # Counting starts over after the halt, so a re-arm gets a fresh allowance.
+                self.execution.consecutive_never_sent = 0
+                return await self._halt(
+                    f"{closed_in_a_row} orders in a row were closed as never sent because the "
+                    f"order-status lookup kept failing (last failure: {type(exc).__name__}); "
+                    "operator review required",
+                    signal=signal,
+                    decision=decision,
+                )
             return self._broker_failure(exc, signal, decision)
         return CycleOutcome(CycleStatus.SUBMITTED, "order submitted", signal, decision, order)
 

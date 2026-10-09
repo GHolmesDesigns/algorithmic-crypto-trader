@@ -104,6 +104,22 @@ venue may have received it. These paths have deterministic simulator coverage;
 provider timing and alert delivery remain unverified until an owner-run
 observation.
 
+### Repeated lookup failures halt trading (#145)
+
+Closing a never-sent order stops one slow lookup from halting trading, but it
+would also let a status endpoint that stays down close an order on every signal
+without end. The execution engine therefore counts never-sent closes in a row,
+and a lookup that works, whether it finds the order or not, resets the count.
+When the third close in a row happens, the trading loop halts through the
+normal halt path, naming the count and the last failure type in the reason, and
+sends the usual halt alert. All three orders are already closed, so nothing is
+left pending; the operator re-arms after checking the venue. The count starts
+over after the halt, so a re-arm gets a fresh allowance. A lookup failure on a
+row that already existed, and a failure after `submit_order` starts, change
+nothing in the count. The threshold is the constant
+`NEVER_SENT_HALT_THRESHOLD` (3) in `app/trading.py`; it is not an environment
+setting.
+
 ## Validation boundary
 
 The automated suite uses only `SimulatedBroker`, deterministic fixtures, and temporary local state. No provider credentials, exchange writes, or live trading are used. The delayed-fill fix has adapter-level fixture coverage, but its real Sandbox timing remains owner-run verification when a natural lag event occurs. Other adapter and end-to-end evidence remains in Phase 1.6 and the Phase 1 gate.

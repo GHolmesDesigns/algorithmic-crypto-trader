@@ -592,6 +592,12 @@ a fresh signal and risk decision. A row that existed before the call, or any
 order whose submission may have reached the venue, stays unresolved for
 recovery and operator review.
 
+If the lookup keeps failing, the app does not keep closing orders forever. The
+third order in a row closed this way halts trading, and the halt alert names
+the count and the failure. Every one of those orders is already closed, so
+nothing needs closing: check that the venue is reachable, then re-arm. A lookup
+that works in between starts the count over.
+
 1. Sign in as an administrator. On the dashboard, **Orders waiting on the
    venue** (below **Re-arm**) lists every saved order that is `pending_submit`
    or `unknown`, with its client order ID. Operators do not see it.
