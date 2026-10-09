@@ -53,6 +53,52 @@ and recovery states; Coinbase must perform read-only production reconciliation
 with a view-only credential. No automated test places an order or contacts a
 production exchange.
 
+## Coinbase order search (#152)
+
+Coinbase documents no lookup of an order by `client_order_id`, so the adapter
+lists orders (`GET /orders/historical/batch`) and matches on `client_order_id`.
+That search used to read up to ten pages of 250 orders, newest first, for every
+new order, and reported "no such order" when the ten pages ran out with history
+still unread.
+
+**What Coinbase documents** (read on 2026-10-09 from the
+[List Orders](https://docs.cdp.coinbase.com/api-reference/advanced-trade-api/rest-api/orders/list-orders)
+and
+[Create Order](https://docs.cdp.coinbase.com/api-reference/advanced-trade-api/rest-api/orders/create-order)
+reference pages; no live call was made):
+
+- `start_date` and `end_date` are RFC 3339 timestamps on an order's creation
+  time: "The start date to fetch orders from (inclusive)" and "The end date to
+  fetch orders from (exclusive)". Each response has `has_next` and a `cursor`.
+- Create Order says that if a `client_order_id` "is not unique, the order will
+  not be created" and the order with that ID "will be returned instead".
+
+**What the pages do not say**, so the code does not rely on it: whether the date
+filters apply to open orders, a maximum `limit` or a default page size, a
+maximum number of orders or date range, the sort direction, how long or in what
+scope a client order ID is remembered, the HTTP status of a duplicate, and what
+`DUPLICATE_CLIENT_ORDER_ID` means.
+
+**What the adapter does now**
+
+- `ExecutionEngine` registers its order store with an adapter that offers
+  `use_saved_orders`, so the search can read an order's saved creation time and
+  product. A new order's pre-submit search starts five minutes before its
+  creation time (a margin for clock difference) and names its product: one
+  request. After a restart the search starts at the order's real saved creation
+  time. An order with no saved record, or a store that cannot be read, gets the
+  full listing, never a narrower one.
+- The search returns "no such order" only when the listing reached its end. If
+  the ten-page budget runs out, or Coinbase reports more pages without a
+  cursor, it raises `ProviderHTTPError` 502 and nothing is submitted. The
+  engine then closes a new order as never sent (#143), so an unreadable search
+  does not halt trading by itself.
+- Duplicate protection at Coinbase is documented but its scope and retention are
+  not, so the adapter does not depend on it to make a late submission safe.
+
+Live behavior of the time filter is unverified until an owner-run read-only
+List Orders request is recorded here.
+
 ## Phase 1 gate corrections
 
 The [Phase 1 gate](phase-1-gate-acceptance.md) checked both adapters against

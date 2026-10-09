@@ -128,6 +128,11 @@ class ExecutionEngine:
     ) -> None:
         self.broker = broker
         self.store = store or InMemoryOrderStore()
+        # An adapter that must search for an order (Coinbase has no lookup by client order ID)
+        # can bound the search by the order's saved creation time and product (#152).
+        use_saved_orders = getattr(broker, "use_saved_orders", None)
+        if callable(use_saved_orders):
+            use_saved_orders(self.store.get)
         # Observers such as the scheduled reconciler see each persisted order and its fills.
         self.on_recorded = on_recorded
         self.on_order_closed = on_order_closed

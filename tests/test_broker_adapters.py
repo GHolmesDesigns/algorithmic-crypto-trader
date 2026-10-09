@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -10,8 +11,9 @@ import pytest
 from brokers.coinbase import CoinbaseBroker
 from brokers.gemini import GeminiBroker
 from brokers.http import AmbiguousSubmissionError, ProviderHTTPError
-from core.models import OrderRequest, OrderSide, OrderStatus, OrderType, RiskApproval
+from core.models import Order, OrderRequest, OrderSide, OrderStatus, OrderType, RiskApproval
 from core.resilience import TokenBucketRateLimiter
+from execution.engine import ExecutionEngine, InMemoryOrderStore
 
 from tests.contracts.broker_contract import assert_shared_broker_contract
 
@@ -328,3 +330,258 @@ async def test_coinbase_timeout_is_unknown_and_second_submission_queries_before_
         assert sum(path.endswith("/orders") for path in calls) == 1
     finally:
         await broker.close()
+
+
+# --- #152: the Coinbase order search is bounded by time and fails closed --------------------------
+
+SAVED_AT = datetime(2026, 10, 9, 14, 0, 0, tzinfo=UTC)
+
+
+class SearchVenue:
+    """A List Orders endpoint that serves scripted pages and records every request."""
+
+    def __init__(self, pages=None, *, forever: bool = False, orders_for=None) -> None:
+        self.pages = list(pages or [])
+        self.forever = forever
+        self.searches: list[dict[str, str]] = []
+        self.posts = 0
+        self.orders_for = orders_for
+
+    async def __call__(self, request_: httpx.Request) -> httpx.Response:
+        if request_.method == "POST":
+            self.posts += 1
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "success_response": {
+                        "order_id": "44444444-4444-4444-8444-444444444444",
+                        "client_order_id": self.orders_for,
+                        "product_id": "BTC-USD",
+                    },
+                },
+                request=request_,
+            )
+        if request_.url.path.endswith("/orders/historical/batch"):
+            self.searches.append(dict(request_.url.params))
+            if self.forever:
+                page = {"orders": [], "has_next": True, "cursor": f"c{len(self.searches)}"}
+            else:
+                page = self.pages.pop(0) if self.pages else {"orders": [], "has_next": False}
+            return httpx.Response(200, json=page, request=request_)
+        return httpx.Response(
+            200,
+            json={"order": {"order_id": "44444444-4444-4444-8444-444444444444", "status": "OPEN"}},
+            request=request_,
+        )
+
+
+def search_broker(venue: SearchVenue) -> CoinbaseBroker:
+    return CoinbaseBroker(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(venue)),
+        auth_token="test-token",
+        rate_limiter=limiter(),
+    )
+
+
+def saved(order_request: OrderRequest, created_at: datetime = SAVED_AT):
+    stored = Order(
+        order_id=order_request.client_order_id, request=order_request, created_at=created_at
+    )
+    return lambda client_order_id: (
+        stored if client_order_id == str(order_request.client_order_id) else None
+    )
+
+
+def listed(order_request: OrderRequest, *, has_next: bool = False, cursor: str = "") -> dict:
+    return {
+        "orders": [
+            {
+                "order_id": "22222222-2222-4222-8222-222222222222",
+                "client_order_id": str(order_request.client_order_id),
+                "product_id": "BTC-USD",
+                "status": "OPEN",
+                "filled_size": "0",
+            }
+        ],
+        "has_next": has_next,
+        "cursor": cursor,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_new_orders_lookup_is_one_bounded_request() -> None:
+    order_request = request()
+    venue = SearchVenue()  # the venue knows no such order
+    broker = search_broker(venue)
+    broker.use_saved_orders(saved(order_request, datetime.now(UTC)))
+    try:
+        assert await broker.get_order(str(order_request.client_order_id)) is None
+    finally:
+        await broker.close()
+
+    [search] = venue.searches
+    assert search["product_ids"] == "BTC-USD"
+    # Starts five minutes before the order was saved, as an RFC 3339 time with no fraction.
+    assert search["start_date"].endswith("Z") and "." not in search["start_date"]
+    start = datetime.strptime(search["start_date"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    assert (
+        timedelta(minutes=4, seconds=50)
+        < datetime.now(UTC) - start
+        < timedelta(minutes=5, seconds=10)
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_search_finds_an_order_on_a_later_page_with_the_same_bound() -> None:
+    order_request = request()
+    venue = SearchVenue(
+        [
+            {"orders": [], "has_next": True, "cursor": "p2"},
+            {"orders": [], "has_next": True, "cursor": "p3"},
+            listed(order_request),
+        ]
+    )
+    broker = search_broker(venue)
+    broker.use_saved_orders(saved(order_request))
+    try:
+        found = await broker.get_order(str(order_request.client_order_id))
+    finally:
+        await broker.close()
+
+    assert found is not None and found.status is OrderStatus.OPEN
+    assert [item.get("cursor") for item in venue.searches] == [None, "p2", "p3"]
+    assert {item["start_date"] for item in venue.searches} == {"2026-10-09T13:55:00Z"}
+
+
+@pytest.mark.asyncio
+async def test_after_a_restart_the_search_starts_at_the_orders_saved_time_and_product() -> None:
+    order_request = request()
+    three_days_ago = SAVED_AT - timedelta(days=3)
+    venue = SearchVenue([listed(order_request)])
+    broker = search_broker(venue)  # a new process: the adapter remembers no request
+    broker.use_saved_orders(saved(order_request, three_days_ago))
+    try:
+        found = await broker.get_order(str(order_request.client_order_id))
+    finally:
+        await broker.close()
+
+    assert found is not None
+    [search] = venue.searches
+    assert search["start_date"] == "2026-10-06T13:55:00Z"
+    assert search["product_ids"] == "BTC-USD"
+
+
+@pytest.mark.asyncio
+async def test_a_saved_time_without_a_zone_is_read_as_utc() -> None:
+    order_request = request()
+    venue = SearchVenue()
+    broker = search_broker(venue)
+    broker.use_saved_orders(
+        saved(order_request, SAVED_AT.replace(tzinfo=None))
+    )  # as SQLite returns
+    try:
+        await broker.get_order(str(order_request.client_order_id))
+    finally:
+        await broker.close()
+
+    assert venue.searches[0]["start_date"] == "2026-10-09T13:55:00Z"
+
+
+@pytest.mark.asyncio
+async def test_without_a_saved_order_the_search_is_unbounded_but_cannot_end_open() -> None:
+    order_request = request()
+    venue = SearchVenue(forever=True)
+    broker = search_broker(venue)
+    try:
+        with pytest.raises(ProviderHTTPError) as error:
+            await broker.get_order(str(order_request.client_order_id))
+    finally:
+        await broker.close()
+
+    assert error.value.status_code == 502
+    assert len(venue.searches) == 10
+    assert all("start_date" not in item and "product_ids" not in item for item in venue.searches)
+
+
+@pytest.mark.asyncio
+async def test_a_search_the_page_budget_cut_short_raises_even_with_a_time_bound() -> None:
+    order_request = request()
+    venue = SearchVenue(forever=True)
+    broker = search_broker(venue)
+    broker.use_saved_orders(saved(order_request))
+    try:
+        with pytest.raises(ProviderHTTPError, match="did not reach the end"):
+            await broker.get_order(str(order_request.client_order_id))
+    finally:
+        await broker.close()
+
+    assert len(venue.searches) == 10
+
+
+@pytest.mark.asyncio
+async def test_more_pages_reported_without_a_cursor_is_not_an_empty_result() -> None:
+    order_request = request()
+    venue = SearchVenue([{"orders": [], "has_next": True, "cursor": ""}])
+    broker = search_broker(venue)
+    broker.use_saved_orders(saved(order_request))
+    try:
+        with pytest.raises(ProviderHTTPError, match="no cursor"):
+            await broker.get_order(str(order_request.client_order_id))
+    finally:
+        await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_saved_order_store_never_narrows_the_search() -> None:
+    order_request = request()
+    venue = SearchVenue([listed(order_request)])
+    broker = search_broker(venue)
+
+    def broken(_client_order_id):
+        raise RuntimeError("store is down")
+
+    broker.use_saved_orders(broken)
+    try:
+        found = await broker.get_order(str(order_request.client_order_id))
+    finally:
+        await broker.close()
+
+    assert found is not None
+    assert "start_date" not in venue.searches[0] and "product_ids" not in venue.searches[0]
+
+
+@pytest.mark.asyncio
+async def test_the_engine_bounds_a_new_orders_pre_submit_search_and_then_submits() -> None:
+    order_request = request()
+    venue = SearchVenue(orders_for=str(order_request.client_order_id))
+    broker = search_broker(venue)
+    store = InMemoryOrderStore()
+    engine = ExecutionEngine(broker, store)  # registers the store with the adapter
+    try:
+        order = await engine.submit(order_request, approval(order_request))
+    finally:
+        await broker.close()
+
+    assert order.status in {OrderStatus.OPEN, OrderStatus.UNKNOWN, OrderStatus.FILLED}
+    assert venue.posts == 1
+    [search] = venue.searches
+    assert search["product_ids"] == "BTC-USD" and "start_date" in search
+
+
+@pytest.mark.asyncio
+async def test_the_engine_submits_nothing_when_the_search_cannot_rule_the_order_out() -> None:
+    order_request = request()
+    venue = SearchVenue(forever=True)
+    broker = search_broker(venue)
+    store = InMemoryOrderStore()
+    engine = ExecutionEngine(broker, store)
+    try:
+        with pytest.raises(ProviderHTTPError):
+            await engine.submit(order_request, approval(order_request))
+    finally:
+        await broker.close()
+
+    assert venue.posts == 0
+    # The new order is closed as never sent (#143), so nothing is left pending.
+    assert store.pending() == () and len(store.closures) == 1
