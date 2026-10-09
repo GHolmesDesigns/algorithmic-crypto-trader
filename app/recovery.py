@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from brokers.interface import BrokerInterface
 from core.models import Fill, Order, utc_now
 from execution.engine import ExecutionEngine, OrderStore
+from portfolio.ledger import apply_fills
 from portfolio.reconciliation import (
     Discrepancy,
     PortfolioState,
@@ -26,6 +28,8 @@ class RecoverableOrderStore(OrderStore, Protocol):
     def open_orders(self) -> tuple[Order, ...]: ...
 
     def fills_for(self, orders: tuple[Order, ...]) -> tuple[Fill, ...]: ...
+
+    def fills_after(self, at: datetime) -> tuple[Fill, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +104,10 @@ async def recover_on_startup(
         baseline = portfolio_store.latest_state(source="broker")
         orders = order_store.open_orders()
         fills = order_store.fills_for(orders)
+        snapshot_at = (
+            portfolio_store.latest_recorded_at(source="broker") if baseline is not None else None
+        )
+        later = order_store.fills_after(snapshot_at) if snapshot_at is not None else ()
     except Exception:
         return _halt(
             kill_switch,
@@ -107,11 +115,36 @@ async def recover_on_startup(
             pending_orders=len(pending),
             recovered_orders=len(recovered),
         )
+    # The snapshot is the broker's state when the last scheduled run saved it. Fills the app saved
+    # since then, such as an own trade just before a restart, are already in the broker's balances
+    # but not in the snapshot, so they are counted here exactly as the scheduled reconciler counts
+    # them (#147). A fill this start itself recovered for an ambiguous order is not: that still
+    # ends in a halt for operator review.
+    # A stored order's ID is its client order ID; a venue may report its own ID on the order it
+    # returns, so recovered orders are matched by the client order ID.
+    recovered_ids = {order.request.client_order_id for order in recovered}
+    later = tuple(fill for fill in later if fill.order_id not in recovered_ids)
+    positions = baseline.positions if baseline is not None else ()
+    balances = baseline.balances if baseline is not None else ()
+    if baseline is not None and later:
+        try:
+            projected = apply_fills(
+                baseline, later, balance_increments=broker.capabilities.balance_increments
+            )
+        except ValueError:
+            return _halt(
+                kill_switch,
+                "fills saved after the last snapshot could not be applied to it",
+                pending_orders=len(pending),
+                recovered_orders=len(recovered),
+            )
+        positions, balances = projected.positions, projected.balances
+        logger.info("startup recovery counted %d fill(s) saved after the last snapshot", len(later))
     local = PortfolioState(
         orders={str(order.request.client_order_id): order for order in orders},
         fills={fill.fill_id: fill for fill in fills},
-        positions=baseline.positions if baseline is not None else (),
-        balances=baseline.balances if baseline is not None else (),
+        positions=positions,
+        balances=balances,
     )
     reconciler = Reconciler(
         broker, kill_switch, alert, store=portfolio_store, log_values=log_values
@@ -136,9 +169,12 @@ async def recover_on_startup(
             recovered_orders=len(recovered),
             discrepancies=len(reconciliation.discrepancies),
         )
+    detail = "persisted orders and portfolio state match the broker"
+    if later:
+        detail += f" (counting {len(later)} fill(s) saved after the last snapshot)"
     return _result(
         "reconciled",
-        "persisted orders and portfolio state match the broker",
+        detail,
         pending_orders=len(pending),
         recovered_orders=len(recovered),
     )

@@ -96,7 +96,7 @@ screenshots, tickets, or chat messages.
 | Trading mode | The environment in which the system is allowed to operate. |
 | Broker | The simulated or external venue that holds balances, orders, and positions. |
 | Kill switch | The persistent safety control that determines whether new trading work may proceed. |
-| Startup recovery | The check performed before the service accepts requests. It resolves uncertain orders and compares saved state with the broker. |
+| Startup recovery | The check performed before the service accepts requests. It resolves uncertain orders and compares saved state, plus the app's own fills saved since the last snapshot, with the broker. |
 | Reconciliation | A repeated comparison between local records and the broker's records. |
 | Client order ID | The system's unique, persisted identifier for an order. It is used to find an uncertain order without submitting a duplicate. |
 | Fail closed | Stop or refuse activity when required information is missing, stale, or uncertain. |
@@ -546,6 +546,11 @@ If any item is unknown, leave the system paused or halted.
 3. Ask an engineer to inspect the persisted orders, portfolio baseline, and
    broker state.
 4. Re-arm only after the broker and local state reconcile cleanly.
+
+A restart shortly after the app's own trade no longer causes this by itself:
+recovery counts the app's own fills saved after the last snapshot. If recovery
+still halts with a divergence, the difference is something those fills do not
+explain.
 
 ### Reconciliation reports a divergence
 

@@ -30,6 +30,8 @@ class PortfolioStore(Protocol):
 
     def latest_state(self, *, source: str = "broker") -> PortfolioState | None: ...
 
+    def latest_recorded_at(self, *, source: str = "broker") -> datetime | None: ...
+
 
 class PortfolioPersistenceUnavailable(RuntimeError):
     pass
@@ -108,6 +110,22 @@ class SqlAlchemyPortfolioStore:
         except SQLAlchemyError as exc:
             raise PortfolioPersistenceUnavailable(
                 "database unavailable for discrepancy record"
+            ) from exc
+
+    def latest_recorded_at(self, *, source: str = "broker") -> datetime | None:
+        """When the most recent complete snapshot was saved, or None when none exists."""
+
+        try:
+            with self.session_factory() as session:
+                return session.scalar(
+                    select(PortfolioSnapshotRecord.recorded_at)
+                    .filter_by(source=source)
+                    .order_by(PortfolioSnapshotRecord.recorded_at.desc())
+                    .limit(1)
+                )
+        except SQLAlchemyError as exc:
+            raise PortfolioPersistenceUnavailable(
+                "database unavailable while reading the snapshot time"
             ) from exc
 
     def latest_state(self, *, source: str = "broker") -> PortfolioState | None:

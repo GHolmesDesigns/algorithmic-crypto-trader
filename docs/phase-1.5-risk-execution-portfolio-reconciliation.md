@@ -120,6 +120,36 @@ nothing in the count. The threshold is the constant
 `NEVER_SENT_HALT_THRESHOLD` (3) in `app/trading.py`; it is not an environment
 setting.
 
+## Restart after the app's own fill (#147)
+
+Startup recovery compares the broker with the last saved broker snapshot. The
+scheduled reconciler saves a new snapshot every five minutes, so an own trade
+filled and saved after the last snapshot is already in the broker's balances but
+not in the snapshot. Before #147 recovery added only the fills of orders still
+open, so a restart in that window read the trade as a divergence and halted at
+startup. This happened on 2026-10-09 at about 00:19 UTC, after the app's own buy
+at 00:15 UTC and before the next snapshot; the difference was exactly that fill.
+
+Recovery now also reads every saved fill that happened after the snapshot was
+recorded (`fills.occurred_at` after `portfolio_snapshots.recorded_at`), for any
+order including finished ones, and projects them onto the snapshot with the same
+per-fill settlement the scheduled reconciler uses (`apply_fills` with the
+broker's balance increments). The comparison with the broker is still exact. A
+difference those fills do not explain, a fill the broker does not show, or fills
+that cannot be applied to the snapshot (a negative balance) still halt startup.
+A fill already in the snapshot is not counted again because only later fills are
+read. Own fills are saved under the trading lock that the reconciler also holds,
+so none lands while a snapshot is being taken; a clock difference between the
+venue's fill time and this host could only put a fill on the wrong side of the
+boundary, which fails closed with a halt.
+
+Fills that startup recovery itself saves for an ambiguous order are not
+projected. That case still halts once for operator review, as the Phase 1 gate
+documents. A missing baseline, a pending order the broker has no record of, an
+unreadable store and an unavailable broker halt as before. Provider timing of a
+real restart right after an own fill remains unverified until an owner-run
+observation.
+
 ## Validation boundary
 
 The automated suite uses only `SimulatedBroker`, deterministic fixtures, and temporary local state. No provider credentials, exchange writes, or live trading are used. The delayed-fill fix has adapter-level fixture coverage, but its real Sandbox timing remains owner-run verification when a natural lag event occurs. Other adapter and end-to-end evidence remains in Phase 1.6 and the Phase 1 gate.

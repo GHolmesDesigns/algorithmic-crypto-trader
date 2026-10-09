@@ -210,25 +210,45 @@ class SqlAlchemyOrderStore(OrderStore):
                 ).all()
         except SQLAlchemyError as exc:
             raise PersistenceUnavailable("database unavailable while reading fills") from exc
-        fills = []
-        for record in records:
-            request = by_id[record.order_id].request
-            fills.append(
-                Fill(
-                    fill_id=record.broker_fill_id,
-                    order_id=record.order_id,
-                    symbol=request.symbol,
-                    side=request.side,
-                    quantity=record.quantity,
-                    price=record.price,
-                    fee=record.fee,
-                    # FillRecord does not persist the fee asset; reconciliation keys fills by
-                    # broker fill ID, so the quote leg is used for display only.
-                    fee_asset=request.symbol.rsplit("-", 1)[-1],
-                    occurred_at=record.occurred_at,
+        return tuple(self._to_fill(record, by_id[record.order_id].request) for record in records)
+
+    def fills_after(self, at: datetime) -> tuple[Fill, ...]:
+        """Every saved fill, of any order, that happened after ``at``, oldest first.
+
+        Startup recovery uses it to count the app's own fills that a broker snapshot taken at
+        ``at`` could not yet include (#147). Unlike ``fills_for`` it also covers orders that have
+        since finished, which ``open_orders`` no longer returns.
+        """
+
+        try:
+            with self.session_factory() as session:
+                rows = session.execute(
+                    select(FillRecord, OrderRecord)
+                    .join(OrderRecord, OrderRecord.order_id == FillRecord.order_id)
+                    .where(FillRecord.occurred_at > at)
+                    .order_by(FillRecord.occurred_at, FillRecord.broker_fill_id)
+                ).all()
+                return tuple(
+                    self._to_fill(fill, self._to_order(order).request) for fill, order in rows
                 )
-            )
-        return tuple(fills)
+        except SQLAlchemyError as exc:
+            raise PersistenceUnavailable("database unavailable while reading fills") from exc
+
+    @staticmethod
+    def _to_fill(record: FillRecord, request: OrderRequest) -> Fill:
+        return Fill(
+            fill_id=record.broker_fill_id,
+            order_id=record.order_id,
+            symbol=request.symbol,
+            side=request.side,
+            quantity=record.quantity,
+            price=record.price,
+            fee=record.fee,
+            # FillRecord does not persist the fee asset; reconciliation keys fills by
+            # broker fill ID, so the quote leg is used for display only.
+            fee_asset=request.symbol.rsplit("-", 1)[-1],
+            occurred_at=record.occurred_at,
+        )
 
     @staticmethod
     def _to_order(record: OrderRecord) -> Order:
