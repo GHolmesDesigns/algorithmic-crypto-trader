@@ -499,15 +499,27 @@ async def test_scheduler_loop_survives_an_unexpected_failure() -> None:
         Reconciler(SimulatedBroker(), switch), baseline=PortfolioState(), interval_seconds=0.01
     )
 
+    calls = 0
+    failed_twice = asyncio.Event()
+
     async def explode():
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            failed_twice.set()
         raise RuntimeError("bug")
 
     scheduler.run_once = explode  # type: ignore[method-assign]
     stop = asyncio.Event()
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.sleep(0.05)
-    stop.set()
-    await task
+    try:
+        # Waiting for the second failure shows the loop kept its schedule after the first,
+        # without depending on how long a busy machine takes to run it.
+        await asyncio.wait_for(failed_twice.wait(), timeout=5)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+    assert calls >= 2
     assert switch.state is KillSwitchState.HALTED
 
 
