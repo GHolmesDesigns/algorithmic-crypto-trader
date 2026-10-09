@@ -589,3 +589,189 @@ def test_main_runs_recovery_on_the_server_event_loop(tmp_path, monkeypatch) -> N
 
     assert served == {"lifespan": "on", "recovery": "reconciled", "connectivity": "healthy"}
     assert broker.closed
+
+
+# --- #147: fills the app saved after the last broker snapshot ------------------------------------
+
+
+def exact_broker() -> SimulatedBroker:
+    # SQLite stores Numeric as float; these prices keep balances exact (PostgreSQL is exact).
+    return SimulatedBroker(
+        Quote(
+            symbol="BTC-USD",
+            bid=Decimal("59999"),
+            ask=Decimal("60000"),
+            as_of=utc_now(),
+            source="fixture",
+        )
+    )
+
+
+async def save_snapshot_of(broker, session_factory, *, usd_extra: Decimal = Decimal("0")) -> None:
+    """Save the broker's state as the last scheduled run would, optionally with a wrong USD."""
+
+    balances = tuple(
+        item.model_copy(update={"available": item.available + usd_extra})
+        if item.asset == "USD"
+        else item
+        for item in await broker.get_balances()
+    )
+    SqlAlchemyPortfolioStore(session_factory).save_snapshot(
+        PortfolioState(positions=await broker.get_positions(), balances=balances),
+        source="broker",
+    )
+
+
+async def restart(session_factory, broker, switch=None):
+    switch = switch or KillSwitch()
+    portfolio_store = RecordingPortfolioStore(session_factory)
+    result = await recover_on_startup(
+        kill_switch=switch,
+        order_store=SqlAlchemyOrderStore(session_factory),
+        portfolio_store=portfolio_store,
+        broker=broker,
+    )
+    return result, switch, portfolio_store
+
+
+@pytest.mark.asyncio
+async def test_a_restart_after_an_own_fill_the_last_snapshot_predates_stays_running(
+    tmp_path,
+) -> None:
+    # 2026-10-09: the app's own buy filled and was saved, then the app restarted before the next
+    # scheduled run saved a snapshot. The broker was ahead of the snapshot by exactly that fill.
+    engine, session_factory = database(tmp_path)
+    broker = exact_broker()
+    await save_snapshot_of(broker, session_factory)
+    request, approval = market_order()
+    await ExecutionEngine(broker, SqlAlchemyOrderStore(session_factory)).submit(request, approval)
+
+    result, switch, portfolio_store = await restart(session_factory, broker)
+
+    assert result.status == "reconciled", result.detail
+    assert result.discrepancies == 0
+    assert "counting 1 fill(s) saved after the last snapshot" in result.detail
+    assert switch.state is KillSwitchState.RUNNING
+    assert portfolio_store.discrepancies == []
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_fill_the_snapshot_already_counted_is_not_applied_twice(tmp_path) -> None:
+    engine, session_factory = database(tmp_path)
+    broker = exact_broker()
+    request, approval = market_order()
+    await ExecutionEngine(broker, SqlAlchemyOrderStore(session_factory)).submit(request, approval)
+    # The snapshot is taken after the fill, so it already holds the fill's effect.
+    await save_snapshot_of(broker, session_factory)
+
+    result, switch, _ = await restart(session_factory, broker)
+
+    assert result.status == "reconciled", result.detail
+    assert "counting" not in result.detail
+    assert switch.state is KillSwitchState.RUNNING
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_difference_the_saved_fills_do_not_explain_still_halts(tmp_path) -> None:
+    engine, session_factory = database(tmp_path)
+    broker = exact_broker()
+    # The snapshot is a cent off, as if something outside the app had moved the balance.
+    await save_snapshot_of(broker, session_factory, usd_extra=Decimal("0.01"))
+    request, approval = market_order()
+    await ExecutionEngine(broker, SqlAlchemyOrderStore(session_factory)).submit(request, approval)
+
+    result, switch, portfolio_store = await restart(session_factory, broker)
+
+    assert result.status == "halted"
+    assert [item.entity_type for item, _ in portfolio_store.discrepancies] == ["balance"]
+    assert switch.state is KillSwitchState.HALTED
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_saved_fill_the_broker_does_not_show_still_halts(tmp_path) -> None:
+    engine, session_factory = database(tmp_path)
+    trading_broker = exact_broker()
+    await save_snapshot_of(trading_broker, session_factory)
+    request, approval = market_order()
+    await ExecutionEngine(trading_broker, SqlAlchemyOrderStore(session_factory)).submit(
+        request, approval
+    )
+
+    # At restart the broker shows no such trade, so the projection runs ahead of it.
+    result, switch, portfolio_store = await restart(session_factory, exact_broker())
+
+    assert result.status == "halted"
+    assert result.discrepancies > 0
+    assert {item.entity_type for item, _ in portfolio_store.discrepancies} >= {"position"}
+    assert switch.state is KillSwitchState.HALTED
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_saved_fills_that_cannot_be_applied_to_the_snapshot_halt(tmp_path) -> None:
+    engine, session_factory = database(tmp_path)
+    broker = exact_broker()
+    # A snapshot with no USD cannot pay for the saved buy: a local accounting failure.
+    SqlAlchemyPortfolioStore(session_factory).save_snapshot(
+        PortfolioState(
+            positions=await broker.get_positions(),
+            balances=(Balance(asset="USD", available=Decimal("0"), as_of=utc_now()),),
+        ),
+        source="broker",
+    )
+    request, approval = market_order()
+    await ExecutionEngine(broker, SqlAlchemyOrderStore(session_factory)).submit(request, approval)
+
+    result, switch, _ = await restart(session_factory, broker)
+
+    assert result.status == "halted"
+    assert "could not be applied" in result.detail
+    assert switch.state is KillSwitchState.HALTED
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_order_store_reads_fills_after_a_time_for_every_order(tmp_path) -> None:
+    engine, session_factory = database(tmp_path)
+    broker = exact_broker()
+    store = SqlAlchemyOrderStore(session_factory)
+    first, approval_one = market_order()
+    await ExecutionEngine(broker, store).submit(first, approval_one)
+    cut = utc_now()
+    second, approval_two = market_order()
+    await ExecutionEngine(broker, store).submit(second, approval_two)
+
+    everything = store.fills_after(cut.replace(year=2000))
+    later = store.fills_after(cut)
+
+    # Both orders are filled, so neither is returned by open_orders; only the second is after.
+    assert store.open_orders() == ()
+    assert [fill.order_id for fill in everything] == [first.client_order_id, second.client_order_id]
+    assert [fill.order_id for fill in later] == [second.client_order_id]
+    assert (later[0].symbol, later[0].side, later[0].fee_asset) == (
+        "BTC-USD",
+        OrderSide.BUY,
+        "USD",
+    )
+    assert store.fills_after(utc_now()) == ()
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_portfolio_store_reports_when_its_latest_snapshot_was_saved(tmp_path) -> None:
+    engine, session_factory = database(tmp_path)
+    store = SqlAlchemyPortfolioStore(session_factory)
+    assert store.latest_recorded_at() is None
+
+    broker = exact_broker()
+    await save_snapshot_of(broker, session_factory)
+    first = store.latest_recorded_at()
+    await save_snapshot_of(broker, session_factory)
+    second = store.latest_recorded_at()
+
+    assert first is not None and second is not None and second > first
+    assert store.latest_recorded_at(source="other") is None
+    engine.dispose()
