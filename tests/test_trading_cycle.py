@@ -74,6 +74,31 @@ def cycle(broker=None, store=None, audit=None, **options):
     return paper_cycle(broker, MovingAverageCrossStrategy(), store=store, audit=audit, **options)
 
 
+class FreshSignals:
+    """A buy signal that is new on every loop, as the strategy produces one."""
+
+    def on_market_state(self, state):
+        return Signal(
+            symbol=state.symbol,
+            side=OrderSide.BUY,
+            quantity=Decimal("0.0001"),
+            strategy_version="fresh-v1",
+        )
+
+
+class ScriptedLookups(SimulatedBroker):
+    """A broker whose order-status lookup fails or answers "no such order" as scripted."""
+
+    def __init__(self, script, **options) -> None:
+        super().__init__(quote(), **options)
+        self.script = list(script)
+
+    async def get_order(self, client_order_id: str):
+        if self.script.pop(0) == "fail":
+            raise TimeoutError("order-status lookup timed out")
+        return await super().get_order(client_order_id)
+
+
 @pytest.mark.asyncio
 async def test_unreadable_order_store_halts_before_the_strategy_runs() -> None:
     outcome = await cycle(store=UnreadableStore()).on_market_state(STATE)
@@ -123,15 +148,6 @@ async def test_new_order_lookup_failure_closes_without_halt_and_next_loop_uses_f
     switch = KillSwitch()
     broker = SimulatedBroker(quote(), fault_plan=FaultPlan(get_order=(SimulatedFault.UNAVAILABLE,)))
 
-    class FreshSignals:
-        def on_market_state(self, state):
-            return Signal(
-                symbol=state.symbol,
-                side=OrderSide.BUY,
-                quantity=Decimal("0.0001"),
-                strategy_version="fresh-v1",
-            )
-
     trading = paper_cycle(
         broker,
         FreshSignals(),
@@ -157,6 +173,111 @@ async def test_new_order_lookup_failure_closes_without_halt_and_next_loop_uses_f
     assert str(next_loop.order.request.client_order_id) != closed_client_order_id
     assert switch.state is KillSwitchState.RUNNING
     assert len(store.closures) == 1
+
+
+@pytest.mark.asyncio
+async def test_lookup_failures_in_a_row_halt_on_the_third_and_nothing_more_is_reserved() -> None:
+    store = InMemoryOrderStore()
+    switch = KillSwitch()
+    halts: list[str] = []
+
+    async def on_halt(reason: str) -> None:
+        halts.append(reason)
+
+    trading = paper_cycle(
+        ScriptedLookups(["fail"] * 3),
+        FreshSignals(),
+        store=store,
+        audit=InMemoryAuditStore(store),
+        kill_switch=switch,
+        on_halt=on_halt,
+    )
+
+    for _ in range(2):
+        outcome = await trading.on_market_state(STATE)
+        assert outcome.status is CycleStatus.BROKER_ERROR
+        assert switch.state is KillSwitchState.RUNNING
+
+    third = await trading.on_market_state(STATE)
+
+    assert third.status is CycleStatus.HALTED
+    assert "3 orders in a row" in third.detail and "TimeoutError" in third.detail
+    assert switch.state is KillSwitchState.HALTED
+    assert len(halts) == 1 and "3 orders in a row" in halts[0]
+    # All three were closed as never sent before the halt, and none stays pending.
+    assert len(store.closures) == 3 and store.pending() == ()
+    orders_before = len(store.orders)
+    after = await trading.on_market_state(STATE)
+    assert after.status is CycleStatus.REFUSED
+    assert len(store.orders) == orders_before and len(store.closures) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_working_lookup_between_failures_starts_the_count_over() -> None:
+    store = InMemoryOrderStore()
+    switch = KillSwitch()
+    broker = ScriptedLookups(
+        ["fail", "fail", "ok", "fail", "fail", "fail"],
+        fault_plan=FaultPlan(submit=(SimulatedFault.REJECT,)),
+    )
+    trading = paper_cycle(
+        broker, FreshSignals(), store=store, audit=InMemoryAuditStore(store), kill_switch=switch
+    )
+
+    statuses = [(await trading.on_market_state(STATE)).status for _ in range(5)]
+
+    # The lookup that worked (its order was then rejected) reset the two earlier failures.
+    assert statuses == [
+        CycleStatus.BROKER_ERROR,
+        CycleStatus.BROKER_ERROR,
+        CycleStatus.REJECTED,
+        CycleStatus.BROKER_ERROR,
+        CycleStatus.BROKER_ERROR,
+    ]
+    assert switch.state is KillSwitchState.RUNNING and len(store.closures) == 4
+    assert (await trading.on_market_state(STATE)).status is CycleStatus.HALTED
+    assert switch.state is KillSwitchState.HALTED
+
+
+@pytest.mark.asyncio
+async def test_after_a_re_arm_one_more_failure_closes_its_order_and_does_not_halt() -> None:
+    store = InMemoryOrderStore()
+    switch = KillSwitch()
+    trading = paper_cycle(
+        ScriptedLookups(["fail"] * 4),
+        FreshSignals(),
+        store=store,
+        audit=InMemoryAuditStore(store),
+        kill_switch=switch,
+    )
+    for _ in range(3):
+        await trading.on_market_state(STATE)
+    assert switch.state is KillSwitchState.HALTED
+
+    switch.set_state(KillSwitchState.RUNNING, reason="test re-arm", actor="owner")
+    outcome = await trading.on_market_state(STATE)
+
+    assert outcome.status is CycleStatus.BROKER_ERROR
+    assert switch.state is KillSwitchState.RUNNING and len(store.closures) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_failed_submit_after_a_working_lookup_does_not_count_toward_the_halt() -> None:
+    # The lookup worked, so the venue may have the order: it is not a never-sent close.
+    store = InMemoryOrderStore()
+    switch = KillSwitch()
+    trading = paper_cycle(
+        SimulatedBroker(quote(), fault_plan=FaultPlan(submit=(SimulatedFault.UNAVAILABLE,) * 4)),
+        FreshSignals(),
+        store=store,
+        audit=InMemoryAuditStore(store),
+        kill_switch=switch,
+    )
+    first = await trading.on_market_state(STATE)
+    assert first.status is CycleStatus.BROKER_ERROR
+
+    assert trading.execution.consecutive_never_sent == 0
+    assert store.closures == [] and switch.state is KillSwitchState.RUNNING
 
 
 @pytest.mark.asyncio

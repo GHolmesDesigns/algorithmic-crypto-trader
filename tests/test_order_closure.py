@@ -19,6 +19,7 @@ import pytest
 from api.alerts import Alert, AlertRouter
 from api.controls import REASON_LIMIT, parse_close_order
 from api.dashboard import build_dashboard
+from app.main import start_scheduled_reconciliation
 from app.trading import CycleStatus
 from brokers.gemini import GeminiBroker
 from brokers.http import ProviderHTTPError, ProviderTimeoutError
@@ -34,6 +35,7 @@ from core.models import (
     Quote,
     RiskApproval,
     Signal,
+    TradingMode,
     utc_now,
 )
 from core.resilience import TokenBucketRateLimiter
@@ -444,6 +446,59 @@ async def test_new_order_lookup_failure_is_audited_as_system_close_and_visible_i
         application, f"/operator/history/events?event_type={ORDER_CLOSED_EVENT}"
     )
     assert ORDER_CLOSED_EVENT in events and "The system" in events and NEVER_RECEIVED in events
+
+
+@pytest.mark.asyncio
+async def test_the_running_service_alerts_once_when_it_closes_an_order_as_never_sent(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    sink = RecordingSink()
+    venue = Venue(order_error=ProviderHTTPError(503, "unavailable"))
+    application = history_app(
+        tmp_path, TradingMode.PAPER, broker=venue, alert_router=AlertRouter(phone_push=sink)
+    )
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trader.db'}", future=True)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    signal = Signal(
+        symbol="BTC-USD", side=OrderSide.BUY, quantity=Decimal("0.0001"), strategy_version="ma-v1"
+    )
+    approval = RiskApproval(
+        signal_id=signal.signal_id,
+        approved=True,
+        reason="all gates passed",
+        correlation_id=signal.correlation_id,
+    )
+    audit = SqlAlchemyAuditStore(factory)
+    audit.record_signal(signal)
+    audit.record_risk_decision(approval)
+    request = OrderRequest(
+        signal_id=signal.signal_id,
+        strategy_version=signal.strategy_version,
+        symbol=signal.symbol,
+        side=signal.side,
+        order_type=OrderType.MARKET,
+        quantity=signal.quantity,
+        correlation_id=signal.correlation_id,
+    )
+
+    stop = start_scheduled_reconciliation(application, interval_seconds=3600)
+    assert stop is not None
+    try:
+        with pytest.raises(ProviderHTTPError):
+            await application.state.execution.submit(request, approval)
+    finally:
+        await stop()
+        engine.dispose()
+
+    # The scheduled run may send its own alerts; only the never-sent one is this test's.
+    [alert] = [item for item in sink.alerts if item.condition == "order_closed_never_received"]
+    assert alert.severity == "warning"
+    assert str(request.client_order_id)[:8] in alert.message
+    assert "503" in alert.message
+    assert "not submitted or resubmitted" in alert.message
+    assert "kill switch is unchanged" in alert.message
+    assert venue.writes == []
 
 
 @pytest.mark.asyncio

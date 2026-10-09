@@ -9,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from brokers.http import provider_failure_fields
+from brokers.http import describe_provider_failure, provider_failure_fields
 from brokers.interface import BrokerInterface
 from core.logging import fill_reference, short_reference
 from core.models import Fill, Order, OrderRequest, OrderStatus, RiskApproval, utc_now
@@ -131,6 +131,8 @@ class ExecutionEngine:
         # Observers such as the scheduled reconciler see each persisted order and its fills.
         self.on_recorded = on_recorded
         self.on_order_closed = on_order_closed
+        # Orders closed as never sent in a row; a lookup that works resets it (#145).
+        self.consecutive_never_sent = 0
         self._logged_fills: dict[str, None] = {}
 
     async def submit(self, request: OrderRequest, approval: RiskApproval) -> Order:
@@ -159,6 +161,8 @@ class ExecutionEngine:
             if created:
                 await self._close_never_sent(persisted, exc)
             raise
+        # Any answer, found or not, shows the status lookup works again.
+        self.consecutive_never_sent = 0
         _log_step(
             "lookup",
             reference,
@@ -197,8 +201,7 @@ class ExecutionEngine:
         Existing rows are deliberately left unresolved for normal recovery and operator review.
         """
 
-        from brokers.http import describe_provider_failure
-
+        # execution.audit imports this module, so the import cannot sit at the top.
         from execution.audit import ORDER_CLOSED_EVENT, OrderClosureRecord
 
         reason = f"Pre-submit order-status lookup failed: {describe_provider_failure(failure)}"
@@ -211,16 +214,16 @@ class ExecutionEngine:
             closed_at=closed_at,
             broker_lookup=f"failed ({type(failure).__name__})",
         )
-        close = getattr(self.store, "close_unreceived", None)
-        if close is None:
-            raise PersistenceUnavailable("order store cannot audit-close a never-submitted order")
-        if not close(
+        if not self.store.close_unreceived(
             str(order.request.client_order_id),
             event_type=ORDER_CLOSED_EVENT,
             payload=record.to_payload(),
             at=closed_at,
         ):
-            raise PersistenceUnavailable("new pending order could not be audit-closed")
+            raise PersistenceUnavailable(
+                "new pending order was already resolved elsewhere, so it was not audit-closed"
+            )
+        self.consecutive_never_sent += 1
         logger.warning(
             "order closed as never sent ref=%s lookup_failure=%s",
             short_reference(order.request.client_order_id),
