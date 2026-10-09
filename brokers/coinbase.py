@@ -12,7 +12,7 @@ import logging
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
@@ -69,6 +69,9 @@ PAGE_LIMIT = 250
 MAX_ACCOUNT_PAGES = 40
 MAX_FILL_PAGES = 20
 ORDER_SEARCH_PAGES = 10
+# The search starts this long before an order's saved creation time, so a difference between
+# this host's clock and Coinbase's cannot hide an order created just before the save (#152).
+ORDER_SEARCH_MARGIN = timedelta(minutes=5)
 # Positions read right after balances reuse that account listing instead of listing again.
 ACCOUNT_SNAPSHOT_SECONDS = 1.0
 
@@ -214,6 +217,7 @@ class CoinbaseBroker(BrokerInterface):
         self._requests: dict[str, OrderRequest] = {}
         self._orders: dict[str, Order] = {}
         self._provider_order_ids: dict[str, str] = {}
+        self._saved_orders: Callable[[str], Order | None] | None = None
         self._account_snapshot: tuple[float, tuple[Balance, ...]] | None = None
 
     @property
@@ -444,11 +448,42 @@ class CoinbaseBroker(BrokerInterface):
             name: payload.get(name) is True for name in ("can_view", "can_trade", "can_transfer")
         }
 
+    def use_saved_orders(self, lookup: Callable[[str], Order | None]) -> None:
+        """Let the order search read an order's saved creation time and product.
+
+        ``ExecutionEngine`` registers its order store's ``get``. Coinbase documents no lookup by
+        client order ID, so the search lists orders; knowing when the order was saved bounds that
+        listing to one short request for a new order and to the right window after a restart.
+        """
+
+        self._saved_orders = lookup
+
+    def _saved_order(self, client_order_id: str) -> Order | None:
+        if self._saved_orders is None:
+            return None
+        try:
+            return self._saved_orders(client_order_id)
+        except Exception:
+            # An unreadable store never narrows the search: without a time bound the listing
+            # runs to the end of history and fails closed if it cannot get there.
+            logger.warning("saved order could not be read for the Coinbase order search")
+            return None
+
     async def _find_by_client_order_id(self, client_order_id: str) -> Mapping[str, Any] | None:
-        request = self._requests.get(client_order_id)
+        """Find an order by listing orders, ruling it out only after the whole window is read.
+
+        Returns ``None`` only when the listing reached its end without the order. A search the
+        page budget or an inconsistent cursor cut short raises instead: reporting "no such
+        order" there would let the engine submit a second order for the same client order ID.
+        """
+
+        saved = self._saved_order(client_order_id)
+        request = self._requests.get(client_order_id) or (saved.request if saved else None)
         params: dict[str, Any] = {"limit": PAGE_LIMIT}
         if request is not None:
             params["product_ids"] = [request.symbol]
+        if saved is not None:
+            params["start_date"] = _rfc3339(_utc(saved.created_at) - ORDER_SEARCH_MARGIN)
         cursor = ""
         for _ in range(ORDER_SEARCH_PAGES):
             page_params = dict(params, cursor=cursor) if cursor else params
@@ -458,10 +493,12 @@ class CoinbaseBroker(BrokerInterface):
                     return row
             cursor = _next_cursor(payload, cursor)
             if not cursor:
+                if isinstance(payload, Mapping) and payload.get("has_next") is True:
+                    raise ProviderHTTPError(502, "order search reported more pages but no cursor")
                 return None
-        # Not found within the search budget. Resubmitting is still safe: Coinbase returns
-        # the existing order for a reused client_order_id instead of creating a second one.
-        return None
+        raise ProviderHTTPError(
+            502, f"order search did not reach the end of its window in {ORDER_SEARCH_PAGES} pages"
+        )
 
     async def _paginate(
         self,
@@ -905,6 +942,16 @@ def _edit_errors(payload: Any) -> str:
         if reasons:
             return ", ".join(reasons)
     return "provider rejected the edit"
+
+
+def _utc(value: datetime) -> datetime:
+    """Treat a stored time with no zone (SQLite) as UTC."""
+
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _rfc3339(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _next_cursor(payload: Any, previous: str) -> str:
