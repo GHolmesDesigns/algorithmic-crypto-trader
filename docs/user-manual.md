@@ -56,7 +56,7 @@ product:
   five-minute bars. Other modes do not start this runtime, and this feature does
   not authorize or enable live trading.
 - The operator surface reports the paper runtime, its last cycle outcome, and the
-  primary strategy heartbeat. P/L can still be unavailable.
+  primary strategy heartbeat. Today's P/L appears once two usable equity snapshots exist for the UTC day; until then it is unavailable.
 - Phone-push through ntfy and email through SMTP are optional. The application
   configures only the destinations whose complete environment settings are
   present; partial or insecure configuration stops startup.
@@ -225,7 +225,7 @@ Review these items from top to bottom:
 | Reconciliation | `clean`, with a recent last run and no differences. `not_scheduled` without a broker. | `diverged` or `unavailable`, or the last run is old. |
 | Paper runtime | `running` with a recent last cycle, or `disabled` when it is intentionally off. | `degraded`, `failed`, `halted`, or `stopped`, or `not_started` when it should run. |
 | Portfolio data | **◐ current** when a broker is configured. | **▲ last known** or **○ unavailable** when broker state is required. |
-| P/L | May be **○ unavailable** in the current release. It is never shown as `0`. | Do not infer profitability or safety from a missing value. |
+| P/L | Today's change in account equity, in dollars: the latest saved equity snapshot minus the first one of the UTC day, with the time of the latest snapshot. It is **○ unavailable**, with the reason, when there is no snapshot or only one today, when the first or latest snapshot is partial (a holding had no price), when the latest snapshot is older than two sampling intervals (at most 3 hours), or when the saved history cannot be read. It is never shown as `0` unless the change really is zero, and an old figure is never shown as current. A figure that includes last-known prices names those coins. It is an equity change, so a deposit or withdrawal during the day would move it. | Do not infer profitability or safety from a missing value, and do not read the figure as a promise of profit. |
 | Balances and positions | Plausible and consistent with the approved environment. An average price the venue did not report shows **○ not known**. | A value is unexpected, duplicated, missing, or clearly belongs to another environment. |
 | Orders, fills, and signals | Counts and recent activity match expectations. | An order is `unknown` (look it up by client order ID and never resubmit it), pending unexpectedly, duplicated, or lacks an expected fill. |
 | Strategy heartbeats | An enabled paper strategy reports a recent healthy heartbeat and cycle result. | A heartbeat is absent, stale, unhealthy, or unexpectedly changes version. |
@@ -286,7 +286,7 @@ last bar is the current period, still in progress.
 | **Discrepancies by type** | Differences reconciliation recorded, one row each, split into order, fill, position, and balance. |
 | **Risk refusals by gate** | Refusals under the first gate that stopped them, in the gates' order. Gates with none are listed under **0 refusals at the other … gates**. |
 | **Uptime and freshness** | **Not started.** Nothing saves heartbeats or freshness checks yet, so there is no history to chart. |
-| **Equity and day P/L** | **Not started.** No trustworthy producer records them; P/L waits on known cost basis (#30). |
+| **Equity and day P/L** | **Not started.** The equity points are saved and the dashboard shows today's P/L from them, but a chart of the stored points is not built yet. |
 
 Each chart names the table it counts. Bars are drawn in one neutral ink: a tall
 bar is a count, not a health verdict. Open **Table** under a chart for the same

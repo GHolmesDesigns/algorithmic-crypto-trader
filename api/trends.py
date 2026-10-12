@@ -11,8 +11,8 @@ returns one row per bucket and series, never the rows themselves. Only the time
 column and the series key leave the database; payloads, reasons, and amounts do not.
 
 A chart is drawn only from a trustworthy persisted producer. Uptime, freshness,
-equity, and day P/L have none yet, so they are reported as not started, with the
-reason, and never as an empty series that would read as zero.
+and a chart of the equity and day P/L points are not built yet, so they are reported as
+not started, with the reason, and never as an empty series that would read as zero.
 
 Nothing here writes, and nothing reaches a broker.
 """
@@ -166,12 +166,11 @@ NOT_STARTED: tuple[dict[str, Any], ...] = (
         "status": "not_started",
         "source": None,
         "reason": (
-            "No trustworthy producer records equity or day P/L. Reconciliation saves positions "
-            "and balances without equity, and P/L stays unavailable until cost basis is known "
-            "(#30) and a P/L producer exists. Rows already in equity_curve are not charted "
-            "until then."
+            "Equity snapshots are saved on a schedule, and the operator dashboard shows today's "
+            "P/L from them when it is trustworthy. A chart of the stored points is not built "
+            "yet, so none is drawn here."
         ),
-        "blocked_by": ["#30"],
+        "blocked_by": [],
     },
 )
 

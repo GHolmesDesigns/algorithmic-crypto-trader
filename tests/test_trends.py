@@ -375,7 +375,7 @@ async def test_zero_unavailable_and_not_started_never_look_alike(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_equity_rows_are_never_charted_without_a_trustworthy_producer(tmp_path):
+async def test_equity_rows_are_not_charted_until_a_chart_is_built(tmp_path):
     application = history_app(tmp_path)
     add(
         tmp_path,
@@ -385,12 +385,13 @@ async def test_equity_rows_are_never_charted_without_a_trustworthy_producer(tmp_
     )
     response = await get(application)
     equity = charts_by_key(response.json()["charts"])["equity_pnl"]
-    assert equity["status"] == "not_started" and equity["blocked_by"] == ["#30"]
+    assert equity["status"] == "not_started" and equity["blocked_by"] == []
     assert "series" not in equity and "total" not in equity
     html = (await get(application, headers=BROWSER)).text
     for text in (response.text, html):
         assert "98765" not in text
-    assert "(#30)" in section(html, "equity_pnl")
+    assert "(#30)" not in section(html, "equity_pnl")
+    assert "operator dashboard shows today" in section(html, "equity_pnl")
 
 
 # Rendering

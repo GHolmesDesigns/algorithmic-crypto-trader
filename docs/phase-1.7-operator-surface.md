@@ -29,8 +29,8 @@ optional `BrokerInterface` and alert sinks from the application boundary.
 `GET /operator` renders the dashboard, and `GET /operator/fragment` returns its
 body without the page shell. The page does not refresh itself. `GET /operator/state` returns the same state as JSON.
 The view includes trading mode, strategy version, application and broker
-connectivity, strategy heartbeats, kill-switch state, balances, positions, P/L
-availability, orders, fills, signals, alerts, and errors.
+connectivity, strategy heartbeats, kill-switch state, balances, positions, today's P/L
+(or why it is unavailable), orders, fills, signals, alerts, and errors.
 
 When the broker cannot be read, the surface reports `unavailable`, preserves any
 previous values only as explicitly-labelled last-known data, and records a
@@ -161,7 +161,7 @@ history navigation and the dashboard's System health block.
 | Discrepancies by type | `discrepancies`, by `created_at` | One series per entity type (`order`, `fill`, `position`, `balance`), plus any type this build does not recognise. |
 | Risk refusals by gate | `risk_decisions` where `approved` is false, by `decided_at` | One series per ordered gate, in `risk.engine.RISK_GATES` order, then `risk_inputs`, then any unrecognised or missing gate. |
 | Uptime and freshness | none | **Not started.** Heartbeats, market-data state, and broker check times live only in the running process. Persisted candles cannot stand in: backfilled and live candles share one source name, and a backfilled candle's receipt time says when a gap was filled. |
-| Equity and day P/L | none | **Not started.** Reconciliation saves no equity, and P/L stays unavailable until cost basis is known (#30) and a P/L producer exists. Rows already in `equity_curve` are not charted. |
+| Equity and day P/L | none | **Not started.** The equity snapshots are saved (#100) and the dashboard shows today's P/L from them (#154), but a chart of the stored points is not built. Rows in `equity_curve` are not charted. |
 
 **Bounds.** `window` is `24h` (default, 24 hourly bars), `7d` (28 six-hour bars),
 or `30d` (30 daily bars). Bars align to UTC hours or days, and the last bar is the

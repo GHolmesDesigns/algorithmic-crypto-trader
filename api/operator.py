@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -12,6 +13,7 @@ from brokers.interface import BrokerInterface
 from core.guards import StartupSettings
 from core.models import Balance, Fill, Order, Position, Signal, utc_now
 from core.version import application_version
+from portfolio.day_pnl import DayPnl
 from risk.kill_switch import KillSwitch
 
 from api.alerts import Alert, AlertDelivery, AlertRouter
@@ -42,6 +44,7 @@ class OperatorSnapshot:
     positions: tuple[Position, ...] = ()
     pnl_status: str = "unavailable"
     pnl_detail: str = "valuation data is unavailable"
+    pnl_as_of: datetime | None = None
     orders: tuple[Order, ...] = ()
     fills: tuple[Fill, ...] = ()
     signals: tuple[Signal, ...] = ()
@@ -75,6 +78,7 @@ class OperatorState:
         self.startup_recovery: Any = None
         self.scheduled_reconciliation: Any = None
         self.watch_feed: Any = None
+        self.day_pnl: Any = None
         strategy = StrategyHeartbeat(name="primary", version=strategy_version)
         self.snapshot = OperatorSnapshot(
             strategy_version=strategy_version,
@@ -142,6 +146,29 @@ class OperatorState:
         )
 
     async def refresh(self) -> OperatorSnapshot:
+        await self._refresh_portfolio()
+        await self._refresh_pnl()
+        return self.snapshot
+
+    async def _refresh_pnl(self) -> None:
+        """Set today's P/L from the saved equity snapshots; a failed read only blanks the figure."""
+
+        reader = self.day_pnl
+        if reader is None:
+            return
+        try:
+            result: DayPnl = await asyncio.to_thread(reader.read)
+        except Exception:
+            logger.exception("today's P/L could not be read")
+            result = DayPnl.unavailable("the saved equity history could not be read")
+        self.snapshot = replace(
+            self.snapshot,
+            pnl_status=result.status,
+            pnl_detail=result.detail,
+            pnl_as_of=result.as_of,
+        )
+
+    async def _refresh_portfolio(self) -> OperatorSnapshot:
         now = utc_now()
         if self.broker is None:
             self.snapshot = replace(
@@ -331,7 +358,11 @@ class OperatorState:
                 "detail": snapshot.portfolio_detail,
                 "balances": [_model_payload(item) for item in snapshot.balances],
                 "positions": [_model_payload(item) for item in snapshot.positions],
-                "pnl": {"status": snapshot.pnl_status, "detail": snapshot.pnl_detail},
+                "pnl": {
+                    "status": snapshot.pnl_status,
+                    "detail": snapshot.pnl_detail,
+                    "as_of": snapshot.pnl_as_of.isoformat() if snapshot.pnl_as_of else None,
+                },
             },
             "orders": [_model_payload(item) for item in snapshot.orders],
             "fills": [_model_payload(item) for item in snapshot.fills],
