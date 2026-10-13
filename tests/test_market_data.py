@@ -314,6 +314,92 @@ async def test_websocket_reports_a_disconnect_once_before_gap_filling_every_prod
     assert gap_fills == ["BTC-USD", "ETH-USD"]
 
 
+async def refuse_connections_at(
+    moments: list[datetime],
+    *,
+    preset: dict[str, datetime] | None = None,
+    products: tuple[str, ...] = ("BTC-USD", "ETH-USD"),
+) -> tuple[list[tuple[str, datetime | None, datetime]], list[datetime]]:
+    """Fail one connection per moment, reading the clock as that moment each time."""
+
+    current = moments[0]
+    attempts = 0
+    gap_fills: list[tuple[str, datetime | None, datetime]] = []
+    disconnects: list[datetime] = []
+
+    async def connect(_: str) -> FakeTransport:
+        nonlocal current, attempts
+        current = moments[attempts]
+        attempts += 1
+        raise OSError("down")
+
+    async def on_disconnect(at: datetime, _reason) -> None:
+        disconnects.append(at)
+
+    async def gap_fill(symbol: str, start: datetime | None, end: datetime) -> None:
+        gap_fills.append((symbol, start, end))
+
+    ingestor = CoinbaseWebSocketIngestor(
+        products,
+        connect=connect,
+        on_disconnect=on_disconnect,
+        gap_fill=gap_fill,
+        reconnect_base_seconds=0.001,
+        clock=lambda: current,
+    )
+    ingestor.last_candle_at.update(preset or {})
+    await ingestor.run(asyncio.Event(), max_connections=len(moments))
+    return gap_fills, disconnects
+
+
+@pytest.mark.asyncio
+async def test_repeated_failures_inside_one_bucket_backfill_each_product_once() -> None:
+    inside = NOW + timedelta(minutes=1)
+    gap_fills, disconnects = await refuse_connections_at(
+        [inside, inside, inside + timedelta(seconds=30)]
+    )
+
+    assert [(symbol, start) for symbol, start, _ in gap_fills] == [
+        ("BTC-USD", None),
+        ("ETH-USD", None),
+    ]
+    assert [end for _, _, end in gap_fills] == [NOW, NOW]
+    # The disconnect is still reported on every failed attempt.
+    assert len(disconnects) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_a_bucket_closes_backfills_it() -> None:
+    first = NOW + timedelta(minutes=1)
+    next_bucket = NOW + timedelta(minutes=6)
+    gap_fills, _ = await refuse_connections_at([first, first, next_bucket, next_bucket])
+
+    assert gap_fills == [
+        ("BTC-USD", None, NOW),
+        ("ETH-USD", None, NOW),
+        # The first backfill covered the bucket opening at NOW - 5 min; this one adds NOW.
+        ("BTC-USD", NOW - timedelta(minutes=5), NOW + timedelta(minutes=5)),
+        ("ETH-USD", NOW - timedelta(minutes=5), NOW + timedelta(minutes=5)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_backfill_is_skipped_only_for_a_product_already_current() -> None:
+    moment = NOW + timedelta(minutes=6)
+    newest_closed = NOW
+    gap_fills, _ = await refuse_connections_at(
+        [moment],
+        preset={
+            "BTC-USD": newest_closed,
+            "ETH-USD": newest_closed - timedelta(minutes=5),
+        },
+    )
+
+    assert [(symbol, start) for symbol, start, _ in gap_fills] == [
+        ("ETH-USD", newest_closed - timedelta(minutes=5))
+    ]
+
+
 @pytest.mark.asyncio
 async def test_ticker_uses_the_live_envelope_timestamp() -> None:
     quotes: list[Quote] = []

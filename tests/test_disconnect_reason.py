@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -340,10 +340,14 @@ async def test_system_events_shows_the_reason_and_filters_to_disconnects(tmp_pat
 
 
 async def run_with_callbacks(*, on_disconnect, gap_fill, connections: int = 2):
-    """Drive a refusing ingestor; return the connect attempts it made and the gap-fills it ran."""
+    """Drive a refusing ingestor; return the connect attempts it made and the gap-fills it ran.
+
+    Each attempt lands in a later bucket so that every failure has a closed bar to backfill.
+    """
 
     attempts: list[int] = []
     gap_fills: list[str] = []
+    start = datetime(2026, 1, 1, tzinfo=UTC)
 
     async def connect(_: str) -> ScriptedTransport:
         attempts.append(1)
@@ -359,6 +363,7 @@ async def run_with_callbacks(*, on_disconnect, gap_fill, connections: int = 2):
         on_disconnect=on_disconnect,
         gap_fill=record_gap_fill,
         reconnect_base_seconds=0.001,
+        clock=lambda: start + timedelta(minutes=5 * len(attempts)),
     )
     await ingestor.run(asyncio.Event(), max_connections=connections)
     return len(attempts), gap_fills
