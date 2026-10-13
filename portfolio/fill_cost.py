@@ -108,6 +108,8 @@ class FillCostReader:
             ).all()
             grouped: dict[str, list[_SavedFill]] = {}
             for record, symbol, side in rows:
+                if symbol is None or side is None:  # the query already leaves these out
+                    continue
                 grouped.setdefault(symbol, []).append(
                     _SavedFill(
                         fill_id=record.broker_fill_id,
