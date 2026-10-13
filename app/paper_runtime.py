@@ -247,9 +247,7 @@ class PaperRuntime:
                 {"at": at.isoformat(), "reason_kind": reason.kind, "reason_note": reason.note},
                 now=at,
             )
-        cutoff = at - self.config.reconnect_storm_window
-        while self._disconnects and self._disconnects[0] < cutoff:
-            self._disconnects.popleft()
+        self._expire_disconnects(at)
         self._disconnects.append(at)
         if len(self._disconnects) >= self.config.reconnect_storm_threshold:
             await self._alert_once(
@@ -263,12 +261,23 @@ class PaperRuntime:
                 now=at,
             )
 
-    async def on_stream_healthy(self, _at: datetime) -> None:
-        """Clear reconnect alerts only after the stream's heartbeat health window."""
+    async def on_stream_healthy(self, at: datetime) -> None:
+        """Clear reconnect alerts only after the stream's heartbeat health window.
 
-        self._disconnects.clear()
-        self._clear_alert("market_data_reconnect_storm")
+        Disconnect history survives healthy periods and leaves the window by age only, so a feed
+        that drops every minute still counts as a storm. The storm alert clears once the window
+        holds fewer disconnects than the threshold.
+        """
+
+        self._expire_disconnects(at)
+        if len(self._disconnects) < self.config.reconnect_storm_threshold:
+            self._clear_alert("market_data_reconnect_storm")
         self._clear_alert("market_data_disconnected")
+
+    def _expire_disconnects(self, at: datetime) -> None:
+        cutoff = at - self.config.reconnect_storm_window
+        while self._disconnects and self._disconnects[0] < cutoff:
+            self._disconnects.popleft()
 
     async def gap_fill(self, symbol: str, last_closed: datetime | None, end: datetime) -> None:
         self.operator.heartbeat("primary", status="degraded", detail="market-data reconnecting")
