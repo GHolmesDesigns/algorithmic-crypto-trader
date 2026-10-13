@@ -259,12 +259,72 @@ async def test_reconnect_storm_alerts_at_threshold_repeats_and_clears_on_health(
         "market_data_reconnect_storm",
     ]
 
+    # Health inside the storm window does not clear the alert; the history stays.
     await instance.on_stream_healthy(T0 + timedelta(seconds=180))
+    assert "market_data_reconnect_storm" in instance._active_alerts
     await instance.on_disconnect(T0 + timedelta(seconds=200), reason)
-    await instance.on_disconnect(T0 + timedelta(seconds=230), reason)
-    assert len(sink.alerts) == 2
-    await instance.on_disconnect(T0 + timedelta(seconds=260), reason)
     assert len(sink.alerts) == 3
+
+    # Once every disconnect has aged out of the window, health clears it and a new storm re-alerts.
+    await instance.on_stream_healthy(T0 + timedelta(seconds=600))
+    assert "market_data_reconnect_storm" not in instance._active_alerts
+    await instance.on_disconnect(T0 + timedelta(seconds=610), reason)
+    await instance.on_disconnect(T0 + timedelta(seconds=640), reason)
+    assert len(sink.alerts) == 3
+    await instance.on_disconnect(T0 + timedelta(seconds=670), reason)
+    assert len(sink.alerts) == 4
+
+
+@pytest.mark.asyncio
+async def test_flapping_feed_that_is_healthy_between_drops_raises_one_storm_alert(tmp_path) -> None:
+    instance, _cycle, sink = runtime(tmp_path, quote=None)
+    reason = DisconnectReason("heartbeat_timeout", "heartbeat stopped")
+
+    # Each connection lives 61 s, long enough to count as healthy, then drops again.
+    for drop in range(3):
+        start = T0 + timedelta(seconds=drop * 62)
+        await instance.on_disconnect(start, reason)
+        await instance.on_stream_healthy(start + timedelta(seconds=61))
+
+    assert [alert.condition for alert in sink.alerts] == ["market_data_reconnect_storm"]
+    assert "market_data_reconnect_storm" in instance._active_alerts
+    assert "market_data_disconnected" not in instance._active_alerts
+
+
+@pytest.mark.asyncio
+async def test_single_disconnect_then_long_health_raises_no_storm_and_clears_disconnected(
+    tmp_path,
+) -> None:
+    instance, _cycle, sink = runtime(tmp_path, quote=None)
+    reason = DisconnectReason("heartbeat_timeout", "heartbeat stopped")
+
+    await instance.on_disconnect(T0, reason)
+    await instance.gap_fill("BTC-USD", T0 - INTERVAL, T0)
+    assert "market_data_disconnected" in instance._active_alerts
+    await instance.on_stream_healthy(T0 + timedelta(seconds=61))
+    await instance.on_stream_healthy(T0 + timedelta(minutes=30))
+
+    assert [alert.condition for alert in sink.alerts] == ["market_data_disconnected"]
+    assert instance._active_alerts == set()
+
+
+@pytest.mark.asyncio
+async def test_storm_alert_clears_when_window_has_aged_below_threshold_and_stream_is_healthy(
+    tmp_path,
+) -> None:
+    instance, _cycle, sink = runtime(tmp_path, quote=None)
+    reason = DisconnectReason("heartbeat_timeout", "heartbeat stopped")
+
+    for offset in (0, 70, 140):
+        await instance.on_disconnect(T0 + timedelta(seconds=offset), reason)
+    assert "market_data_reconnect_storm" in instance._active_alerts
+
+    # At 350 s the disconnect at 0 s has left the 300 s window: 2 remain, below the threshold.
+    await instance.on_stream_healthy(T0 + timedelta(seconds=250))
+    assert "market_data_reconnect_storm" in instance._active_alerts
+    await instance.on_stream_healthy(T0 + timedelta(seconds=350))
+    assert "market_data_reconnect_storm" not in instance._active_alerts
+    assert len(sink.alerts) == 1
 
 
 @pytest.mark.asyncio
