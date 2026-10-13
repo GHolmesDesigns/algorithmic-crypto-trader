@@ -161,11 +161,13 @@ class CoinbaseWebSocketIngestor:
                     )
                     for product_id in self.product_ids:
                         previous = self.last_candle_at.get(product_id)
+                        if previous is not None and previous >= last_filled:
+                            # No bucket has closed since the last backfill or emitted bar.
+                            continue
                         await self.gap_fill(product_id, previous, gap_end)
                         # The backfill emitted every bucket before gap_end; the stream
                         # must not emit one of them again.
-                        if previous is None or last_filled > previous:
-                            self.last_candle_at[product_id] = last_filled
+                        self.last_candle_at[product_id] = last_filled
                 if stop.is_set():
                     return
                 if self._connection_healthy:
