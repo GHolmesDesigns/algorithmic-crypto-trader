@@ -369,6 +369,8 @@ def _cards(
     reconciliation = snapshot.get("reconciliation", {})
     portfolio = _portfolio(snapshot, now)
     pnl = snapshot.get("portfolio", {}).get("pnl", {})
+    pnl_at = _stamp(pnl.get("as_of"), now) if pnl.get("as_of") else None
+    pnl_detail = str(pnl.get("detail", "no detail"))
 
     cycle = runtime.get("last_cycle_status")
     cycle_label = f"Last cycle {cycle}" if cycle else "No strategy cycle has run"
@@ -461,8 +463,9 @@ def _cards(
             "portfolio",
             "P/L",
             _status(pnl.get("status"), {"unavailable": "unknown"}, "neutral"),
-            f"{pnl.get('detail', 'no detail')}. Unavailable is not zero.",
-            "No valuation producer",
+            pnl_detail if pnl_at else f"{pnl_detail}. Unavailable is not zero.",
+            "Latest equity snapshot" if pnl_at else "No figure",
+            pnl_at,
         ),
         Card(
             "alerts",
@@ -528,7 +531,9 @@ def _portfolio(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "empty_reason": empty_reason,
         "balances": balances,
         "positions": positions,
-        "pnl": _status(portfolio.get("pnl", {}).get("status"), {"unavailable": "unknown"}),
+        "pnl": _status(
+            portfolio.get("pnl", {}).get("status"), {"unavailable": "unknown", "current": "neutral"}
+        ),
         "pnl_detail": str(portfolio.get("pnl", {}).get("detail", "")),
     }
 

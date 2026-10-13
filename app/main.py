@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
 from api.alerts import Alert, AlertRouter, build_alert_router
@@ -48,6 +49,7 @@ from db.session import create_database_engine, create_session_factory
 from execution.engine import ExecutionEngine
 from execution.persistence import SqlAlchemyOrderStore
 from fastapi import FastAPI
+from portfolio.day_pnl import DayPnlReader
 from portfolio.equity import EquitySampler, SqlAlchemyEquityStore
 from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
@@ -63,6 +65,10 @@ from app.watch_feed import WatchFeedConfig, WatchOnlyFeed, build_watch_client
 
 DEFAULT_RECONCILE_INTERVAL_SECONDS = 300.0
 DEFAULT_EQUITY_SAMPLE_INTERVAL_SECONDS = 3600.0
+# Today's P/L is shown only while the latest equity snapshot is at most this many sampling
+# intervals old, and never older than the cap.
+PNL_STALE_INTERVALS = 2
+PNL_STALE_CAP = timedelta(hours=3)
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +379,10 @@ def start_scheduled_reconciliation(
 
     equity_store = SqlAlchemyEquityStore(session_factory)
     sampler = EquitySampler(operator_state.broker, equity_store, equity_store)
+    operator_state.day_pnl = DayPnlReader(
+        session_factory,
+        stale_after=min(timedelta(seconds=equity_interval * PNL_STALE_INTERVALS), PNL_STALE_CAP),
+    )
 
     async def alert_never_sent_order(order: Order, failure: Exception) -> None:
         reference = str(order.request.client_order_id)[:8]

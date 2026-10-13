@@ -161,7 +161,7 @@
           {%- else %}
           <p class="empty">{{ ui.absent(portfolio.empty_reason) }}. This is not a zero position.</p>
           {%- endif %}
-          <p class="pnl"><strong>P/L</strong> {{ ui.pill(portfolio.pnl) }} {{ portfolio.pnl_detail }}. No figure is shown until a trustworthy valuation exists, and unavailable is not zero.</p>
+          <p class="pnl"><strong>P/L</strong> {{ ui.pill(portfolio.pnl) }} {{ portfolio.pnl_detail }}.{% if portfolio.pnl.word != "current" %} No figure is shown until a trustworthy valuation exists, and unavailable is not zero.{% endif %}</p>
         </div>
       </div>
     </section>
