@@ -16,6 +16,7 @@ from core.disconnect import DisconnectReason
 from core.guards import CredentialScope, StartupGuardError, StartupSettings
 from core.models import Candle, MarketState, Quote, TradingMode
 from data.storage import InMemoryCandleStore
+from data.stream import CoinbaseWebSocketIngestor
 from risk.kill_switch import KillSwitch
 
 T0 = datetime(2026, 9, 27, 12, tzinfo=UTC)
@@ -445,3 +446,41 @@ async def test_runtime_enablement_is_explicit_and_missing_broker_is_visible(tmp_
     assert await start_paper_runtime(with_broker, environ={"PAPER_RUNTIME_ENABLED": "0"}) is None
     with pytest.raises(StartupGuardError, match="true or false"):
         await start_paper_runtime(with_broker, environ={"PAPER_RUNTIME_ENABLED": "sometimes"})
+
+
+class FailingDisconnectEvents(FakeSystemEvents):
+    """Only the disconnect write fails; the gap-fill record still works."""
+
+    def record(self, event_type: str, payload, *, now=None) -> None:
+        if event_type == "disconnect":
+            raise RuntimeError("event journal is down")
+        super().record(event_type, payload, now=now)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_disconnect_event_write_does_not_trip_the_kill_switch(tmp_path) -> None:
+    events = FailingDisconnectEvents()
+    instance, _cycle, sink = runtime(tmp_path, quote=None, system_events=events)
+    attempts: list[int] = []
+
+    async def connect(_url: str):
+        attempts.append(1)
+        if len(attempts) >= 3:
+            instance.stop_event.set()
+        raise OSError("down")
+
+    ingestor = CoinbaseWebSocketIngestor(
+        ("BTC-USD",), connect=connect, reconnect_base_seconds=0.001
+    )
+    ingestor.on_disconnect = instance.on_disconnect
+    ingestor.gap_fill = instance.gap_fill
+    instance.ingestor = ingestor
+
+    await instance._run()
+
+    assert len(attempts) == 3
+    assert instance.backfiller.calls  # the gap-fill still ran after the failed write
+    assert {event_type for event_type, _ in events.events} == {"gap_fill"}
+    assert instance.operator.kill_switch.state.value == "running"
+    assert instance.operator.snapshot.runtime_status != "failed"
+    assert "market_data_stopped" not in [alert.condition for alert in sink.alerts]

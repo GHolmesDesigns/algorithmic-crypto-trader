@@ -337,3 +337,71 @@ async def test_system_events_shows_the_reason_and_filters_to_disconnects(tmp_pat
     assert "HTTP 403" in page
     for event_type in ("disconnect", "gap_fill", "heartbeat", "restart", "kill_switch_transition"):
         assert f'value="{event_type}"' in page
+
+
+async def run_with_callbacks(*, on_disconnect, gap_fill, connections: int = 2):
+    """Drive a refusing ingestor; return the connect attempts it made and the gap-fills it ran."""
+
+    attempts: list[int] = []
+    gap_fills: list[str] = []
+
+    async def connect(_: str) -> ScriptedTransport:
+        attempts.append(1)
+        raise OSError("down")
+
+    async def record_gap_fill(symbol: str, _start, _end) -> None:
+        gap_fills.append(symbol)
+        await gap_fill(symbol)
+
+    ingestor = CoinbaseWebSocketIngestor(
+        ("BTC-USD",),
+        connect=connect,
+        on_disconnect=on_disconnect,
+        gap_fill=record_gap_fill,
+        reconnect_base_seconds=0.001,
+    )
+    await ingestor.run(asyncio.Event(), max_connections=connections)
+    return len(attempts), gap_fills
+
+
+async def no_gap_fill_error(_symbol: str) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_disconnect_callback_does_not_stop_the_reconnect(caplog) -> None:
+    caplog.set_level(logging.ERROR, logger="data.stream")
+
+    async def on_disconnect(_at, _reason) -> None:
+        raise RuntimeError("event journal is down")
+
+    attempts, gap_fills = await run_with_callbacks(
+        on_disconnect=on_disconnect, gap_fill=no_gap_fill_error
+    )
+
+    assert attempts == 2
+    assert gap_fills == ["BTC-USD", "BTC-USD"]
+    failures = [r for r in caplog.records if r.name == "data.stream" and r.levelno == logging.ERROR]
+    assert len(failures) == 2
+    assert all(r.exc_info and r.exc_info[0] is RuntimeError for r in failures)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_gap_fill_still_ends_the_run() -> None:
+    async def on_disconnect(_at, _reason) -> None:
+        return None
+
+    async def gap_fill(_symbol: str) -> None:
+        raise RuntimeError("backfill failed")
+
+    with pytest.raises(RuntimeError, match="backfill failed"):
+        await run_with_callbacks(on_disconnect=on_disconnect, gap_fill=gap_fill)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_inside_the_disconnect_callback_propagates() -> None:
+    async def on_disconnect(_at, _reason) -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_with_callbacks(on_disconnect=on_disconnect, gap_fill=no_gap_fill_error)
