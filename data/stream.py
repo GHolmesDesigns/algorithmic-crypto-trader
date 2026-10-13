@@ -152,7 +152,7 @@ class CoinbaseWebSocketIngestor:
                 self._open_buckets.clear()
                 reason = self._report_disconnect(exc, stage, attempts, delay)
                 if self.on_disconnect is not None and not stop.is_set():
-                    await self.on_disconnect(self.clock(), reason)
+                    await self._notify_disconnect(reason)
                 if self.gap_fill is not None and not stop.is_set():
                     # Backfill closed buckets only: stop at the start of the current one.
                     gap_end = _bucket_start(self.clock())
@@ -198,6 +198,19 @@ class CoinbaseWebSocketIngestor:
         except Exception:
             pass
         return reason
+
+    async def _notify_disconnect(self, reason: DisconnectReason) -> None:
+        """Run the disconnect callback; a diagnostic failure must not stop the reconnect.
+
+        Only the gap-fill that follows is allowed to end the loop, because a stream that
+        cannot be backfilled must fail closed.
+        """
+
+        assert self.on_disconnect is not None
+        try:
+            await self.on_disconnect(self.clock(), reason)
+        except Exception:
+            logger.exception("market-data disconnect callback failed")
 
     async def _subscribe(self, transport: WebSocketTransport) -> None:
         for channel in ("heartbeats", "candles", "ticker"):
