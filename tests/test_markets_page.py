@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from tests.operator_support import history_app
+from tests.test_operator_dashboard import SCRIPT_TAG, clock_script_url
 
 OPERATOR = {"x-operator-token": "operator-markets-page"}
 HTML = {**OPERATOR, "accept": "text/html,application/xhtml+xml"}
@@ -300,8 +301,13 @@ async def test_other_operator_pages_remain_javascript_free(tmp_path):
         transport=httpx.ASGITransport(app=application), base_url="http://test"
     ) as client:
         response = await client.get("/operator", headers=HTML)
+        history = await client.get("/operator/history/orders", headers=HTML)
     assert response.status_code == 200
-    assert "<script" not in response.text.lower()
+    # The dashboard's only script is the display-only UTC clock (#163): no inline code.
+    assert SCRIPT_TAG.findall(response.text) == [
+        '<script src="' + clock_script_url(response.text) + '" defer>'
+    ]
+    assert "<script" not in history.text.lower()
 
 
 @pytest.mark.asyncio

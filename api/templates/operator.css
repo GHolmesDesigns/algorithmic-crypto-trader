@@ -422,6 +422,21 @@ h1 {
   text-transform: uppercase;
 }
 
+/* The clock reads against every "x min ago" and "as of" time on the page. */
+.clock {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.5rem;
+  min-width: 0;
+}
+
+.clock-time {
+  font: 600 0.875rem/1.3 var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 .controls {
   display: flex;
   flex-wrap: wrap;
@@ -441,11 +456,42 @@ h1 {
   line-height: 1.35;
 }
 
+/* Medium windows put the clock on a row under the state text, so the controls stay where they were. */
 @media (min-width: 45em) {
   .safety {
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "state controls"
+      "clock .";
     align-items: center;
     padding: 0.75rem 2rem;
+  }
+
+  .safety-state {
+    grid-area: state;
+  }
+
+  .clock {
+    grid-area: clock;
+  }
+
+  .controls {
+    grid-area: controls;
+  }
+}
+
+/* Wide enough to keep the bar one row tall: the clock takes its own column. */
+@media (min-width: 110em) {
+  .safety {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "state clock controls";
+    gap: 1rem 1.5rem;
+  }
+
+  .clock {
+    display: grid;
+    gap: 0.125rem;
+    white-space: nowrap;
   }
 }
 

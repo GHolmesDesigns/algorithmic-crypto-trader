@@ -37,6 +37,36 @@ previous values only as explicitly-labelled last-known data, and records a
 redacted error condition. It never presents stale broker data as a current
 successful refresh and never includes provider payloads or credentials.
 
+### UTC clock in the safety bar
+
+The safety bar shows the server's UTC time to the second, in the page's stamp format
+(`YYYY-MM-DD HH:MM:SS UTC`), so every "x min ago" and "as of" time can be read against it
+(#163). It sits in the bar, not in the controls group, so PAUSE and EMERGENCY STOP keep their
+markup, size and place in every kill-switch state.
+
+- **Server anchor.** The template renders the server's time at render as a `<time>` element
+  and as `data-server-epoch-ms`. `api/static/dashboard/utc-clock.js` computes `offset =
+  server time - Date.now()` once, at load, and shows `Date.now() + offset` on each whole
+  second of server time. A wrong device clock or time zone cannot change what is shown. The
+  only error is the delay between the server rendering and the browser running the script.
+- **Without JavaScript**, or when the anchor cannot be read, the stamp stays as rendered and
+  is labelled **At page load**, so it does not look live. With the script it reads **Now**.
+- **Accessibility.** The `<time>` element is named "UTC time at page load", and "Current UTC
+  time" once it is live. It is not a live region, so a screen reader is not interrupted each
+  second. Its colours inherit the bar's tokens in light and dark.
+- **Layout.** The clock never joins the controls group. Below 45em it is its own line in the
+  flowing bar, and the controls stay fixed at the bottom of the screen. From 45em it takes a
+  row under the safety text, so the controls keep their place. From 110em it takes its own
+  column left of the controls.
+- **Network.** The script is served from `/operator/static/utc-clock.js?v=<hash of the file>`
+  with immutable caching, like the Markets module. It makes no `fetch`, WebSocket, beacon or
+  storage call, and writes no markup. This card adds no Content-Security-Policy and loosens
+  none; the dashboard has none, and the Markets page keeps its own.
+- **Scope.** The safety bar exists only on the dashboard, so no other operator page shows the
+  clock. `GET /operator/fragment` includes the stamp but not the script, so it reads **At page
+  load**. The dashboard does not refresh itself, and every age on the page is still measured at
+  page load.
+
 ### Average price of a position
 
 Gemini and Coinbase build positions from balances and report no cost basis, so a
