@@ -37,6 +37,38 @@ previous values only as explicitly-labelled last-known data, and records a
 redacted error condition. It never presents stale broker data as a current
 successful refresh and never includes provider payloads or credentials.
 
+### Average price of a position
+
+Gemini and Coinbase build positions from balances and report no cost basis, so a
+position's `average_price` is `null`. The Positions table shows **not known** with a
+short reason by default. When the fills this system saved account for the whole held
+quantity it shows their size-weighted average instead, labelled **from our fills**
+(#162). A price the venue reports always wins and carries no label.
+
+- The figure is read from the saved `fills` table and the symbol and side of the
+  linked order, so a restart does not blank it. Fills are walked in `(occurred_at,
+  fill id)` order, the same order `apply_fills` uses. A buy sets the average to
+  `notional / quantity` and fees are left out of it. A sell reduces the quantity and
+  keeps the average. A sell that takes the quantity below zero means earlier units came
+  from outside our fills, so the quantity is clamped to zero and the walk restarts
+  after it.
+- It is shown only when the walk ends on exactly the broker's quantity. A position with
+  no fills (for example a pre-funded balance), one that includes units the fills do not
+  cover, and one where the fills record more units than the broker holds all stay
+  **not known**, with the reason beside it. A partly computed price is never shown, and
+  neither is zero.
+- The `fills` table does not store the asset a fee was charged in. The walk is tried
+  with the fee charged in the quote asset (nothing leaves the held quantity) and in the
+  base asset (the fee is netted out of the held quantity). Only a reading that ends on
+  the broker's exact quantity counts, so the fee asset is established by the venue's own
+  number rather than assumed. When neither reading matches, the price is not known.
+- A failed read of the table shows **not known** with the reason "our saved fills could
+  not be read". The balances and positions still refresh.
+- It is a display value. `/operator/state` carries it as `cost_from_fills` beside each
+  unpriced position, and `average_price` stays exactly what the broker reported. It is
+  never written to the database, and reconciliation, equity and the risk inputs do not
+  read it. Rendering the dashboard writes nothing.
+
 ## Controls and alert delivery
 
 - `POST /operator/pause` sets the persistent kill switch to `paused`; it never

@@ -538,6 +538,14 @@ main {
   font-size: 0.875rem;
 }
 
+.fact-note {
+  display: block;
+  max-width: 14rem;
+  margin-left: auto;
+  font-style: normal;
+  white-space: normal;
+}
+
 .panel {
   display: grid;
   align-content: start;
