@@ -27,6 +27,7 @@
 {%- else -%}
 {{ item.text }}
 {%- endif -%}
+{%- if item.note %}<span class="note fact-note">{{ item.note }}</span>{% endif -%}
 {%- endmacro %}
 
 {% macro more(total, limit, noun) -%}

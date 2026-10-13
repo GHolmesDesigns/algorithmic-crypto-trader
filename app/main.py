@@ -51,6 +51,7 @@ from execution.persistence import SqlAlchemyOrderStore
 from fastapi import FastAPI
 from portfolio.day_pnl import DayPnlReader
 from portfolio.equity import EquitySampler, SqlAlchemyEquityStore
+from portfolio.fill_cost import FillCostReader
 from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
 from portfolio.store import SqlAlchemyPortfolioStore
@@ -383,6 +384,7 @@ def start_scheduled_reconciliation(
         session_factory,
         stale_after=min(timedelta(seconds=equity_interval * PNL_STALE_INTERVALS), PNL_STALE_CAP),
     )
+    operator_state.fill_costs = FillCostReader(session_factory)
 
     async def alert_never_sent_order(order: Order, failure: Exception) -> None:
         reference = str(order.request.client_order_id)[:8]

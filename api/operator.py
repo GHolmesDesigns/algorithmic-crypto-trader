@@ -14,6 +14,7 @@ from core.guards import StartupSettings
 from core.models import Balance, Fill, Order, Position, Signal, utc_now
 from core.version import application_version
 from portfolio.day_pnl import DayPnl
+from portfolio.fill_cost import UNREADABLE, FillCost
 from risk.kill_switch import KillSwitch
 
 from api.alerts import Alert, AlertDelivery, AlertRouter
@@ -45,6 +46,8 @@ class OperatorSnapshot:
     pnl_status: str = "unavailable"
     pnl_detail: str = "valuation data is unavailable"
     pnl_as_of: datetime | None = None
+    # Derived for display from our saved fills (#162); never part of ``positions``.
+    position_costs: tuple[FillCost, ...] = ()
     orders: tuple[Order, ...] = ()
     fills: tuple[Fill, ...] = ()
     signals: tuple[Signal, ...] = ()
@@ -79,6 +82,7 @@ class OperatorState:
         self.scheduled_reconciliation: Any = None
         self.watch_feed: Any = None
         self.day_pnl: Any = None
+        self.fill_costs: Any = None
         strategy = StrategyHeartbeat(name="primary", version=strategy_version)
         self.snapshot = OperatorSnapshot(
             strategy_version=strategy_version,
@@ -148,6 +152,7 @@ class OperatorState:
     async def refresh(self) -> OperatorSnapshot:
         await self._refresh_portfolio()
         await self._refresh_pnl()
+        await self._refresh_fill_costs()
         return self.snapshot
 
     async def _refresh_pnl(self) -> None:
@@ -167,6 +172,24 @@ class OperatorState:
             pnl_detail=result.detail,
             pnl_as_of=result.as_of,
         )
+
+    async def _refresh_fill_costs(self) -> None:
+        """Derive unpriced positions' averages from our saved fills; a failure only blanks them."""
+
+        reader = self.fill_costs
+        if reader is None:
+            return
+        positions = self.snapshot.positions
+        try:
+            costs: dict[str, FillCost] = await asyncio.to_thread(reader.read, positions)
+        except Exception:
+            logger.exception("average prices from saved fills could not be read")
+            costs = {
+                item.symbol: FillCost.unknown(item.symbol, item.quantity, UNREADABLE)
+                for item in positions
+                if item.average_price is None
+            }
+        self.snapshot = replace(self.snapshot, position_costs=tuple(costs.values()))
 
     async def _refresh_portfolio(self) -> OperatorSnapshot:
         now = utc_now()
@@ -273,6 +296,34 @@ class OperatorState:
         self.snapshot = replace(self.snapshot, alerts=marked, updated_at=now)
         return len(fresh)
 
+    @staticmethod
+    def _position_payloads(snapshot: OperatorSnapshot) -> list[dict[str, Any]]:
+        """The broker's positions, each with the fills-derived average beside it when one was read.
+
+        The derived figure rides in its own key so ``average_price`` stays exactly what the
+        broker reported. It is attached only while it still describes the quantity held.
+        """
+
+        costs = {item.symbol: item for item in snapshot.position_costs}
+        payloads = []
+        for position in snapshot.positions:
+            payload = _model_payload(position)
+            cost = costs.get(position.symbol)
+            if (
+                position.average_price is None
+                and cost is not None
+                and cost.quantity == position.quantity
+            ):
+                payload["cost_from_fills"] = {
+                    # Plain digits: the database pads a stored price to its 18-decimal scale.
+                    "average_price": None
+                    if cost.average_price is None
+                    else format(cost.average_price.normalize(), "f"),
+                    "reason": cost.reason,
+                }
+            payloads.append(payload)
+        return payloads
+
     def health(self) -> dict[str, Any]:
         return {
             "status": "healthy" if self.snapshot.connectivity_status == "healthy" else "degraded",
@@ -357,7 +408,7 @@ class OperatorState:
                 "status": snapshot.portfolio_status,
                 "detail": snapshot.portfolio_detail,
                 "balances": [_model_payload(item) for item in snapshot.balances],
-                "positions": [_model_payload(item) for item in snapshot.positions],
+                "positions": self._position_payloads(snapshot),
                 "pnl": {
                     "status": snapshot.pnl_status,
                     "detail": snapshot.pnl_detail,

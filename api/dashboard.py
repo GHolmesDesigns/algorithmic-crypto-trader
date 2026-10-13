@@ -101,6 +101,7 @@ class Fact:
     text: str = ""
     stamp: Stamp | None = None
     status: Status | None = None
+    note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -518,7 +519,7 @@ def _portfolio(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         {
             "symbol": item.get("symbol", ""),
             "quantity": item.get("quantity", ""),
-            "average_price": _average_price(item.get("average_price")),
+            "average_price": _average_price(item.get("average_price"), item.get("cost_from_fills")),
             "as_of": _stamp(item.get("as_of"), now),
         }
         for item in raw_positions
@@ -547,15 +548,25 @@ def _plain_amount(value: object) -> str:
         return str(value)
 
 
-def _average_price(value: object) -> Fact:
+def _average_price(value: object, from_fills: object = None) -> Fact:
     # None means the venue reports no cost basis; a real 0 (an airdrop) is a known price.
     try:
         known = value not in (None, "") and Decimal(str(value)) >= 0
     except InvalidOperation:
         known = False
-    if not known:
+    if known:
+        return Fact("Average price", "text", str(value))  # a venue-reported price always wins
+    if not isinstance(from_fills, Mapping):
         return Fact("Average price", "absent", "not known")
-    return Fact("Average price", "text", str(value))
+    derived = from_fills.get("average_price")
+    try:
+        derived_known = derived not in (None, "") and Decimal(str(derived)) >= 0
+    except InvalidOperation:
+        derived_known = False
+    if derived_known:
+        return Fact("Average price", "text", _plain_amount(derived), note="from our fills")
+    reason = from_fills.get("reason")
+    return Fact("Average price", "absent", "not known", note=str(reason) if reason else "")
 
 
 def _activity(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
