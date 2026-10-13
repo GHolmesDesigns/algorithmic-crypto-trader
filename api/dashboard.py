@@ -151,6 +151,7 @@ def build_dashboard(
             "updated": _stamp(snapshot.get("updated_at"), now),
         },
         "safety": safety,
+        "clock": _clock(now),
         "kill_switch_states": [
             {
                 "status": Status(word, _KILL_SWITCH[word]),
@@ -244,6 +245,17 @@ def _stamp(value: object, now: datetime, *, missing: str = "not recorded") -> St
         moment.strftime("%Y-%m-%d %H:%M:%S UTC"),
         _age(now - moment),
     )
+
+
+def _clock(now: datetime) -> dict[str, Any]:
+    """The server's UTC time at render, in the page's stamp format, as the clock's anchor."""
+
+    moment = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    return {
+        "iso": moment.isoformat(),
+        "text": moment.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "epoch_ms": int(moment.timestamp() * 1000),
+    }
 
 
 def _age(delta: timedelta) -> str:

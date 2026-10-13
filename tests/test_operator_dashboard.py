@@ -37,6 +37,17 @@ ADMIN = {"x-operator-token": "admin-secret"}
 MARKS = "●▲■○◐"
 CSS = Path(__file__).resolve().parents[1] / "api" / "templates" / "operator.css"
 ICON_DIR = Path(__file__).resolve().parents[1] / "api" / "static" / "icons"
+SCRIPT_TAG = re.compile(r"<script[^>]*>", re.IGNORECASE)
+
+
+def clock_script_url(html: str) -> str:
+    """The dashboard's one script address, which carries a content hash for caching."""
+
+    found = re.search(
+        r'<script src="(/operator/static/utc-clock\.js\?v=[0-9a-f]{12})" defer>', html
+    )
+    assert found, "the dashboard does not load the clock script"
+    return found[1]
 
 
 class HealthyBroker:
@@ -395,7 +406,8 @@ async def test_controls_work_as_plain_forms_without_javascript(monkeypatch, tmp_
             "/operator/login", data={"token": "operator-secret"}, headers={"accept": "text/html"}
         )
         html = (await client.get("/operator")).text
-        assert "<script" not in html
+        # Only the display-only clock script (#163); the controls need no script.
+        assert SCRIPT_TAG.findall(html) == ['<script src="' + clock_script_url(html) + '" defer>']
         assert "hx-" not in html
         assert '<form method="post" action="/operator/pause">' in html
         paused = await client.post("/operator/pause", headers={"accept": "text/html"})
@@ -788,7 +800,9 @@ async def test_state_text_is_escaped_not_rendered_as_markup(monkeypatch):
     )
     application.state.operator_state.set_runtime("degraded", '<img src=x onerror="alert(1)">')
     html = await page(application)
-    assert "<script" not in html
+    # The one script is the clock's file (#163); the alert text never becomes a tag.
+    assert SCRIPT_TAG.findall(html) == ['<script src="' + clock_script_url(html) + '" defer>']
+    assert "<script>" not in html
     assert "<img" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "&lt;b&gt;x&lt;/b&gt;" in html

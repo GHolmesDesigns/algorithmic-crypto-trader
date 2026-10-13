@@ -74,6 +74,10 @@
       {%- endif %}
       <p class="next-step"><strong>Next safe step:</strong> {{ safety.next_step }}</p>
     </div>
+    <div class="clock" data-utc-clock data-server-epoch-ms="{{ view.clock.epoch_ms }}">
+      <span class="eyebrow clock-label" aria-hidden="true" data-clock-label>At page load</span>
+      <time class="clock-time" datetime="{{ view.clock.iso }}" aria-label="UTC time at page load" data-clock-time>{{ view.clock.text }}</time>
+    </div>
     <div class="controls" role="group" aria-label="Kill-switch controls">
       {%- if safety.halted %}
       <p class="controls-note">PAUSE hidden: administrator re-arm required.<span class="wide-only"> PAUSE cannot lower a halt.</span></p>

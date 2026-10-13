@@ -164,13 +164,22 @@ authenticated `/operator/state` returns:
 - **Section links:** Overview, Portfolio, Activity, Alerts & errors, Risk &
   safety, and System health. A wide screen shows them in a left rail; a phone
   shows a row that scrolls sideways.
-- **Safety bar:** the kill-switch state, its cause, the next safe step, and the
-  **PAUSE** and **EMERGENCY STOP** controls. It stays at the top of the window
-  while you scroll. On a phone, the two controls stay fixed at the bottom of the
-  screen.
+- **Safety bar:** the kill-switch state, its cause, the next safe step, the
+  current UTC time, and the **PAUSE** and **EMERGENCY STOP** controls. It stays
+  at the top of the window while you scroll. On a phone, the two controls stay
+  fixed at the bottom of the screen.
 
 Times are shown in UTC with their age when the page loaded. Select **Refresh**
 for newer values.
+
+The clock in the safety bar shows the server's UTC time and ticks every second,
+so you can read any "min ago" or "as of" time against it. It follows the server,
+not your device, so a wrong device clock or time zone does not change it. The
+page does not refresh itself: the ages elsewhere stay as they were at page load
+until you select **Refresh**. If the label beside the clock says **At page
+load**, the clock is not ticking, either because the browser blocked scripts or
+because the page could not read its starting time. The time shown is then the
+server's time when the page loaded.
 
 ### Status marks
 
@@ -377,8 +386,9 @@ the response is malformed, the server-drawn SVG stays in place.
 
 The interactive enhancement is limited to this page. Its Content-Security-Policy
 permits scripts and chart data only from the app's own origin, disallows inline
-script, and prevents framing. Every other operator page and every safety
-control remains JavaScript-free. The pinned library, checksum, license, and
+script, and prevents framing. The only other script is the dashboard's UTC
+clock, which displays the time and sends nothing. Every other operator page and
+every safety control remains JavaScript-free. The pinned library, checksum, license, and
 notice are in `api/static/markets/`; update them only in a reviewed pull request
 that records the new release and SHA-256.
 

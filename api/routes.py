@@ -44,6 +44,12 @@ _SESSION_COOKIE = "operator_session"
 _SESSION_TTL_SECONDS = 8 * 60 * 60
 _ROLE_LABELS = {"operator": "Operator", "admin": "Administrator"}
 FAVICON_FILE = Path(__file__).resolve().parent / "static" / "icons" / "bitcoin.ico"
+UTC_CLOCK_PATH = "/operator/static/utc-clock.js"
+UTC_CLOCK_FILE = Path(__file__).resolve().parent / "static" / "dashboard" / "utc-clock.js"
+# The file is cached for a year, so its address changes whenever its content does.
+templates.env.globals["utc_clock_script_url"] = (
+    f"{UTC_CLOCK_PATH}?v={hashlib.sha256(UTC_CLOCK_FILE.read_bytes()).hexdigest()[:12]}"
+)
 
 
 @router.get("/health")
@@ -62,6 +68,20 @@ def favicon() -> FileResponse:
         media_type="image/x-icon",
         headers={
             "Cache-Control": "public, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(UTC_CLOCK_PATH, include_in_schema=False)
+def utc_clock_script() -> FileResponse:
+    """Unauthenticated, like the Markets module: a fixed, reviewed display-only script."""
+
+    return FileResponse(
+        UTC_CLOCK_FILE,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
             "X-Content-Type-Options": "nosniff",
         },
     )
