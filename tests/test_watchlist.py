@@ -582,7 +582,9 @@ def imported_modules(path: Path) -> set[str]:
     return names
 
 
-@pytest.mark.parametrize("module", ["app/watch_feed.py", "data/watchlist.py"])
+@pytest.mark.parametrize(
+    "module", ["app/watch_feed.py", "data/watchlist.py", "data/feed_setting.py"]
+)
 def test_watch_modules_import_nothing_from_the_trading_path(module) -> None:
     root = Path(__file__).parents[1]
     offenders = {
@@ -681,13 +683,15 @@ def test_the_feed_is_off_by_default_and_validates_its_settings() -> None:
             WatchFeedConfig.from_env(bad)
 
 
-async def test_start_watch_feed_is_a_no_op_unless_enabled(tmp_path) -> None:
+async def test_start_watch_feed_leaves_the_feed_off_unless_enabled(tmp_path) -> None:
     application = history_app(tmp_path)
     close = attach_watchlist(application)
     try:
-        assert start_watch_feed(application, environ={}) is None
+        stop = start_watch_feed(application, environ={})
         assert getattr(application.state, "watch_feed", None) is None
         assert application.state.operator_state.watch_feed is None
+        assert application.state.watch_feed_controller.running is False
+        await stop()
     finally:
         await close()
 

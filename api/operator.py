@@ -81,6 +81,7 @@ class OperatorState:
         self.startup_recovery: Any = None
         self.scheduled_reconciliation: Any = None
         self.watch_feed: Any = None
+        self.watch_feed_controller: Any = None
         self.day_pnl: Any = None
         self.fill_costs: Any = None
         strategy = StrategyHeartbeat(name="primary", version=strategy_version)
@@ -403,6 +404,11 @@ class OperatorState:
                 self.watch_feed.to_dict()
                 if self.watch_feed is not None
                 else {"enabled": False, "symbols": []}
+            ),
+            "watch_feed_setting": (
+                self.watch_feed_controller.to_dict()
+                if self.watch_feed_controller is not None
+                else None
             ),
             "portfolio": {
                 "status": snapshot.portfolio_status,

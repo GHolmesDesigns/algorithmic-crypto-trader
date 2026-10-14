@@ -33,9 +33,28 @@
             <p>Nothing could be read, so this is not an empty list. Check System health on the dashboard and the application log.</p>
           </div>
           {%- else %}
-          {%- if not view.feed_enabled %}
-          <p class="note">The watch-only feed is off (WATCH_FEED_ENABLED), so saved coins are listed but no candles are collected.</p>
-          {%- endif %}
+          <section class="panel" aria-labelledby="feed-heading">
+            <h2 id="feed-heading">Watch-only feed</h2>
+            <p>{{ ui.pill(view.feed_status) }} {{ view.feed_origin }}</p>
+            {%- if not view.feed_enabled %}
+            <p class="note">While it is off, saved coins are listed but no candles are collected.</p>
+            {%- endif %}
+            <p class="note">{{ view.feed_budget }}</p>
+            {%- if view.can_toggle %}
+            <form method="post" action="{{ view.path }}/feed">
+              <input type="hidden" name="enabled" value="{{ '0' if view.feed_enabled else '1' }}">
+              <div class="actions">
+                {%- if view.feed_enabled %}
+                <button class="button button-quiet" type="submit">Turn off the watch-only feed</button>
+                {%- else %}
+                <button class="button button-rearm" type="submit">Turn on the watch-only feed</button>
+                {%- endif %}
+              </div>
+            </form>
+            {%- else %}
+            <p class="note">Only an administrator can turn the feed on or off.</p>
+            {%- endif %}
+          </section>
           <section class="panel" aria-labelledby="watched-heading">
             <h2 id="watched-heading">Watched coins ({{ view.rows|length }} of {{ view.limit }})</h2>
             {%- if view.rows %}

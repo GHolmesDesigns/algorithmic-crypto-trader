@@ -17,12 +17,40 @@ the trading symbols, strategy, risk, execution, or reconciliation.
   product exists and is `online`, not `trading_disabled`, not `is_disabled`, and
   a spot product. Anything else, including a lookup that could not answer, is
   refused with the reason and nothing is saved.
-- A store-only feed, off unless `WATCH_FEED_ENABLED=1`. It collects closed
+- A store-only feed, off unless `WATCH_FEED_ENABLED=1` or an administrator turns it on from the Watchlist page (issue #166, below). It collects closed
   five-minute candles for watched symbols that are not in `PAPER_SYMBOLS`, and
   writes them with the existing `SqlAlchemyCandleStore`. Nothing reads them yet.
 - Per-symbol feed state in `GET /operator/state` under `watch_feed`, apart from
   `runtime` and the heartbeats: `fresh`, `stale`, `not_collected`, or
   `unavailable`, with the last candle time.
+
+## Turning the feed on and off from the page (issue #166)
+
+An administrator can start and stop the feed from the Watchlist page, with no
+restart and no edit to the server's `.env`.
+
+- `POST /operator/watchlist/feed` takes `enabled` (`1` or `0`, or JSON `true`
+  or `false`). It needs the administrator token or session: another signed-in
+  role gets 403 and nobody signed in gets 401. Asking for the state the feed is
+  already in answers `unchanged` and writes nothing.
+- The choice is one row in `operator_settings` (migration `0012`), saved in the
+  same transaction as a `watch_feed_change` system event (action, previous and
+  new value, role). If either write fails, nothing is saved and the feed is left
+  as it was.
+- At startup the saved choice decides. With none saved, `WATCH_FEED_ENABLED`
+  decides, as before. A saved value that cannot be read leaves the feed off even
+  when the environment says on, and the page and `GET /operator/state` say why
+  (`watch_feed_setting`). It never defaults to on.
+- `WatchFeedController` (`app/watch_feed.py`) owns the feed's task. Turning it
+  off stops the task and keeps saved candles; pruning stops with it. Turning it
+  on uses the same `WatchOnlyFeed`, its own client, limiter and breaker, and the
+  30-day backfill described above.
+- The controller and the setting store import nothing from strategy, risk,
+  execution, brokers, or portfolio, and a test parses `data/feed_setting.py`
+  like the other two modules. Toggling changes no trading symbol, risk decision,
+  order, heartbeat, or kill-switch state.
+- Not included: per-coin on/off, setting `WATCH_FEED_RETENTION_DAYS` from the
+  page, and deleting saved candles when the feed is turned off.
 
 ## Isolation from trading
 

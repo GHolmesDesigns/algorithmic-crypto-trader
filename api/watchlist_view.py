@@ -21,6 +21,13 @@ _STATES = {
     "unavailable": Status("unavailable", "crit"),
 }
 _TRADING = Status("collected by the trading feed", "neutral")
+_FEED_ON = Status("on", "ok")
+_FEED_OFF = Status("off", "neutral")
+_BUDGET = (
+    "Public Coinbase market data only: no credentials, and it never trades. Turning it on "
+    "backfills 30 days for each watched coin (about 30 requests per coin), then makes one "
+    "request per coin every five minutes."
+)
 
 
 def build_watchlist_view(
@@ -44,6 +51,10 @@ def build_watchlist_view(
         "rows": [],
         "limit": 0,
         "feed_enabled": False,
+        "feed_status": _FEED_OFF,
+        "feed_origin": "",
+        "feed_budget": _BUDGET,
+        "can_toggle": False,
         "full": False,
     }
     if payload is None:
@@ -51,6 +62,9 @@ def build_watchlist_view(
     symbols = payload["symbols"]
     view["limit"] = payload["limit"]
     view["feed_enabled"] = payload["feed_enabled"]
+    view["feed_status"] = _FEED_ON if payload["feed_enabled"] else _FEED_OFF
+    view["feed_origin"] = _origin_text(payload.get("feed_setting"), payload["feed_enabled"])
+    view["can_toggle"] = role == "admin" and payload.get("feed_setting") is not None
     view["full"] = len(symbols) >= payload["limit"]
     for item in symbols:
         feed = item["feed"]
@@ -77,3 +91,22 @@ def build_watchlist_view(
             }
         )
     return view
+
+
+def _origin_text(setting: Mapping[str, Any] | None, enabled: bool) -> str:
+    """Say why the feed is in its state, in the operator's words."""
+
+    word = "on" if enabled else "off"
+    if setting is None:
+        return f"The feed is {word}. This process has no on/off control."
+    source = setting["source"]
+    if source == "saved" and setting["changed_at"]:
+        when = datetime.fromisoformat(setting["changed_at"]).astimezone(UTC)
+        stamp = when.strftime("%Y-%m-%d %H:%M:%S UTC")
+        return f"Turned {word} by {setting['changed_by']}, {stamp}."
+    if source == "unreadable":
+        return setting["detail"] or "The saved on/off choice could not be read, so the feed is off."
+    return (
+        f"{word.capitalize()} by the deployment setting (WATCH_FEED_ENABLED); "
+        "no choice has been saved from this page."
+    )
