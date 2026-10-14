@@ -282,3 +282,17 @@ class WatchlistRecord(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     added_by: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class OperatorSettingRecord(Base):
+    """One operator-chosen setting, such as whether the watch-only feed runs.
+
+    A row exists only after an operator has made the choice; until then the
+    deployment's environment decides. ``updated_by`` is the acting role.
+    """
+
+    __tablename__ = "operator_settings"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(256), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(32), nullable=False)

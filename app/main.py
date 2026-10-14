@@ -43,6 +43,14 @@ from core.models import Order, TradingMode
 from core.reconnect import ReconnectSettings
 from core.version import application_version
 from data.coinbase import CoinbaseRESTClient
+from data.feed_setting import (
+    ORIGIN_ENVIRONMENT,
+    ORIGIN_SAVED,
+    ORIGIN_UNREADABLE,
+    FeedOrigin,
+    FeedSettingError,
+    SqlAlchemyFeedSetting,
+)
 from data.storage import SqlAlchemyCandleStore
 from data.watchlist import SqlAlchemyWatchlist
 from db.session import create_database_engine, create_session_factory
@@ -62,7 +70,12 @@ from app.heartbeat import HeartbeatScheduler
 from app.paper_runtime import parse_paper_symbols, start_paper_runtime
 from app.recovery import StartupRecoveryResult, recover_on_startup
 from app.startup_broker import assert_live_key_scope, build_startup_broker
-from app.watch_feed import WatchFeedConfig, WatchOnlyFeed, build_watch_client
+from app.watch_feed import (
+    WatchFeedConfig,
+    WatchFeedController,
+    WatchOnlyFeed,
+    build_watch_client,
+)
 
 DEFAULT_RECONCILE_INTERVAL_SECONDS = 300.0
 DEFAULT_EQUITY_SAMPLE_INTERVAL_SECONDS = 3600.0
@@ -263,35 +276,61 @@ def attach_watchlist(application: FastAPI) -> Callable[[], Awaitable[None]]:
     return close
 
 
-def start_watch_feed(application: FastAPI, *, environ=None) -> Callable[[], Awaitable[None]] | None:
-    """Start the store-only watch feed when WATCH_FEED_ENABLED is set; off by default."""
+def start_watch_feed(application: FastAPI, *, environ=None) -> Callable[[], Awaitable[None]]:
+    """Set up the store-only watch feed and start it if it should run; return a stop callback.
+
+    The saved operator choice decides. With none saved, ``WATCH_FEED_ENABLED`` decides, and
+    it is off by default. A saved choice that cannot be read leaves the feed off. The
+    controller stays on ``application.state`` so the Watchlist page can start and stop it.
+    """
 
     values = os.environ if environ is None else environ
     config = WatchFeedConfig.from_env(values)
-    if not config.enabled:
-        return None
     settings: StartupSettings = application.state.startup_settings
     engine = create_database_engine(settings.database_url, settings.trading_mode)
+    session_factory = create_session_factory(engine)
+    setting = SqlAlchemyFeedSetting(session_factory)
     client: CoinbaseRESTClient = application.state.watch_client
-    feed = WatchOnlyFeed(
-        watchlist=application.state.watchlist,
-        trading_symbols=parse_paper_symbols(values),
-        store=SqlAlchemyCandleStore(create_session_factory(engine)),
-        source=client,
-        config=config,
-    )
-    application.state.watch_feed = feed
-    application.state.operator_state.watch_feed = feed
-    stop = asyncio.Event()
-    task = asyncio.create_task(feed.run(stop), name="watch-only-feed")
+    trading_symbols = parse_paper_symbols(values)
+
+    def build() -> tuple[WatchOnlyFeed, Callable[[], None]]:
+        feed = WatchOnlyFeed(
+            watchlist=application.state.watchlist,
+            trading_symbols=trading_symbols,
+            store=SqlAlchemyCandleStore(session_factory),
+            source=client,
+            config=config,
+        )
+        return feed, lambda: None
+
+    def publish(feed: WatchOnlyFeed | None) -> None:
+        application.state.watch_feed = feed
+        application.state.operator_state.watch_feed = feed
+
+    try:
+        choice = setting.read()
+    except FeedSettingError as exc:
+        enabled = False
+        origin = FeedOrigin(ORIGIN_UNREADABLE, detail=f"{exc} The feed is off until it is saved.")
+        logger.error("watch feed choice unreadable, feed left off: %s", exc)
+    else:
+        if choice is None:
+            enabled = config.enabled
+            origin = FeedOrigin(ORIGIN_ENVIRONMENT)
+        else:
+            enabled = choice.enabled
+            origin = FeedOrigin(ORIGIN_SAVED, choice.changed_by, choice.changed_at)
+    controller = WatchFeedController(build=build, publish=publish, origin=origin)
+    publish(None)
+    application.state.watch_feed_controller = controller
+    application.state.watch_feed_setting = setting
+    application.state.operator_state.watch_feed_controller = controller
+    if enabled:
+        controller.start()
 
     async def stop_feed() -> None:
-        stop.set()
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            await controller.stop()
         finally:
             engine.dispose()
 

@@ -332,8 +332,19 @@ the strategy, risk gates, and execution never see its candles. To trade a coin
 you still change `PAPER_SYMBOLS`, which is a deployment decision.
 
 Saving a coin does not collect anything by itself. The **watch-only feed**
-collects each watched coin's closed five-minute candles when the service starts
-with `WATCH_FEED_ENABLED=1`. It is off by default. With it on:
+collects each watched coin's closed five-minute candles. It is off by default.
+The **Watch-only feed** panel at the top of the Watchlist page shows whether it
+is on, and why: turned on or off by a named role at a time, or set by the
+deployment (`WATCH_FEED_ENABLED`) because nobody has used the button.
+
+An administrator turns it on or off with the button in that panel. It takes
+effect at once, with no restart, and the choice is kept across restarts. After
+the button has been used, the saved choice wins over `WATCH_FEED_ENABLED`. Turning
+it off keeps the candles already saved and only stops collecting more. Anyone
+else signed in sees the state and a note that only an administrator can change
+it. Each change is recorded as a `watch_feed_change` event under **System
+events**. If the saved choice cannot be read, the feed stays off and the page
+says so; it never turns itself on. With it on:
 
 - Adding a coin backfills 30 days of candles, 29 requests of 300 candles each,
   then adds one request per coin every five minutes.
@@ -842,7 +853,7 @@ yourself.
 | `PAPER_MIN_NOTIONAL` | `1` | Positive minimum notional supplied to the exchange-constraint risk gate. |
 | `PAPER_ESTIMATED_SLIPPAGE` | `0.005` | Non-negative estimate no greater than the 1% default risk limit. |
 | `PAPER_COOLDOWN_SECONDS` | `300` | Non-negative per-symbol order cooldown. |
-| `WATCH_FEED_ENABLED` | `0` | Starts the store-only feed that collects candles for watchlist coins that are not in `PAPER_SYMBOLS`. Public market data only; it never trades. |
+| `WATCH_FEED_ENABLED` | `0` | Whether the store-only feed that collects candles for watchlist coins that are not in `PAPER_SYMBOLS` starts with the service, until an administrator uses the button on the Watchlist page; the saved choice then wins. Public market data only; it never trades. |
 | `WATCH_FEED_RETENTION_DAYS` | `30` | Days of watch-only candles kept, from 30 to 365. Only watched coins outside `PAPER_SYMBOLS` are pruned. |
 | `TRADING_KILL_SWITCH_FILE` | unset | Optional plain-text external flag read on every paper cycle; `paused` and `halted` can tighten state, while `running` cannot re-arm. |
 | `LOSS_STATE_FILE` | next to `KILL_SWITCH_FILE` | Persists opening/peak equity so daily-loss and drawdown checks survive restart. |

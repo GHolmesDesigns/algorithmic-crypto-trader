@@ -32,6 +32,7 @@ from core.guards import StartupGuardError
 from core.models import Candle, utc_now
 from core.resilience import CircuitBreaker, CircuitOpen, RateLimitExceeded, TokenBucketRateLimiter
 from data.coinbase import GRANULARITY_SECONDS, MAX_CANDLES_PER_REQUEST, CoinbaseRESTClient
+from data.feed_setting import FeedOrigin
 from data.stream import WEBSOCKET_CANDLE_INTERVAL
 from data.validation import MarketDataValidationError, MarketDataValidator
 from data.watchlist import SqlAlchemyWatchlist
@@ -189,11 +190,12 @@ class WatchOnlyFeed:
                 asyncio.ensure_future(stop.wait()),
                 asyncio.ensure_future(self._wake.wait()),
             }
-            _, pending = await asyncio.wait(
-                waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
+            try:
+                await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                # Also on cancellation, so turning the feed off leaves no waiter behind.
+                for task in waiters:
+                    task.cancel()
 
     async def run_cycle(self) -> None:
         now = self.clock()
@@ -271,6 +273,73 @@ class WatchOnlyFeed:
                 self.store.prune_before(symbol, INTERVAL_NAME, cutoff, PRUNE_BATCH)
             except Exception:
                 logger.exception("watch-only candle pruning failed for %s", symbol)
+
+
+class WatchFeedController:
+    """Start and stop the watch-only feed while the service runs.
+
+    ``build`` makes a fresh feed and a callback that releases what it holds; the
+    controller owns the feed's task. Starting twice or stopping twice does
+    nothing. ``publish`` is told the running feed, or ``None`` once it stops.
+    """
+
+    def __init__(
+        self,
+        *,
+        build: Callable[[], tuple[WatchOnlyFeed, Callable[[], None]]],
+        publish: Callable[[WatchOnlyFeed | None], None],
+        origin: FeedOrigin,
+    ) -> None:
+        self._build = build
+        self._publish = publish
+        self.origin = origin
+        self.feed: WatchOnlyFeed | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._stop: asyncio.Event | None = None
+        self._release: Callable[[], None] | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.feed is not None
+
+    def start(self) -> None:
+        if self.feed is not None:
+            return
+        feed, release = self._build()
+        stop = asyncio.Event()
+        try:
+            task = asyncio.create_task(feed.run(stop), name="watch-only-feed")
+        except BaseException:
+            release()
+            raise
+        self.feed, self._task, self._stop, self._release = feed, task, stop, release
+        self._publish(feed)
+
+    async def stop(self) -> None:
+        feed, task, stop, release = self.feed, self._task, self._stop, self._release
+        if feed is None or task is None or stop is None:
+            return
+        self.feed = self._task = self._stop = self._release = None
+        self._publish(None)
+        stop.set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if release is not None:
+                release()
+
+    def to_dict(self) -> dict[str, Any]:
+        origin = self.origin
+        return {
+            "enabled": self.running,
+            "source": origin.source,
+            "changed_by": origin.changed_by,
+            "changed_at": origin.changed_at.isoformat() if origin.changed_at else None,
+            "detail": origin.detail,
+        }
 
 
 def _bucket_start(moment: datetime) -> datetime:

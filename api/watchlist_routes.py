@@ -8,10 +8,12 @@ own, and ``PAPER_SYMBOLS`` remains the only list the trading path uses.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import parse_qs
 
+from data.feed_setting import ORIGIN_SAVED, FeedOrigin, FeedSettingError
 from data.watchlist import (
     WATCHLIST_LIMIT,
     SqlAlchemyWatchlist,
@@ -26,10 +28,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from api.routes import _authorize, _page, _wants_html, templates
 from api.watchlist_view import WATCHLIST_PATH, build_watchlist_view
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _NOT_CONFIGURED = "the watchlist is not configured in this process"
 _UNREADABLE = "the watchlist could not be read or saved"
+_NOT_CONFIGURED_FEED = "the watch-only feed is not configured in this process"
 
 
 class _Unavailable(RuntimeError):
@@ -127,6 +131,42 @@ async def reorder_symbols(request: Request) -> Response:
     return RedirectResponse(WATCHLIST_PATH, status_code=303)
 
 
+@router.post(f"{WATCHLIST_PATH}/feed")
+async def set_feed(request: Request) -> Response:
+    """Turn the watch-only feed on or off; an administrator only, saved across restarts."""
+
+    role = _authorize(request, "admin")
+    form = await _body(request)
+    wanted = _parse_enabled(form.get("enabled"))
+    if wanted is None:
+        return _refused(request, role, ("Choose to turn the feed on or off.",), 422)
+    controller = getattr(request.app.state, "watch_feed_controller", None)
+    setting = getattr(request.app.state, "watch_feed_setting", None)
+    if controller is None or setting is None:
+        return _unavailable(request, role, _NOT_CONFIGURED_FEED)
+    was = controller.running
+    if wanted == was:
+        return _feed_done(request, "unchanged", wanted)
+    try:
+        if wanted:
+            controller.start()
+        try:
+            choice = setting.save(wanted, previous=was, role=role)
+        except FeedSettingError:
+            if wanted:
+                await controller.stop()
+            raise
+        if not wanted:
+            await controller.stop()
+    except FeedSettingError as exc:
+        return _unavailable(request, role, str(exc))
+    except Exception:
+        logger.exception("watch-only feed could not be turned %s", "on" if wanted else "off")
+        return _unavailable(request, role, "the watch-only feed could not be changed")
+    controller.origin = FeedOrigin(ORIGIN_SAVED, choice.changed_by, choice.changed_at)
+    return _feed_done(request, "turned_on" if wanted else "turned_off", wanted)
+
+
 def _store(request: Request) -> SqlAlchemyWatchlist:
     store = getattr(request.app.state, "watchlist", None)
     if store is None:
@@ -149,9 +189,11 @@ def _payload(request: Request) -> dict[str, Any]:
     )
     states = {item["symbol"]: item for item in feed_state["symbols"]}
     trading = sorted(feed.trading_symbols) if feed is not None else []
+    controller = getattr(request.app.state, "watch_feed_controller", None)
     return {
         "limit": WATCHLIST_LIMIT,
         "feed_enabled": feed is not None,
+        "feed_setting": controller.to_dict() if controller is not None else None,
         "trading_symbols": trading,
         "symbols": [
             {
@@ -184,6 +226,23 @@ async def _body(request: Request) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     parsed = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
     return {key: values[0] for key, values in parsed.items()}
+
+
+def _parse_enabled(raw: Any) -> bool | None:
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "on"}:
+        return True
+    if text in {"0", "false", "off"}:
+        return False
+    return None
+
+
+def _feed_done(request: Request, status: str, enabled: bool) -> Response:
+    if not _wants_html(request):
+        return JSONResponse({"status": status, "enabled": enabled})
+    return RedirectResponse(WATCHLIST_PATH, status_code=303)
 
 
 def _done(request: Request, status: str, symbol: str) -> Response:
