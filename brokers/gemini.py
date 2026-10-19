@@ -355,6 +355,8 @@ class GeminiBroker(BrokerInterface):
         canceled = await self.cancel_order(client_order_id)
         if canceled is None:
             raise KeyError(client_order_id)
+        if canceled.status is OrderStatus.FILLED and canceled.filled_quantity >= quantity:
+            return canceled  # it filled before the cancel; nothing is left to replace
         remaining = replacement_quantity(canceled, quantity)
         if remaining <= 0:
             return canceled
@@ -495,7 +497,11 @@ def _traded(trades: tuple[Mapping[str, Any], ...]) -> Decimal:
 
 def _order_status(raw: Mapping[str, Any], requested: Decimal) -> OrderStatus:
     if raw.get("is_cancelled") or str(raw.get("reason") or "").lower() in {"cancelled", "canceled"}:
-        return OrderStatus.CANCELED
+        executed = _decimal(raw.get("executed_amount"), default=Decimal("0"))
+        if executed > 0:
+            _log_cancelled_with_executions(raw)
+        # Nothing is left to cancel once the whole request has traded, whatever the flag says.
+        return OrderStatus.FILLED if executed >= requested else OrderStatus.CANCELED
     if str(raw.get("reason") or "").lower() in {"invalidquantity", "rejected", "insufficientfunds"}:
         return OrderStatus.REJECTED
     filled = _decimal(raw.get("executed_amount"), default=Decimal("0"))
@@ -506,6 +512,35 @@ def _order_status(raw: Mapping[str, Any], requested: Decimal) -> OrderStatus:
     if raw.get("is_live"):
         return OrderStatus.OPEN
     return OrderStatus.PENDING_SUBMIT
+
+
+_CANCEL_FLAG_FIELDS = (
+    "is_cancelled",
+    "reason",
+    "is_live",
+    "executed_amount",
+    "original_amount",
+    "remaining_amount",
+)
+
+
+def _log_cancelled_with_executions(raw: Mapping[str, Any]) -> None:
+    """Record the status flags of an order that is marked cancelled yet has traded.
+
+    Only an allow-list of status fields and the short client order id are written: no
+    order id, price, trade or account detail.
+    """
+
+    fields = " ".join(f"{name}={_safe_flag(raw.get(name))}" for name in _CANCEL_FLAG_FIELDS)
+    logger.warning(
+        "Gemini order %s has executions and a cancelled flag: %s",
+        str(raw.get("client_order_id") or "unknown")[:8],
+        fields,
+    )
+
+
+def _safe_flag(value: Any) -> str:
+    return str(value)[:32] if isinstance(value, bool | int | float | str) or value is None else "?"
 
 
 def _recovered_request(raw: Mapping[str, Any], client_order_id: str) -> OrderRequest:
