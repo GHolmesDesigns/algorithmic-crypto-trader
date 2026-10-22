@@ -334,7 +334,7 @@ class BrokerRiskInputs:
         self,
         broker: BrokerInterface,
         *,
-        constraints: ExchangeConstraints,
+        constraints: ExchangeConstraints | Mapping[str, ExchangeConstraints],
         estimated_slippage: Decimal,
         quote_asset: str = "USD",
         cooldown: timedelta = timedelta(0),
@@ -412,9 +412,20 @@ class BrokerRiskInputs:
             drawdown=drawdown,
             expected_price=quote.ask if signal.side is OrderSide.BUY else quote.bid,
             estimated_slippage=self.estimated_slippage,
-            constraints=self.constraints,
+            constraints=self._constraints_for(signal.symbol),
             now=now,
         )
+
+    def _constraints_for(self, symbol: str) -> ExchangeConstraints | None:
+        """The limits for this signal's symbol; a symbol with none is refused by the gate.
+
+        One ``ExchangeConstraints`` serves every symbol (a single-symbol setup). A mapping
+        gives each symbol its own and never falls back to another symbol's numbers (#170).
+        """
+
+        if isinstance(self.constraints, ExchangeConstraints):
+            return self.constraints
+        return self.constraints.get(symbol)
 
     def _window_open(self, now: datetime) -> bool:
         return self.trading_window(now) if self.trading_window is not None else True

@@ -654,7 +654,10 @@ async def test_the_operator_state_keeps_watch_status_apart_from_runtime(tmp_path
 
 
 def test_watching_a_coin_never_changes_the_trading_symbols(database) -> None:
-    environ = {"PAPER_SYMBOLS": "BTC-USD, eth-usd"}
+    environ = {
+        "PAPER_SYMBOLS": "BTC-USD, eth-usd",
+        "PAPER_ORDER_QUANTITIES": "BTC-USD:0.0001,ETH-USD:0.01",
+    }
     before = PaperRuntimeConfig.from_env(environ).symbols
     watchlist = SqlAlchemyWatchlist(database)
     watchlist.add("SOL-USD", role="operator")

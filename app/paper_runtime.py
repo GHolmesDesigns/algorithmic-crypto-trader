@@ -17,6 +17,7 @@ from typing import Protocol
 from api.alerts import Alert
 from api.operator import OperatorState
 from api.system_events import DISCONNECT_EVENT, GAP_FILL_EVENT, SystemEventJournal
+from brokers.interface import BrokerInterface
 from core.disconnect import DisconnectReason
 from core.guards import StartupGuardError
 from core.models import Candle, MarketState, Quote, TradingMode, utc_now
@@ -98,8 +99,12 @@ class PaperRuntimeConfig:
     history_bars: int
     fast_window: int
     slow_window: int
-    order_quantity: Decimal
-    min_notional: Decimal
+    # Each symbol's order quantity and smallest order value, keyed by symbol (#170).
+    order_quantities: Mapping[str, Decimal]
+    min_notionals: Mapping[str, Decimal]
+    # True when ``PAPER_ORDER_QUANTITIES`` is set: each symbol's limits then come from the
+    # venue. False keeps the single-symbol setup built from the broker's capabilities.
+    venue_rules: bool
     estimated_slippage: Decimal
     cooldown: timedelta
     loss_state_path: Path | None
@@ -116,8 +121,23 @@ class PaperRuntimeConfig:
         if slow <= fast:
             raise StartupGuardError("PAPER_STRATEGY_SLOW_BARS must exceed the fast window")
         history = _integer(environ, "PAPER_HISTORY_BARS", 50, minimum=slow + 1, maximum=300)
-        quantity = _decimal(environ, "PAPER_ORDER_QUANTITY", "0.0001", positive=True)
+        quantities = _symbol_decimals(environ, "PAPER_ORDER_QUANTITIES", symbols)
+        if quantities:
+            missing = [item for item in symbols if item not in quantities]
+            if missing:
+                raise StartupGuardError(
+                    f"PAPER_ORDER_QUANTITIES has no quantity for {', '.join(missing)}"
+                )
+        elif len(symbols) == 1:
+            quantities = {
+                symbols[0]: _decimal(environ, "PAPER_ORDER_QUANTITY", "0.0001", positive=True)
+            }
+        else:
+            raise StartupGuardError(
+                "PAPER_ORDER_QUANTITIES must give each of the PAPER_SYMBOLS its own quantity"
+            )
         min_notional = _decimal(environ, "PAPER_MIN_NOTIONAL", "1", positive=True)
+        notional_overrides = _symbol_decimals(environ, "PAPER_MIN_NOTIONALS", symbols)
         slippage = _decimal(environ, "PAPER_ESTIMATED_SLIPPAGE", "0.005", positive=False)
         if slippage > Decimal("0.01"):
             raise StartupGuardError("PAPER_ESTIMATED_SLIPPAGE must not exceed 0.01")
@@ -135,8 +155,9 @@ class PaperRuntimeConfig:
             history_bars=history,
             fast_window=fast,
             slow_window=slow,
-            order_quantity=quantity,
-            min_notional=min_notional,
+            order_quantities=quantities,
+            min_notionals={item: notional_overrides.get(item, min_notional) for item in symbols},
+            venue_rules=bool(environ.get("PAPER_ORDER_QUANTITIES", "").strip()),
             estimated_slippage=slippage,
             cooldown=timedelta(seconds=cooldown_seconds),
             loss_state_path=loss_path,
@@ -432,33 +453,21 @@ async def start_paper_runtime(
         operator.set_runtime("disabled", "PAPER_RUNTIME_ENABLED is false")
         return None
     config = PaperRuntimeConfig.from_env(values)
+    capabilities = operator.broker.capabilities
+    # Every symbol's limits are settled before anything is opened, so a symbol without
+    # complete rules refuses the start and is never traded with another symbol's numbers.
+    constraints = await resolve_constraints(config, operator.broker)
     engine = create_database_engine(settings.database_url, settings.trading_mode)
     session_factory = create_session_factory(engine)
     store = SqlAlchemyCandleStore(session_factory)
     strategy = MovingAverageCrossStrategy(
         fast=config.fast_window,
         slow=config.slow_window,
-        quantity=config.order_quantity,
+        quantity=config.order_quantities,
     )
     operator.register_strategy("primary", strategy.strategy_version)
     operator.set_local_data(strategy_version=strategy.strategy_version)
-    capabilities = operator.broker.capabilities
-    increment = capabilities.quantity_increment
-    if increment <= 0 or capabilities.price_increment <= 0:
-        engine.dispose()
-        raise StartupGuardError("configured broker increments must be positive")
-    if config.order_quantity < increment or (config.order_quantity - increment) % increment != 0:
-        engine.dispose()
-        raise StartupGuardError(
-            "PAPER_ORDER_QUANTITY does not match the configured broker quantity increment"
-        )
     public_rest = rest_client or CoinbaseRESTClient()
-    constraints = ExchangeConstraints(
-        min_quantity=increment,
-        quantity_increment=increment,
-        min_notional=config.min_notional,
-        price_increment=capabilities.price_increment,
-    )
     risk_inputs = BrokerRiskInputs(
         operator.broker,
         constraints=constraints,
@@ -504,6 +513,73 @@ async def start_paper_runtime(
     return runtime
 
 
+async def resolve_constraints(
+    config: PaperRuntimeConfig, broker: BrokerInterface
+) -> dict[str, ExchangeConstraints]:
+    """Each traded symbol's exchange limits, or ``StartupGuardError`` when any is incomplete.
+
+    Without ``PAPER_ORDER_QUANTITIES`` the one symbol keeps the limits it always had: the
+    broker's increments and ``PAPER_MIN_NOTIONAL``. With it, every symbol takes the venue's
+    published rules (a read-only call), and the larger of the venue's and the configured
+    minimum order value applies. A quantity that does not sit on its symbol's own step is
+    refused here, before any order can be built.
+    """
+
+    capabilities = broker.capabilities
+    result: dict[str, ExchangeConstraints] = {}
+    for symbol in config.symbols:
+        quantity = config.order_quantities[symbol]
+        if not config.venue_rules:
+            increment = capabilities.quantity_increment
+            if increment <= 0 or capabilities.price_increment <= 0:
+                raise StartupGuardError("configured broker increments must be positive")
+            constraints = ExchangeConstraints(
+                min_quantity=increment,
+                quantity_increment=increment,
+                min_notional=config.min_notionals[symbol],
+                price_increment=capabilities.price_increment,
+            )
+            if not _quantity_fits(constraints, quantity):
+                raise StartupGuardError(
+                    "PAPER_ORDER_QUANTITY does not match the configured broker quantity increment"
+                )
+        else:
+            try:
+                rules = await broker.get_symbol_rules(symbol)
+            except Exception as exc:
+                logger.warning("exchange rules for %s could not be read", symbol, exc_info=True)
+                raise StartupGuardError(
+                    f"the exchange rules for {symbol} could not be read; refusing to start"
+                ) from exc
+            if rules is None:
+                raise StartupGuardError(
+                    f"the broker publishes no usable order rules for {symbol}; refusing to start"
+                )
+            constraints = ExchangeConstraints(
+                min_quantity=rules.min_quantity,
+                quantity_increment=rules.quantity_increment,
+                min_notional=max(rules.min_notional or Decimal("0"), config.min_notionals[symbol]),
+                price_increment=rules.price_increment,
+            )
+            if not _quantity_fits(constraints, quantity):
+                raise StartupGuardError(
+                    f"PAPER_ORDER_QUANTITIES for {symbol} does not match that symbol's "
+                    f"minimum ({constraints.min_quantity}) and step "
+                    f"({constraints.quantity_increment})"
+                )
+        result[symbol] = constraints
+    return result
+
+
+def _quantity_fits(constraints: ExchangeConstraints, quantity: Decimal) -> bool:
+    """The risk engine's own test: at least the minimum, and a whole number of steps above it."""
+
+    return (
+        quantity >= constraints.min_quantity
+        and (quantity - constraints.min_quantity) % constraints.quantity_increment == 0
+    )
+
+
 def _bucket_start(moment: datetime) -> datetime:
     seconds = int(INTERVAL.total_seconds())
     return datetime.fromtimestamp(int(moment.timestamp()) // seconds * seconds, tz=UTC)
@@ -528,11 +604,40 @@ def _integer(
 
 
 def _decimal(environ: Mapping[str, str], name: str, default: str, *, positive: bool) -> Decimal:
+    return _parse_decimal(name, environ.get(name, default), positive=positive)
+
+
+def _parse_decimal(name: str, raw: str, *, positive: bool) -> Decimal:
     try:
-        value = Decimal(environ.get(name, default))
+        value = Decimal(raw)
     except InvalidOperation as exc:
         raise StartupGuardError(f"{name} must be a decimal") from exc
     if not value.is_finite() or (value <= 0 if positive else value < 0):
         qualifier = "positive" if positive else "non-negative"
         raise StartupGuardError(f"{name} must be a finite {qualifier} decimal")
     return value
+
+
+def _symbol_decimals(
+    environ: Mapping[str, str], name: str, symbols: tuple[str, ...]
+) -> dict[str, Decimal]:
+    """Parse ``BTC-USD:0.0001,ETH-USD:0.01``; empty when the setting is unset or blank.
+
+    Every entry must name a symbol in ``PAPER_SYMBOLS`` once, so a typo or a leftover entry
+    stops the start instead of silently sizing nothing.
+    """
+
+    result: dict[str, Decimal] = {}
+    for item in environ.get(name, "").split(","):
+        if not item.strip():
+            continue
+        symbol, separator, raw = item.partition(":")
+        symbol = symbol.strip().upper()
+        if not separator or not _SYMBOL.fullmatch(symbol):
+            raise StartupGuardError(f"{name} entries must look like BTC-USD:0.0001")
+        if symbol not in symbols:
+            raise StartupGuardError(f"{name} names {symbol}, which is not in PAPER_SYMBOLS")
+        if symbol in result:
+            raise StartupGuardError(f"{name} names {symbol} more than once")
+        result[symbol] = _parse_decimal(f"{name} for {symbol}", raw.strip(), positive=True)
+    return result

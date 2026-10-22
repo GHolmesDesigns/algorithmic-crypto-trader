@@ -42,7 +42,7 @@ from brokers.http import (
     log_provider_failure,
     replacement_quantity,
 )
-from brokers.interface import BrokerCapabilities, BrokerInterface
+from brokers.interface import BrokerCapabilities, BrokerInterface, SymbolRules
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,29 @@ class GeminiBroker(BrokerInterface):
             ask=_decimal(raw.get("ask")),
             as_of=utc_now(),
             source="gemini-sandbox",
+        )
+
+    async def get_symbol_rules(self, symbol: str) -> SymbolRules | None:
+        """Read Get Symbol Details (public, no credentials): the Sandbox's own limits.
+
+        ``tick_size`` is the quantity step, ``quote_increment`` the price step, and
+        ``min_order_size`` the smallest quantity. Gemini publishes no minimum order value
+        (checked 2026-10-22), so ``min_notional`` stays unset. A symbol that is not open
+        has no usable rules.
+        """
+
+        raw = await self._public("GET", f"/v1/symbols/details/{_gemini_symbol(symbol)}")
+        if not isinstance(raw, Mapping):
+            raise ProviderHTTPError(502, "Gemini symbol details were not an object", payload=raw)
+        if str(raw.get("symbol") or "").lower() != _gemini_symbol(symbol):
+            raise ProviderHTTPError(502, "Gemini symbol details named another symbol", payload=raw)
+        if str(raw.get("status") or "").lower() != "open":
+            return None
+        return SymbolRules(
+            symbol=symbol,
+            min_quantity=_decimal(raw.get("min_order_size")),
+            quantity_increment=_decimal(raw.get("tick_size")),
+            price_increment=_decimal(raw.get("quote_increment")),
         )
 
     async def get_balances(self) -> tuple[Balance, ...]:

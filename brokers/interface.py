@@ -46,8 +46,45 @@ class BrokerCapabilities(FrozenModel):
         return value
 
 
+class SymbolRules(FrozenModel):
+    """What a venue publishes about the orders it accepts for one symbol (#170).
+
+    ``min_notional`` is ``None`` when the venue publishes no minimum order value; the caller
+    then applies the value the owner configured.
+    """
+
+    symbol: str
+    min_quantity: Decimal
+    quantity_increment: Decimal
+    price_increment: Decimal
+    min_notional: Decimal | None = None
+
+    @field_validator("min_quantity", "quantity_increment", "price_increment")
+    @classmethod
+    def limits_are_positive(cls, value: Decimal) -> Decimal:
+        if not value.is_finite() or value <= 0:
+            raise ValueError("a venue order limit must be a positive number")
+        return value
+
+    @field_validator("min_notional")
+    @classmethod
+    def notional_is_positive(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and (not value.is_finite() or value <= 0):
+            raise ValueError("a venue minimum order value must be a positive number")
+        return value
+
+
 class BrokerInterface(ABC):
     """All broker implementations expose the same async surface."""
+
+    async def get_symbol_rules(self, symbol: str) -> SymbolRules | None:
+        """The venue's order limits for ``symbol``, or ``None`` when it publishes none.
+
+        Read-only. A broker that cannot tell keeps this default, and the paper runtime then
+        refuses to trade that symbol rather than guess its limits.
+        """
+
+        return None
 
     @property
     @abstractmethod

@@ -849,8 +849,10 @@ yourself.
 | `PAPER_SYMBOLS` | `BTC-USD` | One to ten comma-separated Coinbase `*-USD` products. |
 | `PAPER_STRATEGY_FAST_BARS` / `PAPER_STRATEGY_SLOW_BARS` | `3` / `8` | Moving-average windows; slow must exceed fast. |
 | `PAPER_HISTORY_BARS` | `50` | Closed five-minute bars retained in each strategy state; between `slow + 1` and `300`. |
-| `PAPER_ORDER_QUANTITY` | `0.0001` | Positive base-asset quantity requested by the reference strategy. |
+| `PAPER_ORDER_QUANTITY` | `0.0001` | Positive base-asset quantity requested by the reference strategy. Used only when `PAPER_SYMBOLS` has one symbol and `PAPER_ORDER_QUANTITIES` is empty; the order limits are then the broker's own increments, as before. |
+| `PAPER_ORDER_QUANTITIES` | empty | One quantity per traded symbol, like `BTC-USD:0.0001,ETH-USD:0.01`. Required when `PAPER_SYMBOLS` lists more than one symbol. Every symbol needs an entry and each quantity must fit that symbol's own smallest size and step, or the app refuses to start. Setting it also makes each symbol use the exchange's published limits for that symbol (smallest quantity, quantity step, price step), read once at startup. |
 | `PAPER_MIN_NOTIONAL` | `1` | Positive minimum notional supplied to the exchange-constraint risk gate. |
+| `PAPER_MIN_NOTIONALS` | empty | Optional per-symbol minimum order value, like `ETH-USD:5`. A symbol not listed uses `PAPER_MIN_NOTIONAL`. If the exchange publishes its own minimum, the larger of the two applies. |
 | `PAPER_ESTIMATED_SLIPPAGE` | `0.005` | Non-negative estimate no greater than the 1% default risk limit. |
 | `PAPER_COOLDOWN_SECONDS` | `300` | Non-negative per-symbol order cooldown. |
 | `WATCH_FEED_ENABLED` | `0` | Whether the store-only feed that collects candles for watchlist coins that are not in `PAPER_SYMBOLS` starts with the service, until an administrator uses the button on the Watchlist page; the saved choice then wins. Public market data only; it never trades. |
