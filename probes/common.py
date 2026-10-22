@@ -152,6 +152,20 @@ def prompt_secret(label: str, *, ask: Callable[[str], str] = getpass.getpass) ->
     return value
 
 
+def require_typed(statement: str, *, ask: Callable[[str], str] | None = None) -> None:
+    """Make the owner type ``statement`` back before the probe goes further.
+
+    Case and a trailing full stop do not matter; anything else stops the probe.
+    """
+
+    def plain(text: str) -> str:
+        return text.strip().rstrip(".").strip().lower()
+
+    typed = (ask or input)(f'To go on, type exactly "{plain(statement)}" and press Enter: ')
+    if plain(typed) != plain(statement):
+        raise ProbeRefused("the confirmation was not typed, so nothing was run")
+
+
 def run_probe(
     probe: Callable[[], Coroutine[Any, Any, ProbeReport]], *, results: Path = RESULTS_DIR
 ) -> int:

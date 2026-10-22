@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import UTC, datetime, timedelta, tzinfo
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from itertools import count
 from pathlib import Path
 from typing import Any
@@ -167,31 +167,53 @@ async def test_a_failed_sandbox_request_marks_the_capture_incomplete(tmp_path) -
 # --- check 1: Gemini Sandbox lifecycle ----------------------------------------------
 
 
+# What the fake lists per symbol: best bid and ask, smallest order, and quantity step.
+MARKETS = {
+    "btcusd": (Decimal("60000"), Decimal("60010"), "0.00001", "0.00000001"),
+    "ethusd": (Decimal("2500"), Decimal("2501"), "0.001", "0.000001"),
+}
+
+
 class FakeGeminiSandbox:
     """Balances, tickers, a one-level ask book, candles, and orders in Gemini's shapes.
 
-    Immediate-or-cancel orders trade at ``execution_ask`` when their limit reaches it
-    and cancel whatever is left; ``execution_ask`` can sit past the quoted ask to
-    model a book that moved beyond a capped order. ``unpriced`` coins are held but
-    their books have no buyers, and each book read takes the next of ``book_depths``.
+    The book, candles, and symbol details are served for ``symbol`` only, and an order for
+    any other symbol fails the test. Immediate-or-cancel orders trade at ``execution_ask``
+    when their limit reaches it and cancel whatever is left; ``execution_ask`` can sit past
+    the quoted ask to model a book that moved beyond a capped order. Fills move the balances:
+    the coin exactly, and US dollars in whole ``usd_unit`` steps toward zero, as the Sandbox
+    settles them. ``unpriced`` coins are held but their books have no buyers, and each book
+    read takes the next of ``book_depths``.
     """
 
     def __init__(
         self,
         *,
-        ask_depth: str = "0.002",
+        symbol: str = "btcusd",
+        ask_depth: str | None = None,
         fail_first_cancel: bool = False,
         usd: str = "100000",
-        execution_ask: str = "60010",
+        usd_unit: str = "0.00001",
+        execution_ask: str | None = None,
         insufficient_funds: bool = False,
         unpriced: tuple[str, ...] = (),
         book_depths: tuple[str, ...] = (),
+        symbol_status: str = "open",
     ) -> None:
-        self.ask = Decimal("60010")
-        self.execution_ask = Decimal(execution_ask)
-        self.ask_depth = Decimal(ask_depth)
+        self.symbol = symbol
+        self.bid, self.ask, self.min_order, self.tick = MARKETS[symbol]
+        self.execution_ask = Decimal(execution_ask) if execution_ask else self.ask
+        # Deep enough for the symbol's capped order, shallow enough for a partial fill.
+        self.ask_depth = Decimal(ask_depth or ("0.002" if symbol == "btcusd" else "0.05"))
         self.fail_first_cancel = fail_first_cancel
         self.usd = usd
+        self.usd_unit = Decimal(usd_unit)
+        self.held = {"BTC": Decimal("10"), "ETH": Decimal("20"), "USD": Decimal(usd)}
+        self.held.update((coin, Decimal("5")) for coin in unpriced)
+        self.symbol_status = symbol_status
+        self.order_symbols: list[str] = []
+        self.order_amounts: list[Decimal] = []
+        self.requests = 0
         self.insufficient_funds = insufficient_funds
         self.unpriced = unpriced
         self.book_depths = [Decimal(depth) for depth in book_depths]
@@ -207,26 +229,27 @@ class FakeGeminiSandbox:
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         assert request.url.host == "api.sandbox.gemini.com"
+        self.requests += 1
         path = request.url.path
         if request.method == "GET":
             return self.public(path)
         self.seen_keys.add(request.headers["x-gemini-apikey"])
         payload = json.loads(base64.b64decode(request.headers["x-gemini-payload"]))
         if path == "/v1/balances":
-            held = {"BTC": "10", "ETH": "20", "USD": self.usd}
-            held.update((coin, "5") for coin in self.unpriced)
-            # Documented Get Available Balances rows, with nothing on hold.
+            # Documented Get Available Balances rows, with nothing on hold. US dollars are
+            # written with 5 decimals and coins with 8, as strings.
             return httpx.Response(
                 200,
                 json=[
                     {
                         "type": "exchange",
                         "currency": currency,
-                        "amount": amount,
-                        "available": amount,
-                        "availableForWithdrawal": amount,
+                        "amount": text,
+                        "available": text,
+                        "availableForWithdrawal": text,
                     }
-                    for currency, amount in held.items()
+                    for currency, amount in self.held.items()
+                    for text in [f"{amount:.5f}" if currency == "USD" else f"{amount:.8f}"]
                 ],
             )
         if path == "/v1/order/new":
@@ -252,22 +275,40 @@ class FakeGeminiSandbox:
             symbol = path.rsplit("/", 1)[-1]
             if symbol in {f"{coin.lower()}usd" for coin in self.unpriced}:
                 return httpx.Response(200, json={"bid": "", "ask": "484.13"})  # no buyers
-            price = {"btcusd": Decimal("60000"), "ethusd": Decimal("2500")}[symbol]
-            ask = self.ask if symbol == "btcusd" else price + 1
-            return httpx.Response(200, json={"bid": str(price), "ask": str(ask)})
-        if path == "/v1/book/btcusd":
+            bid, ask, _, _ = MARKETS[symbol]
+            return httpx.Response(200, json={"bid": str(bid), "ask": str(ask)})
+        if path.startswith("/v1/symbols/details/"):
+            symbol = path.rsplit("/", 1)[-1]
+            assert symbol == self.symbol  # only the traded symbol's limits are read
+            minimum, tick = self.min_order, self.tick
+            return httpx.Response(
+                200,
+                json={
+                    "symbol": symbol.upper(),
+                    "base_currency": symbol[:3].upper(),
+                    "quote_currency": "USD",
+                    "tick_size": float(tick),
+                    "quote_increment": 0.01,
+                    "min_order_size": minimum,
+                    "status": self.symbol_status,
+                },
+            )
+        if path == f"/v1/book/{self.symbol}":
             self.book_reads += 1
             if self.book_depths:
                 self.ask_depth = self.book_depths.pop(0)
             level = {"price": str(self.ask), "amount": str(self.ask_depth), "timestamp": "1"}
             return httpx.Response(200, json={"bids": [], "asks": [level]})
-        if path == "/v2/candles/btcusd/5m":
+        if path == f"/v2/candles/{self.symbol}/5m":
             now = datetime.now(UTC).replace(second=0, microsecond=0)
             start = now - timedelta(minutes=now.minute % 5)
             rows = []
             for k in range(0, 12):  # the first row is the bar still in progress
                 opened = start - timedelta(minutes=5 * k)
-                rows.append([int(opened.timestamp() * 1000), 60000, 60020, 59990, 60005, 3.2])
+                base = float(self.bid)  # candles sit at the symbol's own price
+                rows.append(
+                    [int(opened.timestamp() * 1000), base, base + 20, base - 10, base + 5, 3.2]
+                )
             return httpx.Response(200, json=rows)
         raise AssertionError(path)
 
@@ -278,11 +319,14 @@ class FakeGeminiSandbox:
     def new_order(self, payload: dict[str, Any]) -> httpx.Response:
         amount = Decimal(payload["amount"])
         assert payload["type"] == "exchange limit"  # never an unprotected market order
+        assert payload["symbol"] == self.symbol  # only the symbol under test is ever ordered
+        self.order_symbols.append(payload["symbol"])
+        self.order_amounts.append(amount)
         if self.insufficient_funds:
             return httpx.Response(
                 406, json={"result": "error", "reason": "InsufficientFunds", "message": "funds"}
             )
-        if amount < Decimal("0.00001"):
+        if amount < Decimal(self.min_order):
             return httpx.Response(
                 400, json={"result": "error", "reason": "InvalidQuantity", "message": "small"}
             )
@@ -290,6 +334,7 @@ class FakeGeminiSandbox:
         order = {
             "id": order_id,
             "client_order_id": payload["client_order_id"],
+            "symbol": payload["symbol"],
             "side": payload["side"],
             "original": amount,
             "price": payload.get("price", "0"),
@@ -316,6 +361,10 @@ class FakeGeminiSandbox:
             )
             order["executed"] = fill
             order["is_live"] = fill < amount
+            # The coin moves exactly; the dollars settle in whole units, and the fee is exact.
+            notional = (fill * touch / self.usd_unit).to_integral_value(ROUND_DOWN) * self.usd_unit
+            self.held[self.symbol[:3].upper()] += fill
+            self.held["USD"] -= notional + Decimal("0.01")
         if immediate and order["is_live"]:  # the rest of an immediate-or-cancel order
             order.update(is_live=False, is_cancelled=True)
         return httpx.Response(200, json=self.body(order, trades=False))
@@ -325,7 +374,7 @@ class FakeGeminiSandbox:
         result = {
             "order_id": str(order["id"]),
             "client_order_id": order["client_order_id"],
-            "symbol": "btcusd",
+            "symbol": order["symbol"],
             "side": order["side"],
             "is_live": order["is_live"],
             "is_cancelled": order["is_cancelled"],
@@ -493,7 +542,7 @@ async def test_a_holding_the_sandbox_cannot_price_is_left_out_and_named() -> Non
 
 @pytest.mark.asyncio
 async def test_without_the_checks_exclusion_the_trading_loop_still_refuses(monkeypatch) -> None:
-    async def nothing_left_out(_: object) -> list[str]:
+    async def nothing_left_out(*_: object) -> list[str]:
         return []
 
     monkeypatch.setattr(gemini_sandbox_lifecycle, "_unpriced_holdings", nothing_left_out)
@@ -536,14 +585,14 @@ async def test_a_probe_refusal_is_never_taken_for_an_unpriced_holding(refusal) -
             raise refusal
 
     with pytest.raises(type(refusal)):
-        await gemini_sandbox_lifecycle._unpriced_holdings(Refusing())  # type: ignore[arg-type]
+        await gemini_sandbox_lifecycle._unpriced_holdings(Refusing(), "BTC-USD")  # type: ignore[arg-type]
 
 
 class UnhelpfulSandbox(FakeGeminiSandbox):
     """Unreadable market data, and cancels that always fail."""
 
     def public(self, path: str) -> httpx.Response:
-        if path in {"/v1/book/btcusd", "/v2/candles/btcusd/5m"}:
+        if path in {f"/v1/book/{self.symbol}", f"/v2/candles/{self.symbol}/5m"}:
             return httpx.Response(200, json={"unexpected": True})
         return super().public(path)
 
@@ -570,7 +619,7 @@ async def test_an_order_that_cannot_be_canceled_is_reported_for_manual_cleanup()
 async def test_unreadable_book_and_candles_skip_their_steps() -> None:
     class NoMarketData(FakeGeminiSandbox):
         def public(self, path: str) -> httpx.Response:
-            if path in {"/v1/book/btcusd", "/v2/candles/btcusd/5m"}:
+            if path in {f"/v1/book/{self.symbol}", f"/v2/candles/{self.symbol}/5m"}:
                 return httpx.Response(200, json={"unexpected": True})
             return super().public(path)
 
@@ -590,14 +639,245 @@ async def test_the_gemini_probe_reads_its_key_from_hidden_prompts(monkeypatch) -
     venue = FakeGeminiSandbox()
     typed = iter([KEY, SECRET])
     monkeypatch.setattr(gemini_sandbox_lifecycle, "prompt_secret", lambda label: next(typed))
+    monkeypatch.setattr("builtins.input", lambda prompt: gemini_sandbox_lifecycle.ACCOUNT_STATEMENT)
     original = gemini_sandbox_lifecycle.lifecycle
 
-    async def through_fake(api_key, api_secret):
-        return await original(api_key, api_secret, inner=httpx.MockTransport(venue.handler))
+    async def through_fake(api_key, api_secret, **kwargs):
+        return await original(
+            api_key, api_secret, inner=httpx.MockTransport(venue.handler), **kwargs
+        )
 
     monkeypatch.setattr(gemini_sandbox_lifecycle, "lifecycle", through_fake)
     report = await gemini_sandbox_lifecycle._prompted()
     assert report.outcome == "pass" and venue.seen_keys == {KEY}
+
+
+# --- check 1 for ETH-USD (#171) ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_eth_run_places_only_eth_orders_at_the_eth_sizes() -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd")
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    results = {step["step"]: step for step in report.steps}
+    assert report.outcome == "pass", report.steps
+    # The fake fails the test on any ETH-run request that names BTC (book, candles, orders).
+    assert set(venue.order_symbols) == {"ethusd"}
+    assert set(venue.order_amounts) == {Decimal("0.01"), Decimal("0.0001"), Decimal("0.06")}
+    assert results["undersized_rejection"]["reason"] == "InvalidQuantity"
+    assert results["partial_fill"]["status"] == "partially_filled"
+    assert results["trading_loop"]["status"] == "submitted"
+    assert results["trading_loop"]["lineage_gaps"] == []
+    assert results["trading_loop"]["left_out"] == []
+    assert venue.live() == []
+    assert report.probe == "gemini-sandbox-lifecycle-eth-usd"  # its own result file
+    assert report.requests_made <= gemini_sandbox_lifecycle.REQUEST_BUDGET
+
+
+@pytest.mark.asyncio
+async def test_the_btc_run_keeps_its_name_sizes_and_symbol() -> None:
+    venue = FakeGeminiSandbox()
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, inner=httpx.MockTransport(venue.handler)
+    )
+
+    assert report.outcome == "pass", report.steps
+    assert report.probe == "gemini-sandbox-lifecycle"
+    assert set(venue.order_symbols) == {"btcusd"}
+    assert set(venue.order_amounts) == {Decimal("0.0001"), Decimal("0.000001"), Decimal("0.0021")}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symbol", ["DOGE-USD", "ETH-EUR", "eth-usd", "BTC-USD ", ""])
+async def test_any_other_symbol_is_refused_before_a_request_is_made(symbol) -> None:
+    venue = FakeGeminiSandbox()
+    with pytest.raises(ProbeRefused, match="not a symbol this check may trade"):
+        await gemini_sandbox_lifecycle.lifecycle(
+            KEY, SECRET, symbol=symbol, inner=httpx.MockTransport(venue.handler)
+        )
+    assert venue.requests == 0
+
+
+def test_the_command_line_offers_only_the_two_symbols(capsys) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        gemini_sandbox_lifecycle.main(["--symbol", "DOGE-USD"])
+
+    assert stopped.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+    assert sorted(gemini_sandbox_lifecycle.PROFILES) == ["BTC-USD", "ETH-USD"]
+
+
+@pytest.mark.asyncio
+async def test_the_details_step_records_the_symbols_published_limits() -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd")
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    details = next(step for step in report.steps if step["step"] == "symbol_details")
+    assert details == {
+        "step": "symbol_details",
+        "result": "pass",
+        "symbol": "ETH-USD",
+        "min_quantity": "0.001",
+        "quantity_increment": "0.000001",
+        "price_increment": "0.01",
+        "differs_from_assumed": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_limits_that_differ_from_the_assumed_ones_need_review() -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd")
+    venue.min_order = "0.005"  # the venue's smallest order is above the check's assumption
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    details = next(step for step in report.steps if step["step"] == "symbol_details")
+    assert details["result"] == "differs"
+    assert details["min_quantity"] == "0.005"
+    assert details["differs_from_assumed"] == ["min_quantity"]
+    assert any("min_quantity" in note for note in report.notes)
+    assert report.outcome == "needs review"
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_that_is_not_open_stops_before_any_order() -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd", symbol_status="closed")
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    assert [step["step"] for step in report.steps] == [
+        "authenticate",
+        "usd_available",
+        "symbol_details",
+    ]
+    assert report.steps[-1]["result"] == "fail"
+    assert venue.orders == {} and report.outcome == "needs review"
+
+
+@pytest.mark.asyncio
+async def test_the_balance_step_records_decimals_and_a_zero_difference() -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd")
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    step = next(step for step in report.steps if step["step"] == "balance_precision")
+    assert step["result"] == "pass"
+    assert step["assets"] == {
+        "ETH": {
+            "broker_decimals": 8,
+            "app_unit": None,
+            "available_difference": "0",
+            "hold_difference": "0",
+        },
+        "USD": {
+            "broker_decimals": 5,
+            "app_unit": "0.00001",
+            "available_difference": "0",
+            "hold_difference": "0",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_balance_the_projection_does_not_match_is_reported_not_hidden() -> None:
+    # This venue settles dollars in whole dollars, not the five decimals the app assumes.
+    venue = FakeGeminiSandbox(symbol="ethusd", usd_unit="1")
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    step = next(step for step in report.steps if step["step"] == "balance_precision")
+    assert step["result"] == "differs"
+    # 0.01 ETH at 2501 is 25.01, which this venue settled as 25: it holds 0.01 more.
+    assert step["assets"]["USD"]["available_difference"] == "0.01"
+    assert step["assets"]["ETH"]["available_difference"] == "0"
+    assert any("would halt" in note for note in report.notes)
+    assert report.outcome == "needs review"
+
+
+@pytest.mark.asyncio
+async def test_the_eth_result_holds_no_key_order_id_or_balance() -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd")
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    text = report.render()
+    assert KEY not in text and SECRET not in text and "8000000001" not in text
+    for coin, amount in venue.held.items():
+        assert f"{amount:.8f}" not in text and f"{amount:.5f}" not in text, coin
+    assert "100000" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_failure_mid_run_on_eth_still_cancels_the_resting_order() -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd", fail_first_cancel=True)
+    report = await gemini_sandbox_lifecycle.lifecycle(
+        KEY, SECRET, symbol="ETH-USD", inner=httpx.MockTransport(venue.handler)
+    )
+
+    results = {step["step"]: step for step in report.steps}
+    assert results["stopped"]["http_status"] == 500
+    assert results["cleanup"] == {"step": "cleanup", "result": "pass", "canceled": 1}
+    assert venue.live() == []
+    assert set(venue.order_symbols) == {"ethusd"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed", ["", "yes", "this is the paper account", "y"])
+async def test_the_run_cannot_start_without_the_typed_confirmation(monkeypatch, typed) -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd")
+    asked_for_key = []
+    monkeypatch.setattr(
+        gemini_sandbox_lifecycle, "prompt_secret", lambda label: asked_for_key.append(label)
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: typed)
+    called = []
+    monkeypatch.setattr(gemini_sandbox_lifecycle, "lifecycle", lambda *a, **k: called.append(k))
+
+    with pytest.raises(ProbeRefused, match="confirmation was not typed"):
+        await gemini_sandbox_lifecycle._prompted("ETH-USD")
+
+    assert asked_for_key == [] and called == [] and venue.requests == 0
+
+
+@pytest.mark.asyncio
+async def test_a_refused_symbol_never_reaches_the_confirmation(monkeypatch) -> None:
+    def fail(prompt: str) -> str:
+        raise AssertionError("nothing should be asked for a refused symbol")
+
+    monkeypatch.setattr("builtins.input", fail)
+    with pytest.raises(ProbeRefused, match="not a symbol"):
+        await gemini_sandbox_lifecycle._prompted("DOGE-USD")
+
+
+@pytest.mark.asyncio
+async def test_the_eth_probe_asks_for_the_confirmation_then_runs_eth(monkeypatch) -> None:
+    venue = FakeGeminiSandbox(symbol="ethusd")
+    typed = iter([KEY, SECRET])
+    monkeypatch.setattr(gemini_sandbox_lifecycle, "prompt_secret", lambda label: next(typed))
+    # The sentence may be typed in any case, and without its closing full stop.
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt: gemini_sandbox_lifecycle.ACCOUNT_STATEMENT.upper() + "."
+    )
+    original = gemini_sandbox_lifecycle.lifecycle
+
+    async def through_fake(api_key, api_secret, **kwargs):
+        return await original(
+            api_key, api_secret, inner=httpx.MockTransport(venue.handler), **kwargs
+        )
+
+    monkeypatch.setattr(gemini_sandbox_lifecycle, "lifecycle", through_fake)
+    report = await gemini_sandbox_lifecycle._prompted("ETH-USD")
+    assert report.outcome == "pass" and set(venue.order_symbols) == {"ethusd"}
 
 
 # --- check 2: Coinbase read-only reconciliation ---------------------------------------

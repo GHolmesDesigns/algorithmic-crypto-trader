@@ -99,6 +99,41 @@ scope a client order ID is remembered, the HTTP status of a duplicate, and what
 Live behavior of the time filter is unverified until an owner-run read-only
 List Orders request is recorded here.
 
+## ETH-USD Sandbox probe (#171)
+
+`probes/gemini_sandbox_lifecycle.py` now takes `--symbol` with exactly two
+choices, `BTC-USD` (the default, unchanged) and `ETH-USD`. Each symbol has a
+profile of order sizes (`ETH-USD`: 0.01 probe, 0.0001 undersized, 0.2 partial
+cap), and every URL is built from `_gemini_symbol`. Any other symbol is refused
+before a request is made. Two steps are new for both symbols:
+
+- `symbol_details` reads the public Get Symbol Details through the adapter's
+  `get_symbol_rules` and compares the smallest order, quantity step, and price
+  step with the values the check assumes. For ETH-USD those assumptions are
+  Gemini's published 0.001 and 0.000001, not yet seen on the Sandbox.
+- `balance_precision` projects the base-asset and US dollar balances after the
+  capped order with `apply_fills` and the adapter's declared balance units (the
+  rule the paper app reconciles with), reads the Sandbox's balances, and
+  records the decimals it writes for each asset and the broker-minus-projected
+  differences. No balance is recorded.
+
+The run begins with a typed confirmation that the key is not for the account
+the paper app trades on, and cancels any resting order in `finally` as before.
+
+**Evidence status:** automated only. The tests in `tests/test_probes.py` drive
+the probe against a fake Sandbox, so they show the probe's behavior, not
+Gemini's. Gemini's ETH-USD limits, whether an ETH order round trip reconciles
+at difference 0, and how the Sandbox rounds ETH and US dollar balances are
+**unverified** until the owner runs the probe on a second Sandbox account and
+the dated, redacted result is recorded here and in
+[owner-run-exchange-checks.md](owner-run-exchange-checks.md). Until then, no ETH
+claim in these docs rests on a mock, and a second symbol must not be deployed
+(#170).
+
+| Date | Commit | Result |
+| --- | --- | --- |
+| _not yet run_ | | Owner-run, second Sandbox account: `python -m probes.gemini_sandbox_lifecycle --symbol ETH-USD` |
+
 ## Phase 1 gate corrections
 
 The [Phase 1 gate](phase-1-gate-acceptance.md) checked both adapters against

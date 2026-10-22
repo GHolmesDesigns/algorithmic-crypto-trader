@@ -7,18 +7,30 @@ canceled in ``finally``. The Sandbox key must be created for the Primary account
 (a group-level Master key is refused) with the Trader role only, and the account
 needs test US dollars, which the first step checks before any order.
 
-Run from the repository root and type the key and secret into the hidden prompts::
+Run from the repository root, confirm the account in the typed prompt, and type the
+key and secret into the hidden prompts::
 
     python -m probes.gemini_sandbox_lifecycle
+    python -m probes.gemini_sandbox_lifecycle --symbol ETH-USD
+
+``--symbol`` accepts only the symbols in ``PROFILES``; anything else is refused before
+a request is made, and a symbol's orders use that symbol's own small size. The run uses
+the account whose key you enter and leaves orders waiting for a few seconds, so it asks
+you to type that this is not the account the paper app trades on.
 
 The redacted result records statuses, rejection reasons, and counts: no key,
-order identifier, or balance. It names any holding the trading-loop step left out
-because the Sandbox could not price it.
+order identifier, or balance. It records the symbol's published order limits, how many
+decimals the Sandbox reports for the coin and for US dollars, and whether our balance
+projection differs from the Sandbox's after the first order. It names any holding the
+trading-loop step left out because the Sandbox could not price it.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
@@ -26,7 +38,7 @@ from uuid import uuid4
 
 import httpx
 from app.trading import BrokerRiskInputs, CycleStatus, TradingCycle
-from brokers.gemini import GEMINI_SANDBOX_REST_URL, GeminiBroker
+from brokers.gemini import GEMINI_SANDBOX_REST_URL, GeminiBroker, _gemini_symbol
 from brokers.http import ProviderOrderRejectedError
 from brokers.interface import BrokerCapabilities, BrokerInterface
 from core.models import (
@@ -45,6 +57,8 @@ from core.models import (
 )
 from execution.audit import InMemoryAuditStore, unlinked_orders
 from execution.engine import ExecutionEngine, InMemoryOrderStore
+from portfolio.ledger import apply_fills
+from portfolio.reconciliation import PortfolioState
 from risk.engine import ExchangeConstraints, RiskLimits
 from risk.kill_switch import KillSwitch
 from strategy.reference import AlwaysBuyStrategy
@@ -52,32 +66,97 @@ from strategy.reference import AlwaysBuyStrategy
 from probes.common import (
     BoundedTransport,
     BudgetExhausted,
+    ProbeRefused,
     ProbeReport,
     UnexpectedHost,
     bounded_client,
     prompt_secret,
+    require_typed,
     run_probe,
 )
 
 SANDBOX_HOST = "api.sandbox.gemini.com"
-SYMBOL = "BTC-USD"
+DEFAULT_SYMBOL = "BTC-USD"
 # About 35 requests, plus two quotes per Sandbox currency when the loop values holdings.
 REQUEST_BUDGET = 80
 CLEANUP_RESERVE = 10
-PROBE_SIZE = Decimal("0.0001")  # BTC; well above the documented 0.00001 minimum
-UNDERSIZED = Decimal("0.000001")
-PARTIAL_FILL_CAP = Decimal("0.01")
 # The Sandbox's best ask changes from moment to moment, so read it a few times.
 BOOK_READS = 5
 BOOK_PAUSE_SECONDS = 2.0
 CENT = Decimal("0.01")
 BAR = timedelta(minutes=5)
-CONSTRAINTS = ExchangeConstraints(
-    min_quantity=Decimal("0.00001"),
-    quantity_increment=Decimal("0.00000001"),
-    min_notional=CENT,
-    price_increment=CENT,
-)
+ACCOUNT_STATEMENT = "this is not the account the paper app trades on"
+
+
+@dataclass(frozen=True)
+class SymbolProfile:
+    """One symbol the check may trade: its order sizes and the limits the app assumes.
+
+    The ``min_quantity``, ``quantity_increment`` and ``price_increment`` are what the check
+    (and so the app's order sizing) assumes for the symbol; the ``symbol_details`` step reads
+    Gemini's own values and reports any difference. ``probe_size`` sits well above the minimum,
+    ``undersized`` well below it, and ``partial_fill_cap`` bounds the one deliberate partial fill.
+    """
+
+    symbol: str
+    probe_size: Decimal
+    undersized: Decimal
+    partial_fill_cap: Decimal
+    min_quantity: Decimal
+    quantity_increment: Decimal
+    price_increment: Decimal = CENT
+
+    @property
+    def base(self) -> str:
+        return self.symbol.split("-", maxsplit=1)[0]
+
+    @property
+    def venue_symbol(self) -> str:
+        return _gemini_symbol(self.symbol)
+
+    @property
+    def constraints(self) -> ExchangeConstraints:
+        return ExchangeConstraints(
+            min_quantity=self.min_quantity,
+            quantity_increment=self.quantity_increment,
+            min_notional=CENT,
+            price_increment=self.price_increment,
+        )
+
+
+PROFILES: dict[str, SymbolProfile] = {
+    "BTC-USD": SymbolProfile(
+        symbol="BTC-USD",
+        probe_size=Decimal("0.0001"),  # well above the documented 0.00001 minimum
+        undersized=Decimal("0.000001"),
+        partial_fill_cap=Decimal("0.01"),
+        min_quantity=Decimal("0.00001"),
+        quantity_increment=Decimal("0.00000001"),
+    ),
+    # Gemini's published ETHUSD limits (0.001 smallest order, 0.000001 step), not yet seen
+    # in this Sandbox; the ``symbol_details`` step records what it reports.
+    "ETH-USD": SymbolProfile(
+        symbol="ETH-USD",
+        probe_size=Decimal("0.01"),
+        undersized=Decimal("0.0001"),
+        partial_fill_cap=Decimal("0.2"),
+        min_quantity=Decimal("0.001"),
+        quantity_increment=Decimal("0.000001"),
+    ),
+}
+
+
+def profile_for(symbol: str) -> SymbolProfile:
+    """The profile for ``symbol``; any other symbol is refused before a request is made."""
+
+    profile = PROFILES.get(symbol)
+    if profile is None:
+        raise ProbeRefused(
+            f"{symbol!r} is not a symbol this check may trade; choose one of {sorted(PROFILES)}"
+        )
+    return profile
+
+
 # Sandbox balances are play money, so the exposure limits only need to admit one tiny
 # order; the price, staleness, volatility, and slippage gates keep their defaults.
 PROBE_LIMITS = RiskLimits(
@@ -103,9 +182,16 @@ PASSING = frozenset({"pass", "answered"})
 class SandboxRun:
     """The probe's adapter; ``restart`` replaces it, as a process restart would."""
 
-    def __init__(self, api_key: str, api_secret: str, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        client: httpx.AsyncClient,
+        profile: SymbolProfile | None = None,
+    ) -> None:
         self._credentials = (api_key, api_secret)
         self.client = client
+        self.profile = profile or PROFILES[DEFAULT_SYMBOL]
         self.broker = self._adapter()
         self.resting: list[str] = []
 
@@ -125,7 +211,7 @@ class SandboxRun:
         request = OrderRequest(
             signal_id=uuid4(),
             strategy_version="owner-run-gemini-probe",
-            symbol=SYMBOL,
+            symbol=self.profile.symbol,
             side=OrderSide.BUY,
             order_type=order_type,
             quantity=quantity,
@@ -192,17 +278,22 @@ async def lifecycle(
     api_key: str,
     api_secret: str,
     *,
+    symbol: str = DEFAULT_SYMBOL,
     inner: httpx.AsyncBaseTransport | None = None,
 ) -> ProbeReport:
-    report = ProbeReport(probe="gemini-sandbox-lifecycle", target=GEMINI_SANDBOX_REST_URL)
+    profile = profile_for(symbol)  # before anything is built, so no request can be made
+    name = "gemini-sandbox-lifecycle"
+    if profile.symbol != DEFAULT_SYMBOL:
+        name = f"{name}-{profile.symbol.lower()}"  # a separate result file per symbol
+    report = ProbeReport(probe=name, target=GEMINI_SANDBOX_REST_URL)
     report.keep_out(api_key, api_secret)
     client, transport = bounded_client(
         hosts={SANDBOX_HOST}, budget=REQUEST_BUDGET, reserve=CLEANUP_RESERVE, inner=inner
     )
-    run = SandboxRun(api_key, api_secret, client)
+    run = SandboxRun(api_key, api_secret, client, profile)
     try:
         quote = await _funded_quote(run, report)
-        if quote is not None:
+        if quote is not None and await _symbol_details(run, report):
             await _capped_market_order(run, report)
             await _resting_limit_and_recovery(run, report, quote)
             await _undersized(run, report, quote)
@@ -235,10 +326,14 @@ async def _funded_quote(run: SandboxRun, report: ProbeReport) -> Quote | None:
 
     balances = await run.broker.get_balances()
     report.step("authenticate", "pass", currencies=len(balances))
-    quote = await run.broker.get_quote(SYMBOL)
+    profile = run.profile
+    quote = await run.broker.get_quote(profile.symbol)
     usd = next((item.available for item in balances if item.asset == "USD"), Decimal("0"))
     # Two capped buys, one resting buy, and a partial fill of up to the cap, plus fees.
-    needed = _price(quote.ask * (3 * PROBE_SIZE + PARTIAL_FILL_CAP) * Decimal("1.03")) + CENT
+    needed = (
+        _price(quote.ask * (3 * profile.probe_size + profile.partial_fill_cap) * Decimal("1.03"))
+        + CENT
+    )
     enough = usd >= needed
     report.step("usd_available", _check(enough), needed_usd=str(needed))
     if not enough:
@@ -252,11 +347,50 @@ async def _funded_quote(run: SandboxRun, report: ProbeReport) -> Quote | None:
     return quote
 
 
+async def _symbol_details(run: SandboxRun, report: ProbeReport) -> bool:
+    """Read the symbol's published limits (public, no key) and compare them with the check's.
+
+    Returns ``False`` when the symbol is not open, so the run stops before placing anything.
+    The limits are public exchange rules, not account data, so their values are recorded.
+    """
+
+    profile = run.profile
+    rules = await run.broker.get_symbol_rules(profile.symbol)
+    if rules is None:
+        report.step("symbol_details", "fail", reason="Gemini does not list the symbol as open")
+        return False
+    venue = {
+        "min_quantity": rules.min_quantity,
+        "quantity_increment": rules.quantity_increment,
+        "price_increment": rules.price_increment,
+    }
+    assumed = {
+        "min_quantity": profile.min_quantity,
+        "quantity_increment": profile.quantity_increment,
+        "price_increment": profile.price_increment,
+    }
+    differs = sorted(name for name, value in venue.items() if value != assumed[name])
+    report.step(
+        "symbol_details",
+        "differs" if differs else "pass",
+        symbol=profile.symbol,
+        **{name: _plain(value) for name, value in venue.items()},
+        differs_from_assumed=differs,
+    )
+    if differs:
+        report.notes.append(
+            f"Gemini's {profile.symbol} limits differ from the ones this check assumes "
+            f"({', '.join(differs)}); the assumed values are in probes/gemini_sandbox_lifecycle.py."
+        )
+    return True
+
+
 async def _capped_market_order(run: SandboxRun, report: ProbeReport) -> None:
     """A market request goes out as an immediate-or-cancel limit capped 1% past the ask."""
 
+    before = await run.broker.get_balances()
     try:
-        key, order = await run.submit(OrderType.MARKET, PROBE_SIZE)
+        key, order = await run.submit(OrderType.MARKET, run.profile.probe_size)
     except ProviderOrderRejectedError as exc:
         report.step("capped_market_order", "fail", reason=str(exc))
         return
@@ -274,11 +408,56 @@ async def _capped_market_order(run: SandboxRun, report: ProbeReport) -> None:
             "The capped order did not fill completely within 1% of the Sandbox quote, so "
             "the Sandbox book is thin near its quote; the unfilled part was cancelled."
         )
+    await _balance_precision(run, report, before, fills)
+
+
+async def _balance_precision(
+    run: SandboxRun, report: ProbeReport, before: tuple[Balance, ...], fills: tuple[Fill, ...]
+) -> None:
+    """Project the balances the way the app does, then compare them with the Sandbox's.
+
+    The projection is ``apply_fills`` with the adapter's declared balance units, the rule the
+    paper app reconciles with. Only the number of decimals the Sandbox reports per asset and
+    the broker-minus-projected differences are recorded, never a balance.
+    """
+
+    profile = run.profile
+    increments = run.broker.capabilities.balance_increments
+    projected = apply_fills(
+        PortfolioState(balances=before), fills, balance_increments=increments
+    ).balances
+    after = await run.broker.get_balances()
+    assets = sorted({profile.base, "USD", *(fill.fee_asset for fill in fills)})
+    per_asset: dict[str, dict[str, Any]] = {}
+    for asset in assets:
+        expected = next((item for item in projected if item.asset == asset), None)
+        actual = next((item for item in after if item.asset == asset), None)
+        zero = Decimal("0")
+        exp_available, exp_hold = (expected.available, expected.hold) if expected else (zero, zero)
+        got_available, got_hold = (actual.available, actual.hold) if actual else (zero, zero)
+        unit = increments.get(asset)
+        per_asset[asset] = {
+            "broker_decimals": _decimals(actual.available) if actual else None,
+            "app_unit": None if unit is None else _plain(unit),
+            "available_difference": _plain(got_available - exp_available),
+            "hold_difference": _plain(got_hold - exp_hold),
+        }
+    clean = all(
+        entry["available_difference"] == "0" and entry["hold_difference"] == "0"
+        for entry in per_asset.values()
+    )
+    report.step("balance_precision", "pass" if clean else "differs", assets=per_asset)
+    if not clean:
+        report.notes.append(
+            "After the first order the Sandbox's balance differs from the app's projection "
+            "(broker minus projected is listed per asset). The paper app would halt on this "
+            "difference; it is a finding for its own card."
+        )
 
 
 async def _resting_limit_and_recovery(run: SandboxRun, report: ProbeReport, quote: Quote) -> None:
     price = _price(quote.bid / 2)  # far below the market, so the order rests
-    key, order = await run.submit(OrderType.LIMIT, PROBE_SIZE, price)
+    key, order = await run.submit(OrderType.LIMIT, run.profile.probe_size, price)
     report.step(
         "resting_limit", _check(order.status is OrderStatus.OPEN), status=order.status.value
     )
@@ -301,7 +480,9 @@ async def _resting_limit_and_recovery(run: SandboxRun, report: ProbeReport, quot
 
 async def _undersized(run: SandboxRun, report: ProbeReport, quote: Quote) -> None:
     try:
-        key, order = await run.submit(OrderType.LIMIT, UNDERSIZED, _price(quote.bid / 2))
+        key, order = await run.submit(
+            OrderType.LIMIT, run.profile.undersized, _price(quote.bid / 2)
+        )
     except ProviderOrderRejectedError as exc:
         report.step("undersized_rejection", "pass", reason=str(exc))
         return
@@ -309,12 +490,14 @@ async def _undersized(run: SandboxRun, report: ProbeReport, quote: Quote) -> Non
 
 
 async def _partial_fill(run: SandboxRun, report: ProbeReport) -> None:
+    profile = run.profile
     for attempt in range(BOOK_READS):
         if attempt:
             await asyncio.sleep(BOOK_PAUSE_SECONDS)
         # One level per side: a limit of 0 would return Gemini's whole side of the book.
         response = await run.client.get(
-            f"{GEMINI_SANDBOX_REST_URL}/v1/book/btcusd", params={"limit_bids": 1, "limit_asks": 1}
+            f"{GEMINI_SANDBOX_REST_URL}/v1/book/{profile.venue_symbol}",
+            params={"limit_bids": 1, "limit_asks": 1},
         )
         try:
             best = response.json()["asks"][0]
@@ -324,8 +507,8 @@ async def _partial_fill(run: SandboxRun, report: ProbeReport) -> None:
                 "partial_fill", "skipped", reason="the Sandbox order book had no readable ask"
             )
             return
-        size = depth + PROBE_SIZE
-        if size <= PARTIAL_FILL_CAP:
+        size = depth + profile.probe_size
+        if size <= profile.partial_fill_cap:
             break
     else:
         report.step(
@@ -333,7 +516,7 @@ async def _partial_fill(run: SandboxRun, report: ProbeReport) -> None:
             "skipped",
             reason=(
                 f"on {BOOK_READS} reads the best ask held more than the probe's "
-                f"{PARTIAL_FILL_CAP} BTC cap"
+                f"{profile.partial_fill_cap} {profile.base} cap"
             ),
         )
         return
@@ -354,15 +537,16 @@ async def _partial_fill(run: SandboxRun, report: ProbeReport) -> None:
 
 
 async def _trading_loop(run: SandboxRun, report: ProbeReport) -> None:
-    candles = await _closed_candles(run.client)
+    profile = run.profile
+    candles = await _closed_candles(run.client, profile)
     if len(candles) < 2:
         report.step("trading_loop", "skipped", reason="the Sandbox returned too few closed bars")
         return
     last = candles[-1]
     state = MarketState(
-        symbol=SYMBOL,
+        symbol=profile.symbol,
         quote=Quote(
-            symbol=SYMBOL,
+            symbol=profile.symbol,
             bid=last.close,
             ask=last.close,
             as_of=last.closed_at,
@@ -372,7 +556,7 @@ async def _trading_loop(run: SandboxRun, report: ProbeReport) -> None:
         candles=tuple(candles),
         observed_at=last.closed_at,
     )
-    left_out = await _unpriced_holdings(run.broker)
+    left_out = await _unpriced_holdings(run.broker, profile.symbol)
     if left_out:
         report.notes.append(
             f"The trading-loop step left out {', '.join(left_out)}: the Sandbox has no buyers "
@@ -383,12 +567,12 @@ async def _trading_loop(run: SandboxRun, report: ProbeReport) -> None:
     store = InMemoryOrderStore()
     audit = InMemoryAuditStore(store)
     cycle = TradingCycle(
-        strategy=AlwaysBuyStrategy(PROBE_SIZE),
+        strategy=AlwaysBuyStrategy(profile.probe_size),
         execution=ExecutionEngine(broker, store),
         audit=audit,
         kill_switch=KillSwitch(),
         risk_inputs=BrokerRiskInputs(
-            broker, constraints=CONSTRAINTS, estimated_slippage=Decimal("0.001")
+            broker, constraints=profile.constraints, estimated_slippage=Decimal("0.001")
         ),
         limits=PROBE_LIMITS,
         environ={},
@@ -410,7 +594,7 @@ async def _trading_loop(run: SandboxRun, report: ProbeReport) -> None:
     )
 
 
-async def _unpriced_holdings(broker: GeminiBroker) -> list[str]:
+async def _unpriced_holdings(broker: GeminiBroker, traded: str) -> list[str]:
     """Held symbols, other than the traded one, that the Sandbox cannot price.
 
     The rule matches how the trading loop values other holdings: a holding whose
@@ -421,7 +605,7 @@ async def _unpriced_holdings(broker: GeminiBroker) -> list[str]:
 
     unpriced = []
     for position in await broker.get_positions():
-        if position.symbol == SYMBOL:
+        if position.symbol == traded:
             continue
         try:
             await broker.get_quote(position.symbol)
@@ -432,8 +616,8 @@ async def _unpriced_holdings(broker: GeminiBroker) -> list[str]:
     return sorted(unpriced)
 
 
-async def _closed_candles(client: httpx.AsyncClient) -> list[Candle]:
-    response = await client.get(f"{GEMINI_SANDBOX_REST_URL}/v2/candles/btcusd/5m")
+async def _closed_candles(client: httpx.AsyncClient, profile: SymbolProfile) -> list[Candle]:
+    response = await client.get(f"{GEMINI_SANDBOX_REST_URL}/v2/candles/{profile.venue_symbol}/5m")
     now = datetime.now(UTC)
     candles = []
     try:
@@ -444,7 +628,7 @@ async def _closed_candles(client: httpx.AsyncClient) -> list[Candle]:
                 continue  # still in progress
             candles.append(
                 Candle(
-                    symbol=SYMBOL,
+                    symbol=profile.symbol,
                     interval="FIVE_MINUTE",
                     opened_at=opened,
                     closed_at=opened + BAR,
@@ -502,6 +686,19 @@ def _check(ok: bool) -> str:
     return "pass" if ok else "fail"
 
 
+def _plain(value: Decimal) -> str:
+    """A decimal without an exponent or trailing zeros: ``0.00002``, and ``0`` for zero."""
+
+    return format(value.normalize(), "f")
+
+
+def _decimals(value: Decimal) -> int:
+    """How many decimals the venue wrote the number with, trailing zeros included."""
+
+    exponent = value.as_tuple().exponent
+    return max(0, -exponent) if isinstance(exponent, int) else 0
+
+
 def _describe(exc: Exception) -> dict[str, Any]:
     """The error type, HTTP status, and Gemini's reason code (e.g. ``InvalidSignature``)."""
 
@@ -520,12 +717,27 @@ def _describe(exc: Exception) -> dict[str, Any]:
     return details
 
 
-async def _prompted() -> ProbeReport:
-    print("Gemini Sandbox check. Use a Sandbox key with the Trader role only.")
+async def _prompted(symbol: str = DEFAULT_SYMBOL) -> ProbeReport:
+    profile = profile_for(symbol)  # a symbol this check may not trade stops here
+    print(
+        f"Gemini Sandbox check for {profile.symbol}. Use a Sandbox key with the Trader role only."
+    )
+    print(
+        "It buys on the account whose key you enter and leaves orders waiting for a few "
+        "seconds. If the paper app trades on that account, its next reconciliation will halt."
+    )
+    require_typed(ACCOUNT_STATEMENT)
     api_key = prompt_secret("Sandbox API key")
     api_secret = prompt_secret("Sandbox API secret")
-    return await lifecycle(api_key, api_secret)
+    return await lifecycle(api_key, api_secret, symbol=profile.symbol)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m probes.gemini_sandbox_lifecycle")
+    parser.add_argument("--symbol", choices=sorted(PROFILES), default=DEFAULT_SYMBOL)
+    args = parser.parse_args(argv)
+    return run_probe(lambda: _prompted(args.symbol))
 
 
 if __name__ == "__main__":  # pragma: no cover - the owner runs this from a terminal
-    raise SystemExit(run_probe(_prompted))
+    raise SystemExit(main())
