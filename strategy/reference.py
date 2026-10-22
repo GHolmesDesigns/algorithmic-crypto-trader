@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid5
 
@@ -47,17 +48,35 @@ class MovingAverageCrossStrategy:
     makes no profitability claim.
     """
 
-    def __init__(self, fast: int = 3, slow: int = 8, quantity: Decimal = Decimal("1")) -> None:
+    def __init__(
+        self,
+        fast: int = 3,
+        slow: int = 8,
+        quantity: Decimal | Mapping[str, Decimal] = Decimal("1"),
+    ) -> None:
         if fast < 1 or slow <= fast:
             raise ValueError("require 1 <= fast < slow")
-        if quantity <= 0:
+        # One quantity serves every symbol; a mapping gives each symbol its own and leaves any
+        # symbol it does not name without a signal, so it can never inherit another's size.
+        values = tuple(quantity.values()) if isinstance(quantity, Mapping) else (quantity,)
+        if not values:
+            raise ValueError("quantity must name at least one symbol")
+        if any(value <= 0 for value in values):
             raise ValueError("quantity must be positive")
         self.fast = fast
         self.slow = slow
         self.quantity = quantity
         self.strategy_version = f"ma-cross-{fast}-{slow}-v1"
 
+    def _quantity_for(self, symbol: str) -> Decimal | None:
+        if isinstance(self.quantity, Mapping):
+            return self.quantity.get(symbol)
+        return self.quantity
+
     def on_market_state(self, state: MarketState) -> Signal | None:
+        quantity = self._quantity_for(state.symbol)
+        if quantity is None:
+            return None
         closes = [candle.close for candle in state.candles]
         if len(closes) <= self.slow:
             return None
@@ -75,7 +94,7 @@ class MovingAverageCrossStrategy:
             signal_id=uuid5(NAMESPACE_URL, f"algorithmic-crypto-trader:signal:{key}"),
             symbol=state.symbol,
             side=side,
-            quantity=self.quantity,
+            quantity=quantity,
             strategy_version=self.strategy_version,
             created_at=bar.closed_at,
             correlation_id=uuid5(NAMESPACE_URL, f"algorithmic-crypto-trader:correlation:{key}"),
