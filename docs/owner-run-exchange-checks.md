@@ -8,6 +8,7 @@ into a hidden prompt. Claude records each result in this file afterwards.
 | Check | What it proves | Who runs it | Status |
 | --- | --- | --- | --- |
 | 1. Gemini Sandbox lifecycle and trading loop | Orders placed through our Gemini code behave as expected on Gemini's test exchange, and one pass of the trading loop completes there | Owner | **Passed 2026-09-27**, except the partial fill: the Sandbox's best offer stayed above the script's size cap. Findings fixed in #33, #35, and #37. It can be run again any time to try the partial fill. |
+| 1b. Gemini Sandbox, ETH-USD | The same lifecycle for Ethereum: Gemini's real ETH limits, an ETH order round trip, and how the Sandbox rounds ETH and dollar balances | Owner, on a second Sandbox account | **Not yet run (#171).** The script is ready; nothing about ETH on the Sandbox is claimed until a dated result is recorded below. It gates deploying a second symbol (#170). |
 | 2. Coinbase read-only reconciliation | Our Coinbase code reads your real account correctly and reconciles cleanly | Owner | **Passed 2026-09-27** |
 | 3. Coinbase sandbox capture | Our Coinbase code reads Coinbase's real response formats | Claude, with the owner's approval | Done 2026-09-24 |
 
@@ -63,6 +64,30 @@ What the steps check (any refusal also names Gemini's own reason code, such as `
 | partial_fill | Buys slightly more than the best offer holds, so part fills. The best offer changes from moment to moment, so the script reads it up to five times; skipped if it stays too large for the script's small size cap. |
 | trading_loop | One full pass of the trading loop: strategy, risk checks, and the order. "Refused" names the risk check that stopped it. Sandbox accounts come with coins that the test exchange may have no buyers for, so they cannot be priced; this check leaves those out and names them under `left_out`. The trading bot itself still refuses to buy while any holding cannot be priced. |
 | cleanup | Any order still open was cancelled. If this fails, cancel the listed orders on the Sandbox website. |
+
+### Check 1b: the same check for ETH-USD (#171)
+
+Run this on a **second Sandbox account**, never the account the paper app trades on. The paper app is still on `BTC-USD` only, and the 30-day soak (#12) uses the first account. This check buys on the account whose key you enter, so against the soak's account it would halt trading and spoil the soak.
+
+1. Create a second Gemini Sandbox account with a different email address from the first. A new account is credited automatically (see step 2 above). **Whether the Sandbox allows a second account is not confirmed.** If it refuses, stop and tell Claude; do not use the soak's account instead.
+2. Under **Settings → API** on that second account, create a key exactly as in step 3 of Check 1: Primary account, **Trader** role only, **Require Heartbeat** off.
+3. In the terminal, run:
+
+   ```
+   python -m probes.gemini_sandbox_lifecycle --symbol ETH-USD
+   ```
+
+4. The script first asks you to type this sentence: **this is not the account the paper app trades on**. It accepts it in any case, with or without the final full stop. Anything else ends the run before it asks for a key. Then paste the key and the secret into the hidden prompts, as in Check 1.
+5. The run takes about a minute and ends with **PASS** or **NEEDS REVIEW**. It uses 0.01 ETH per order (about $25 of test money), so the account needs roughly $600 of test dollars. Any symbol other than `BTC-USD` and `ETH-USD` is refused before a request is made.
+6. Tell Claude it finished. Claude records the dated result in the table above and in [Phase 1.6](phase-1.6-broker-adapters.md#eth-usd-sandbox-probe-171), with the commit the run used. The result file name ends in `-eth-usd`.
+7. Afterwards you may delete the second account's key.
+
+The ETH run has the same steps as the bitcoin run. Both runs now include two more, recorded in the result with numbers only:
+
+| Step | Meaning |
+| --- | --- |
+| symbol_details | Gemini's published smallest order, quantity step, and price step for ETH-USD, compared with what the check (and the app's order sizing) assumes. "Differs" names the field that does not match. A symbol Gemini does not list as open stops the run before any order. |
+| balance_precision | After the first (capped) order, the app's projection of the ETH and US dollar balances is compared with what the Sandbox reports, using the same rounding rule the paper app reconciles with. The result lists, per asset, how many decimals the Sandbox writes and the difference (Sandbox minus projection). A difference other than 0 is a finding: the paper app would halt on it, and it becomes its own card. No balance is recorded. |
 
 ## Check 2: Coinbase read-only
 
