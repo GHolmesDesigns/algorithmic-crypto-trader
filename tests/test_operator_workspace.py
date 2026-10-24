@@ -19,7 +19,8 @@ async def test_existing_operator_pages_use_the_same_authenticated_workspace(monk
         ("/operator/history/trends", OPERATOR, "activity"),
         ("/operator/history/soak", ADMIN, "activity"),
         ("/operator/research", OPERATOR, "research"),
-        ("/operator/rearm", ADMIN, None),
+        ("/operator/rearm", ADMIN, "system"),
+        ("/operator/system", OPERATOR, "system"),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=application), base_url="http://test"
@@ -60,7 +61,7 @@ async def test_navigation_and_controls_remain_server_rendered_without_javascript
         "/operator/watchlist",
         "/operator/history/orders",
         "/operator/research",
-        "/operator#health",
+        "/operator/system",
     ):
         assert f'href="{destination}"' in html
     assert 'aria-expanded="true" aria-controls="workspace-nav" hidden' in html

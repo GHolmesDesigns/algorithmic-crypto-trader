@@ -28,7 +28,7 @@ The detailed dashboard sections remain Overview, Portfolio, Activity, Alerts & e
 | Watch Coins | `/operator/watchlist` | `/operator/markets`; watchlist and server-drawn chart fallbacks |
 | Activity | `/operator/history/orders` | Signals, risk decisions, discrepancies, events, trends, soak/readiness, order lineage |
 | Research | `/operator/research` | Existing catalog, replay and result routes |
-| System | `/operator#health` | `/operator/system` remains the C003 destination |
+| System | `/operator/system` | Overview System health anchor; `/operator/diagnostics`, re-arm and order-close routes (C003) |
 
 The current watchlist's Add a coin symbol form and separate market-chart page are retained. C001 does not replace the flow with a new coin-name editor. Manual appearance choices and the dedicated System content remain with C003; C001 artboards document the existing OS/browser light and dark appearances.
 

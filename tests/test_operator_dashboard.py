@@ -729,7 +729,7 @@ async def test_page_structure_supports_keyboard_and_screen_reader_use(monkeypatc
     assert 'href="/operator/watchlist" data-module="watch-coins">Watch Coins</a>' in html
     assert 'href="/operator/history/orders" data-module="activity">Activity</a>' in html
     assert 'href="/operator/research" data-module="research">Research</a>' in html
-    assert 'href="/operator#health" data-module="system">System</a>' in html
+    assert 'href="/operator/system" data-module="system">System</a>' in html
     assert (
         'id="workspace-nav-toggle" aria-expanded="true" aria-controls="workspace-nav" hidden'
         in html
