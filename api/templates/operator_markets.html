@@ -2,7 +2,7 @@
 {#- Markets: server-drawn SVG fallback, with an optional local chart enhancement. -#}
 {%- import "_operator_macros.html" as ui -%}
 {% block title %}{{ view.title }}{% endblock %}
-{% block page_name %}Markets{% endblock %}
+{% block page_name %}Watch Coins{% endblock %}
 {% block page_class %} page-wide{% endblock %}
 {% block head_extra %}
     <script src="/operator/static/lightweight-charts.js" defer></script>
@@ -82,19 +82,36 @@
 {%- endmacro %}
 
 {% block content %}
-        <nav class="history-nav" aria-label="Operator views">
+        <nav class="history-nav" aria-label="Watch Coins views">
           <ul>
-            <li><a href="/operator">Dashboard</a></li>
-            <li><a href="{{ view.path }}" aria-current="page">Markets</a></li>
-            <li><a href="{{ view.watchlist_path }}">Watchlist editor</a></li>
-            <li><a href="/operator/history/orders">History</a></li>
+            <li><a href="{{ view.path }}" aria-current="page">Charts</a></li>
+            <li><a href="{{ view.watchlist_path }}">Watched coins</a></li>
           </ul>
         </nav>
         <section class="block" aria-labelledby="markets-heading">
           <div class="block-head">
-            <h1 id="markets-heading">{{ view.title }}</h1>
+            <h1 id="markets-heading">Charts</h1>
             <p class="block-note">{{ view.intro }}</p>
           </div>
+          {% if watchlist %}
+          <section class="panel" aria-labelledby="watch-status-heading">
+            <div class="panel-head">
+              <h2 id="watch-status-heading">Watch-only feed</h2>
+              <a href="{{ view.watchlist_path }}">Manage watched coins and feed</a>
+            </div>
+            <p>{{ ui.pill(watchlist.feed_status) }} {{ watchlist.feed_origin }}</p>
+            <p class="note">{{ watchlist.rows|length }} of {{ watchlist.limit }} watched coins · {{ watchlist.feed_budget }}</p>
+            {% if watchlist.unavailable %}
+            <p class="market-empty" role="status">Watchlist unavailable: {{ watchlist.unavailable }}. This is not an empty list.</p>
+            {% elif not watchlist.rows %}
+            <p class="market-empty" role="status">No coins are watched yet. The charts below use only symbols named in the shareable layout.</p>
+            {% else %}
+            <ul class="watch-feed-statuses">
+              {% for coin in watchlist.rows %}<li><strong class="mono">{{ coin.symbol }}</strong>: {{ coin.status.word }}{% if coin.detail %} — {{ coin.detail }}{% endif %} · Last candle {{ ui.stamp(coin.last_candle) }}</li>{% endfor %}
+            </ul>
+            {% endif %}
+          </section>
+          {% endif %}
           {% if view.errors %}
           <div class="notice tone-crit" role="alert">
             <p><span class="mark" aria-hidden="true">■</span> This layout was refused. Nothing was read.</p>
@@ -113,7 +130,7 @@
               <div class="field"><label for="market-window">Window</label><select id="market-window" name="window">{% for option in view.windows %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></div>
               <div class="field"><label for="market-interval">Bar interval</label><select id="market-interval" name="interval">{% for option in view.intervals %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></div>
             </div>
-            <div class="actions"><button class="button button-rearm" type="submit">Refresh charts</button><a href="{{ view.watchlist_path }}">Edit saved watchlist</a></div>
+            <div class="actions"><button class="button button-rearm" type="submit">Refresh charts</button><a href="{{ view.watchlist_path }}">Manage watched coins</a></div>
             <p class="note">The server caps each series at 300 points. Missing candles remain gaps; a state never stands in for a price.</p>
           </form>
           <p class="note">Share this layout: <a href="{{ view.share_href }}">{{ view.share_href }}</a>. The link is read-only.</p>
@@ -126,7 +143,7 @@
           <section class="panel" aria-labelledby="empty-markets-heading">
             <h2 id="empty-markets-heading">No coins selected</h2>
             <p>Add a coin to the saved watchlist, or provide a shareable <code>c=BTC-USD,ETH-USD</code> layout.</p>
-            <p><a class="button button-rearm" href="{{ view.watchlist_path }}">Open watchlist editor</a></p>
+            <p><a class="button button-rearm" href="{{ view.watchlist_path }}#new-coin">New Coin</a></p>
           </section>
           {% endif %}
         </section>

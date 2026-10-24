@@ -19,8 +19,8 @@ MARKETS_PATH = "/operator/markets"
 MARKET_CANDLES_PATH = "/operator/markets/candles"
 WATCHLIST_PATH = "/operator/watchlist"
 INTRO = (
-    "Read-only Coinbase candles from the saved watchlist. These charts never add a coin "
-    "to the trading symbols or submit an order."
+    "Inspect stored market candles with a gap-aware fallback and accessible data tables. "
+    "A chart layout and the watched list never add a coin to trading symbols or submit an order."
 )
 WINDOW_LABELS = {
     "24h": "Last 24 hours",
@@ -86,7 +86,7 @@ def build_markets_view(
     selected_window = form.get("window") or "24h"
     selected_interval = form.get("interval") or ""
     view: dict[str, Any] = {
-        "title": "Markets",
+        "title": "Charts",
         "intro": INTRO,
         "path": MARKETS_PATH,
         "watchlist_path": WATCHLIST_PATH,

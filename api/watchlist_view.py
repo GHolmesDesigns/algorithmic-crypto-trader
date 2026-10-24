@@ -9,10 +9,10 @@ from typing import Any
 from api.dashboard import Status, _stamp
 
 WATCHLIST_PATH = "/operator/watchlist"
+MARKETS_PATH = "/operator/markets"
 INTRO = (
-    "Coins you chart but never trade. When the watch-only feed is on, adding one starts "
-    "collecting its five-minute Coinbase candles. A watched coin is never added to the "
-    "trading symbols, and the strategy, risk gates, and execution never see these candles."
+    "Manage the coins you watch and open their stored charts here. Watched coins are "
+    "separate from trading symbols; adding one never changes strategy, risk, or execution."
 )
 _STATES = {
     "fresh": Status("fresh", "ok"),
@@ -41,9 +41,10 @@ def build_watchlist_view(
 ) -> dict[str, Any]:
     moment = now or datetime.now(UTC)
     view: dict[str, Any] = {
-        "title": "Watchlist",
+        "title": "Watch Coins",
         "intro": INTRO,
         "path": WATCHLIST_PATH,
+        "markets_path": MARKETS_PATH,
         "errors": list(errors),
         "unavailable": unavailable,
         "role": role,

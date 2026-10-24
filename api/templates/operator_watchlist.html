@@ -2,14 +2,14 @@
 {#- Watchlist: coins to chart, never to trade. -#}
 {%- import "_operator_macros.html" as ui -%}
 {% block title %}{{ view.title }}{% endblock %}
-{% block page_name %}Watchlist{% endblock %}
+{% block page_name %}Watch Coins{% endblock %}
 {% block page_class %} page-wide{% endblock %}
 
 {% block content %}
-        <nav class="history-nav" aria-label="Operator views">
+        <nav class="history-nav" aria-label="Watch Coins views">
           <ul>
-            <li><a href="/operator">Dashboard</a></li>
-            <li><a href="{{ view.path }}" aria-current="page">Watchlist</a></li>
+            <li><a href="{{ view.markets_path }}">Charts</a></li>
+            <li><a href="{{ view.path }}" aria-current="page">Watched coins</a></li>
           </ul>
         </nav>
         <section class="block" aria-labelledby="watchlist-heading">
@@ -56,7 +56,10 @@
             {%- endif %}
           </section>
           <section class="panel" aria-labelledby="watched-heading">
-            <h2 id="watched-heading">Watched coins ({{ view.rows|length }} of {{ view.limit }})</h2>
+            <div class="panel-head">
+              <h2 id="watched-heading">Watched coins ({{ view.rows|length }} of {{ view.limit }})</h2>
+              {%- if not view.full %}<a class="button button-rearm" href="#new-coin">New Coin</a>{% endif %}
+            </div>
             {%- if view.rows %}
             <div class="table-wrap" role="region" aria-labelledby="watched-heading" tabindex="0">
               <table class="data">
@@ -99,8 +102,8 @@
             <p>{{ ui.absent("No coins are watched yet.") }}</p>
             {%- endif %}
           </section>
-          <section class="panel" aria-labelledby="add-heading">
-            <h2 id="add-heading">Add a coin</h2>
+          <section class="panel" id="new-coin" aria-labelledby="add-heading">
+            <h2 id="add-heading">New Coin</h2>
             {%- if view.full %}
             <p class="note">The watchlist is full ({{ view.limit }} coins). Remove one to add another.</p>
             {%- else %}

@@ -40,6 +40,7 @@
 >   - A Markets page at `/operator/markets` will show up to nine coins the operator chooses in the app. Its charts are drawn from the app's own stored Coinbase candles, never from TradingView's hosted widgets.
 >   - Every tile is server-drawn SVG with a table alternative. A pinned, vendored copy of TradingView's open-source Lightweight Charts library, served from the app's own origin, may add zoom, pan, and crosshair on that page only.
 >   - This is the one exception to "no JavaScript" on the operator surface. The other pages, and every safety control, stay JavaScript-free, and nothing loads from a CDN.
+> - **C006 (#179) implementation:** `/operator/watchlist` and `/operator/markets` are linked views in the Watch Coins workspace. The Charts view shows saved-list/feed state and links to management. Watched coins keeps existing add/remove/reorder and administrator-only feed controls, with a clearly labeled New Coin anchor to the canonical-symbol form. Both routes, APIs, gap-aware SVG fallback, accessible tables, and local chart enhancement remain.
 
 ## 1. How to read this report
 
