@@ -156,7 +156,7 @@ The browser-ready user manual already defines a visual system in `docs/user-manu
 - muted gold accent;
 - green, amber, and red operational states;
 - Archivo-style display typography, Source Serif-style reading typography, and a monospace data face;
-- light and dark color schemes;
+- light and dark color schemes (operators now choose Light, Dark or Follow device under System, C004 `#177`);
 - visible focus styles;
 - restrained shadows and compact navigation.
 
@@ -547,6 +547,8 @@ Design for:
 - backup/restore/drill evidence when a safe read model is added.
 
 > **Implemented in C003 (#176):** `GET /operator/system` now presents most of this list. See `docs/operator-system-c003-v1.md`. Backup, restore and drill evidence and market-data connection freshness are still not part of the page.
+>
+> **Implemented in C004 (#177):** the page ends with an Appearance section (Light mode, Dark mode, Follow device), kept in the browser only. See `docs/operator-appearance-c004-v1.md`.
 
 ## 9. Roadmap additions the design must anticipate
 

@@ -46,8 +46,17 @@
   --chart-ink: #4b5650;
 }
 
+/*
+ * Appearance. Follow device (no data-theme) lets the device query pick the palette.
+ * operator-appearance.js sets data-theme="light" or "dark" to override it. Keep the
+ * two dark token lists identical; a test compares them.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --ground: #121815;
     --surface: #18201d;
     --surface-2: #232d29;
@@ -77,6 +86,38 @@
     --rail-active: #232d29;
     --chart-ink: #b2bcb5;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #121815;
+  --surface: #18201d;
+  --surface-2: #232d29;
+  --line: #3a4640;
+  --line-soft: #29332f;
+  --text: #f0f2ee;
+  --text-2: #b2bcb5;
+  --accent: #d7c5a2;
+  --accent-soft: #2e3229;
+  --accent-text: #e6d6b3;
+  --ok: #7fc39a;
+  --ok-soft: #1b2d23;
+  --warn: #dfb35f;
+  --warn-soft: #33291a;
+  --crit: #f0978b;
+  --crit-soft: #3b221f;
+  --unknown: #b8c1ba;
+  --unknown-soft: #29332f;
+  --neutral: #8fc4d8;
+  --neutral-soft: #1e2e34;
+  --focus: #9cc4ff;
+  --stop: #b3443a;
+  --stop-border: #f0978b;
+  --stop-text: #ffffff;
+  --rail-bg: #0d120f;
+  --rail-line: #29332f;
+  --rail-active: #232d29;
+  --chart-ink: #b2bcb5;
 }
 
 *,
@@ -1192,6 +1233,50 @@ time,
   height: 1.25rem;
   margin: 0.125rem 0 0;
   accent-color: var(--text);
+}
+
+/* Appearance choices on the System page */
+
+.appearance-choices {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.appearance-choices[hidden] {
+  display: none;
+}
+
+.appearance-choices legend {
+  padding: 0;
+  font-weight: 700;
+}
+
+.appearance-choices label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line-soft);
+  cursor: pointer;
+}
+
+.appearance-choices input {
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0.125rem 0 0;
+  accent-color: var(--text);
+}
+
+.choice-note {
+  display: block;
+  color: var(--text-2);
+  font-size: 0.875rem;
 }
 
 .field {

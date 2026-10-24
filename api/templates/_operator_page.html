@@ -9,6 +9,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <title>{% block title %}{% endblock %} · {{ page.mode }} · Operator</title>
     {%- if page.signed_in %}<script src="{{ utc_clock_script_url }}" defer></script>{% endif %}
+    <script src="{{ appearance_script_url }}"></script>
     <style>
 {% include "operator.css" %}
     </style>

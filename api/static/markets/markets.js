@@ -6,24 +6,31 @@
   if (!tiles.length || !window.LightweightCharts) return;
 
   var charts = window.LightweightCharts;
-  var darkMode = window.matchMedia("(prefers-color-scheme: dark)");
+  var darkMode = typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+
+  /* Read the page's own colour tokens, so an explicit Light or Dark choice and
+     Follow device all draw the chart in the palette the page is showing. */
+  function token(name, fallbackLight, fallbackDark) {
+    var value = "";
+    try {
+      value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    } catch (_error) {
+      value = "";
+    }
+    if (value) return value;
+    return darkMode && darkMode.matches ? fallbackDark : fallbackLight;
+  }
 
   function palette() {
-    return darkMode.matches
-      ? {
-          background: "#18201d",
-          text: "#f0f2ee",
-          grid: "#29332f",
-          border: "#3a4640",
-          ink: "#b2bcb5",
-        }
-      : {
-          background: "#f8f9f6",
-          text: "#1b231f",
-          grid: "#dee3d7",
-          border: "#ccd2c6",
-          ink: "#4b5650",
-        };
+    return {
+      background: token("--surface", "#f8f9f6", "#18201d"),
+      text: token("--text", "#1b231f", "#f0f2ee"),
+      grid: token("--line-soft", "#dee3d7", "#29332f"),
+      border: token("--line", "#ccd2c6", "#3a4640"),
+      ink: token("--chart-ink", "#4b5650", "#b2bcb5"),
+    };
   }
 
   function number(value) {
@@ -157,6 +164,27 @@
             chart.timeScale().fitContent();
           }
 
+          function restyle() {
+            colors = palette();
+            chart.applyOptions({
+              layout: { background: { type: charts.ColorType.Solid, color: colors.background }, textColor: colors.text },
+              grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
+              rightPriceScale: { borderColor: colors.border },
+              timeScale: { borderColor: colors.border },
+            });
+            render();
+          }
+
+          /* A new Appearance choice or a device change redraws in the new palette. */
+          if (darkMode && typeof darkMode.addEventListener === "function") {
+            darkMode.addEventListener("change", restyle);
+          }
+          if (typeof MutationObserver === "function") {
+            new MutationObserver(restyle).observe(document.documentElement, {
+              attributes: true,
+              attributeFilter: ["data-theme"],
+            });
+          }
           type.addEventListener("change", render);
           volume.addEventListener("change", render);
           reset.addEventListener("click", function () { chart.timeScale().fitContent(); });

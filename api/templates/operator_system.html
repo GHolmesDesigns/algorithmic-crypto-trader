@@ -365,4 +365,21 @@
             </div>
           </details>
         </section>
+
+        <section id="appearance" class="block" aria-labelledby="appearance-heading">
+          <div class="block-head">
+            <h2 id="appearance-heading">Appearance</h2>
+            <p class="block-note">Choose how every operator page looks on this device. The choice is kept in this browser only. It is not a trading setting, is not stored on the server, and changing it does not touch the feed, a provider, the kill switch or any order.</p>
+          </div>
+          <div class="panel">
+            <p class="note" data-appearance-fallback>Choices need JavaScript. Without it, every page follows this device's light or dark setting.</p>
+            <fieldset class="appearance-choices" data-appearance-group hidden>
+              <legend class="visually-hidden">Appearance</legend>
+              <label><input type="radio" name="appearance" value="light"><span>Light mode<span class="choice-note">Always light, whatever this device uses.</span></span></label>
+              <label><input type="radio" name="appearance" value="dark"><span>Dark mode<span class="choice-note">Always dark, whatever this device uses.</span></span></label>
+              <label><input type="radio" name="appearance" value="system" checked><span>Follow device<span class="choice-note">Light or dark as this device is set, and it changes when the device does. This is the default.</span></span></label>
+            </fieldset>
+            <p class="note" data-appearance-status aria-live="polite"></p>
+          </div>
+        </section>
 {% endblock %}

@@ -30,7 +30,7 @@ The detailed dashboard sections remain Overview, Portfolio, Activity, Alerts & e
 | Research | `/operator/research` | Existing catalog, replay and result routes |
 | System | `/operator/system` | Overview System health anchor; `/operator/diagnostics`, re-arm and order-close routes (C003) |
 
-The current watchlist's Add a coin symbol form and separate market-chart page are retained. C001 does not replace the flow with a new coin-name editor. Manual appearance choices and the dedicated System content remain with C003; C001 artboards document the existing OS/browser light and dark appearances.
+The current watchlist's Add a coin symbol form and separate market-chart page are retained. C001 does not replace the flow with a new coin-name editor. Manual appearance choices and the dedicated System content were left to later cards (System in C003, appearance choices in C004; see `operator-appearance-c004-v1.md`); C001 artboards document the existing OS/browser light and dark appearances.
 
 Sign-in, sign-out results, safety-control results, admin re-arm review, order-close review, soak, trends, history subviews, and lineage keep their existing routes and authorization. The shared shell marks the current primary destination when it can be determined from the request or anchor.
 

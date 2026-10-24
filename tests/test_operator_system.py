@@ -151,7 +151,8 @@ async def test_the_page_is_server_rendered_without_added_scripts(monkeypatch):
     application = dashboard_app(monkeypatch, broker=ReadOnlyBroker())
     html = await fetch(application, ADMIN)
     tags = SCRIPT_TAG.findall(html)
-    assert len(tags) == 2  # the display-only clock and sidebar scripts, both same-origin
+    # The display-only clock, appearance and sidebar scripts, all same-origin.
+    assert len(tags) == 3
     assert all('src="/operator/static/' in tag for tag in tags)
     assert "http://" not in html.replace("http://test", "")
     assert "<form" in html and 'action="/operator/emergency-stop"' in html
