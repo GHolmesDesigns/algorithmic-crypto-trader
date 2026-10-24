@@ -4,9 +4,9 @@
 - **Visual direction:** restrained green and gray surfaces, textual state labels, no remote assets, and the existing light/dark system palettes.
 - **Interaction model:** server-rendered FastAPI/Jinja pages with ordinary links and POST forms. JavaScript only advances the existing server-anchored UTC clock and saves the browser-local sidebar preference.
 
-## Nine overview status cards
+## Overview content follow-up
 
-These cards are the existing `/operator/state` summaries retained inside the Overview module. Their content, source, and truthful unavailable states are unchanged.
+Issue #175 groups the existing Overview content into **Needs attention**, **Portfolio**, **Operational checks**, and **Recent activity**. The nine status summaries below remain available, with the portfolio and P/L summaries placed in Portfolio and the other operational states under Operational checks. See the [C002 Overview handoff](operator-overview-c002-v1.md) for the attention rules, source labels, and implementation screenshots.
 
 1. Application
 2. Broker

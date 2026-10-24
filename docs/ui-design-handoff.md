@@ -488,41 +488,16 @@ The first implementation can remain one server-rendered route while presenting t
 
 ### 8.1 Overview / command center
 
-The default operator view should contain:
+The shipped server-rendered Overview is grouped in this order:
 
-- fixed mode/environment and snapshot-age bar;
-- kill-switch state plus role-appropriate controls;
-- active incident/degraded-state banner;
-- startup recovery, broker connectivity, strategy heartbeat, market-data status when available, and reconciliation status;
-- portfolio summary with explicit data freshness;
-- recent orders/fills/signals;
-- recent alerts/errors;
-- link or disclosure for operational detail.
+1. **Needs attention** — recorded safety causes, pending or unknown orders, reconciliation results, watch-only feed freshness, last-known or unavailable portfolio data, and active alerts. Every item names a next step and links to its existing diagnostic page or section. A missing safety cause is stated as unavailable; it is never inferred from an unrelated unknown order.
+2. **Portfolio** — current or last-known broker balances and positions, explicit source and as-of times, supported daily P/L, and the existing venue or fill-derived average cost basis.
+3. **Operational checks** — application and broker state, paper runtime, strategy heartbeat, recovery, reconciliation, watch-only candle freshness, alerts and delivery results, safety history, and system facts.
+4. **Recent activity** — process-local signals, orders, and fills, labelled separately from persisted order history and lineage.
 
-Suggested desktop hierarchy:
+The shared header retains the literal mode, credential scope, server-granted role, server-anchored UTC time, and snapshot age. The safety strip stays visible above the Overview. The snapshot is refreshed by the existing page load or Refresh link; it has no new automatic refresh. The watch-only market feed is explicitly separate from the trading feed. A dismissed alert remains in the record and dismissal means reviewed, not resolved.
 
-```text
-+--------------------------------------------------------------------------------+
-| Algorithmic Crypto Trader | PAPER | snapshot 8s ago | Operator                 |
-+--------------------------------------------------------------------------------+
-| SAFETY: RUNNING                         [PAUSE] [EMERGENCY STOP]                 |
-| Running permits work; all other risk gates still apply.                        |
-+-----------------------+-----------------------+--------------------------------+
-| Broker                | Strategy              | Reconciliation                 |
-| healthy · checked 8s  | unknown / heartbeat   | clean · last run 2m ago        |
-+-----------------------+-----------------------+--------------------------------+
-| Startup recovery      | Portfolio freshness   | Alerts                         |
-| reconciled            | current · broker auth | 0 critical · delivery status   |
-+--------------------------------------------------------------------------------+
-| Balances and positions                                                          |
-+--------------------------------------------------------------------------------+
-| Recent activity: signals -> risk -> orders -> fills                             |
-+--------------------------------------------------------------------------------+
-| Errors, discrepancies, and alert timeline                                      |
-+--------------------------------------------------------------------------------+
-```
-
-On mobile, preserve the same reading order and pin the emergency action without hiding state behind hover interactions.
+On mobile, preserve the same reading order and keep the safety actions visible without hiding state behind hover interactions.
 
 ### 8.2 Activity
 

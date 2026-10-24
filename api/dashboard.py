@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import quote
 
 from api.controls import REARM_CHECKLIST
 
@@ -71,6 +72,7 @@ _ALERT = {"critical": "crit", "warning": "warn"}
 _DELIVERY = {"sent": "ok", "failed": "crit"}
 _DESTINATIONS = (("phone_push", "Phone push"), ("email", "Email"))
 _ROLE_WORDS = {"admin": "Administrator", "operator": "Operator"}
+_WATCH_FEED = {"fresh": "ok", "stale": "warn", "unavailable": "crit", "not_collected": "unknown"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +142,11 @@ def build_dashboard(
     strategies = [_heartbeat(item, now) for item in snapshot.get("strategies", ())]
     alerts = _alerts(snapshot, now, is_admin=role == "admin")
     safety = _safety(snapshot, now)
+    portfolio = _portfolio(snapshot, now)
+    activity = _activity(snapshot, now)
+    watch_feed = _watch_feed(snapshot, now)
+    cards = _cards(snapshot, strategies, alerts, now)
+    attention = _attention(snapshot, safety, portfolio, watch_feed, alerts)
     return {
         "header": {
             "mode": mode,
@@ -160,9 +167,13 @@ def build_dashboard(
             }
             for word, meaning in _KILL_SWITCH_MEANINGS
         ],
-        "cards": _cards(snapshot, strategies, alerts, now),
-        "portfolio": _portfolio(snapshot, now),
-        "activity": _activity(snapshot, now),
+        "cards": cards,
+        "checks": [card for card in cards if card.label not in {"Portfolio data", "P/L"}],
+        "portfolio_cards": [card for card in cards if card.label in {"Portfolio data", "P/L"}],
+        "attention": attention,
+        "portfolio": portfolio,
+        "activity": activity,
+        "watch_feed": watch_feed,
         "alerts": alerts,
         "errors": _errors(snapshot, now),
         "destinations": _destinations(snapshot),
@@ -187,7 +198,7 @@ def _unresolved(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any] | 
         return None
     if not payload.get("readable"):
         return {"readable": False, "rows": []}
-    rows = []
+    rows: list[dict[str, Any]] = []
     for order in payload.get("orders", ()):
         request = order.get("request", {})
         rows.append(
@@ -539,6 +550,11 @@ def _portfolio(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     return {
         "status": status,
         "detail": str(portfolio.get("detail", "")),
+        "source": "broker snapshot"
+        if status_word == "current"
+        else "last-known broker snapshot"
+        if last_known
+        else "unavailable",
         "current": status_word == "current",
         "last_known": last_known,
         "empty_reason": empty_reason,
@@ -588,6 +604,7 @@ def _activity(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     order_rows = [
         {
             "client_order_id": order.get("request", {}).get("client_order_id", ""),
+            "href": _history_order_href(order.get("request", {}).get("client_order_id")),
             "symbol": order.get("request", {}).get("symbol", ""),
             "side": order.get("request", {}).get("side", ""),
             "order_type": order.get("request", {}).get("order_type", ""),
@@ -626,10 +643,279 @@ def _activity(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         for signal in signals
     ]
     return {
+        "available": snapshot.get("readable") is not False
+        and bool(snapshot.get("updated_at"))
+        and all(key in snapshot for key in ("orders", "fills", "signals")),
+        "source": "process-local operator snapshot",
         "counts": {"signals": len(signals), "orders": len(orders), "fills": len(fills)},
         "orders": _newest(order_rows),
         "fills": _newest(fill_rows),
         "signals": _newest(signal_rows),
+        "limit": ROW_LIMIT,
+    }
+
+
+def _history_order_href(client_order_id: object) -> str:
+    if not client_order_id:
+        return "/operator/history/orders"
+    return f"/operator/history/orders/{quote(str(client_order_id), safe='')}"
+
+
+def _watch_feed(snapshot: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    payload = snapshot.get("watch_feed")
+    if not isinstance(payload, Mapping):
+        return {
+            "available": False,
+            "enabled": None,
+            "status": Status("unavailable", "unknown"),
+            "detail": "The watch-only feed read model is unavailable.",
+            "rows": [],
+        }
+
+    enabled = payload.get("enabled")
+    rows: list[dict[str, Any]] = []
+    for item in payload.get("symbols", ()):
+        state = str(item.get("state", "not_collected"))
+        rows.append(
+            {
+                "symbol": str(item.get("symbol", "")),
+                "status": _status(state, _WATCH_FEED),
+                "detail": str(item.get("detail") or ""),
+                "last_candle": _stamp(item.get("last_candle_at"), now, missing="none collected"),
+            }
+        )
+
+    if enabled is False:
+        status = Status("disabled", "neutral")
+        detail = "Watch-only collection is disabled. The trading feed is separate."
+    elif enabled is not True:
+        status = Status("unavailable", "unknown")
+        detail = "The watch-only feed state was not recorded."
+    elif rows:
+        status = max(rows, key=lambda row: _SEVERITY[row["status"].tone])["status"]
+        detail = "Per-symbol freshness for the watch-only feed; this is separate from trading data."
+    else:
+        status = Status("no symbols", "neutral")
+        detail = "No watch-only symbols are being collected. The trading feed is separate."
+    return {
+        "available": True,
+        "enabled": enabled,
+        "status": status,
+        "detail": detail,
+        "rows": rows[:ROW_LIMIT],
+        "total": len(rows),
+        "limit": ROW_LIMIT,
+    }
+
+
+def _attention(
+    snapshot: Mapping[str, Any],
+    safety: Safety,
+    portfolio: Mapping[str, Any],
+    watch_feed: Mapping[str, Any],
+    alerts: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rank actionable conditions using only the bounded operator snapshot."""
+
+    required = (
+        "updated_at",
+        "risk",
+        "connectivity",
+        "recovery",
+        "reconciliation",
+        "runtime",
+        "watch_feed",
+        "portfolio",
+        "alerts",
+        "orders",
+        "fills",
+        "signals",
+    )
+    missing = [key for key in required if key not in snapshot]
+    if snapshot.get("readable") is False or missing:
+        detail = (
+            "The operator read model is unavailable. No incident or empty state can be confirmed."
+            if snapshot.get("readable") is False
+            else "The operator read model is incomplete; missing " + ", ".join(missing) + "."
+        )
+        return {
+            "available": False,
+            "status": Status("read model unavailable", "unknown"),
+            "detail": detail,
+            "rows": [],
+            "limit": ROW_LIMIT,
+        }
+
+    rows: list[dict[str, Any]] = []
+
+    def add(
+        title: str,
+        status: Status,
+        detail: str,
+        next_step: str,
+        href: str,
+    ) -> None:
+        rows.append(
+            {
+                "title": title,
+                "status": status,
+                "detail": detail,
+                "next_step": next_step,
+                "href": href,
+            }
+        )
+
+    if not safety.running:
+        if safety.causes:
+            cause = " ".join(safety.causes)
+        elif safety.last_change:
+            change = safety.last_change
+            cause = (
+                f"Recorded change: {change['change']} by {change['actor']} "
+                f"({change['kind']}); {change['reason']}."
+            )
+        else:
+            cause = (
+                "Cause unavailable: no recorded safety cause explains this state "
+                "in the current snapshot."
+            )
+        add(
+            f"Kill switch {safety.status.word}",
+            safety.status,
+            cause,
+            safety.next_step,
+            "#safety",
+        )
+
+    unresolved = snapshot.get("unresolved_orders")
+    if unresolved is None:
+        add(
+            "Saved unresolved orders were not checked",
+            Status("unavailable", "unknown"),
+            "This view cannot confirm whether a persisted order is waiting on the venue.",
+            "Open order history and investigate any pending or unknown order by client order ID.",
+            "/operator/history/orders",
+        )
+    elif not unresolved.get("readable"):
+        add(
+            "Saved unresolved orders could not be read",
+            Status("unreadable", "crit"),
+            "No pending or unknown persisted order can be confirmed resolved from this snapshot.",
+            "Check the order history and application logs before allowing new entries.",
+            "/operator/history/orders",
+        )
+
+    seen_order_ids: set[str] = set()
+    order_sources = [snapshot.get("orders", ())]
+    if isinstance(unresolved, Mapping) and unresolved.get("readable"):
+        order_sources.append(unresolved.get("orders", ()))
+    for source in order_sources:
+        for order in source:
+            status_word = str(order.get("status", "unknown"))
+            if status_word not in {"pending_submit", "unknown"}:
+                continue
+            request = order.get("request", {})
+            client_order_id = str(request.get("client_order_id") or "")
+            if client_order_id and client_order_id in seen_order_ids:
+                continue
+            if client_order_id:
+                seen_order_ids.add(client_order_id)
+            status = _status(status_word, _ORDER)
+            symbol = str(request.get("symbol", ""))
+            detail = (
+                f"{symbol + ': ' if symbol else ''}{status_word}. The venue state is unresolved; "
+                "this order may already exist."
+            )
+            href = _history_order_href(client_order_id)
+            add(
+                "Unknown order" if status_word == "unknown" else "Pending submission order",
+                status,
+                detail,
+                "Look it up by client order ID. Never resubmit it.",
+                href,
+            )
+
+    reconciliation = snapshot.get("reconciliation", {})
+    result = str(reconciliation.get("last_result", ""))
+    if result in {"diverged", "unavailable"}:
+        status = _status(result, _RECONCILIATION)
+        count = reconciliation.get("last_discrepancies")
+        detail = (
+            f"The last scheduled run found {count} difference(s) with the broker."
+            if result == "diverged" and isinstance(count, int)
+            else "The last scheduled reconciliation could not read the broker."
+        )
+        add(
+            "Reconciliation needs review",
+            status,
+            detail,
+            "Review the recorded discrepancy and reconciliation history before resuming entries.",
+            "/operator/history/discrepancies",
+        )
+
+    if watch_feed.get("enabled") is True:
+        for item in watch_feed.get("rows", ()):
+            word = item["status"].word
+            if word not in {"stale", "unavailable", "not_collected"}:
+                continue
+            freshness = (
+                f" Last candle: {item['last_candle'].text}." if item["last_candle"].iso else ""
+            )
+            detail = (item["detail"] or f"Watch-only data is {word}.") + freshness
+            display_word = "not collected" if word == "not_collected" else word
+            add(
+                f"Watch-only data {display_word}: {item['symbol']}",
+                item["status"],
+                detail,
+                "Inspect this symbol's chart and source in Watch Coins. "
+                "This feed does not drive trading.",
+                "/operator/watchlist",
+            )
+
+    if portfolio.get("last_known"):
+        add(
+            "Portfolio is last known",
+            Status("last known", "warn"),
+            "The displayed balances and positions are retained for diagnosis and may not "
+            "match the broker.",
+            "Refresh the broker-backed portfolio and verify its source and as-of times.",
+            "#portfolio",
+        )
+    elif portfolio.get("status", Status("unavailable", "unknown")).tone == "unknown":
+        add(
+            "Portfolio data unavailable",
+            portfolio["status"],
+            str(portfolio.get("empty_reason", "The portfolio read model is unavailable.")),
+            "Check broker connectivity and portfolio freshness in Operational checks.",
+            "#portfolio",
+        )
+
+    for alert in alerts.get("rows", ()):
+        failed = any(item["status"].word == "failed" for item in alert["deliveries"])
+        if alert["severity"].tone not in {"warn", "crit"} and not failed:
+            continue
+        status = alert["severity"] if not failed else Status("delivery failed", "warn")
+        add(
+            f"Alert: {alert['condition'] or 'condition not recorded'}",
+            status,
+            alert["message"] or "No alert detail was recorded.",
+            "Review the alert and delivery result below. Dismissing an alert records review; "
+            "it does not resolve the condition.",
+            "#alerts",
+        )
+
+    rows.sort(key=lambda row: _SEVERITY[row["status"].tone], reverse=True)
+    return {
+        "available": True,
+        "status": Status("attention needed", "warn")
+        if rows
+        else Status("no active incident recorded", "ok"),
+        "detail": ""
+        if rows
+        else "No active incident is recorded in the available snapshot. Review unknown and "
+        "unavailable checks below; this is not a readiness verdict.",
+        "rows": rows[:ROW_LIMIT],
+        "total": len(rows),
         "limit": ROW_LIMIT,
     }
 
