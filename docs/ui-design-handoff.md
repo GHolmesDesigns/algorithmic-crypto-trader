@@ -690,6 +690,19 @@ These additions fit the current architecture but are not implementation commitme
 - Compare versioned strategy runs and export a redacted report.
 - Make clear that backtest results are not profitability promises.
 
+#### C009 research setup implementation
+
+The operator flow now starts with an approved dataset, strategy version, and
+backtest or simulator replay choice. Execution, cost, and walk-forward values
+sit in native accessible disclosures. **Review run** renders a server-side
+summary of the selected dataset identity and digest, strategy, every submitted
+assumption, calculated window count, and current limits. The final queue action
+revalidates the request and consumes a short-lived, one-use review; no job
+starts from the preview. Forms and review remain usable without JavaScript.
+Zero fee defaults are called out as non-realistic, and the flow remains
+simulation-only with no broker calls or mode changes. See
+`docs/operator-research-c009-v1.md` for the delivered desktop and mobile views.
+
 ### Iteration D: soak and readiness console
 
 - Daily digest and criterion tracker from issue `#12`.
