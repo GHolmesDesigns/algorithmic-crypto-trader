@@ -1,4 +1,4 @@
-{#- Shell for the one-column operator pages: sign-in, control results, the re-arm review, and history. -#}
+{#- Shared workspace shell for every authenticated server-rendered operator page. -#}
 <!doctype html>
 <html lang="en">
   <head>
@@ -8,6 +8,7 @@
     <meta name="referrer" content="no-referrer">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <title>{% block title %}{% endblock %} · {{ page.mode }} · Operator</title>
+    {%- if page.signed_in %}<script src="{{ utc_clock_script_url }}" defer></script>{% endif %}
     <style>
 {% include "operator.css" %}
     </style>
@@ -15,33 +16,10 @@
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>
-    <div class="page{% block page_class %}{% endblock %}">
-      <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">ACT</span>
-          <div>
-            <p class="brand-name">Algorithmic Crypto Trader</p>
-            <p class="page-name">{% block page_name %}{% endblock %}</p>
-          </div>
-        </div>
-        <dl class="context">
-          <div>
-            <dt>Mode</dt>
-            <dd><span class="mode tone-{{ page.mode_tone }}"><span class="mark" aria-hidden="true">◆</span> {{ page.mode }}</span></dd>
-          </div>
-          <div>
-            <dt>Credential scope</dt>
-            <dd class="mono">{{ page.credential_scope }}</dd>
-          </div>
-          <div>
-            <dt>Signed in as</dt>
-            <dd>{{ page.role }}</dd>
-          </div>
-        </dl>
-        {%- if page.signed_in %}
-        <form class="signout" method="post" action="/operator/logout"><button class="button button-quiet" type="submit">Sign out</button></form>
-        {%- endif %}
-      </header>
+    <div class="page shell{% block page_class %}{% endblock %}">
+{% set workspace_page_name = self.page_name() %}
+{% include "_operator_workspace_header.html" %}
+      {% block page_subnav %}{% endblock %}
       <main id="main" tabindex="-1">
 {% block content %}{% endblock %}
       </main>

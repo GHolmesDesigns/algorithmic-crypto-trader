@@ -167,8 +167,8 @@ async def test_header_shows_the_role_the_server_granted(monkeypatch):
     application.state.kill_switch.set_state(KillSwitchState.PAUSED)
     operator = await page(application, OPERATOR)
     admin = await page(application, ADMIN)
-    assert "<dt>Signed in as</dt>\n        <dd>Operator</dd>" in operator
-    assert "<dt>Signed in as</dt>\n        <dd>Administrator</dd>" in admin
+    assert re.search(r"<dt>Signed in as</dt>\s*<dd>Operator</dd>", operator)
+    assert re.search(r"<dt>Signed in as</dt>\s*<dd>Administrator</dd>", admin)
     assert "/operator/rearm" not in operator
     assert "Your operator role cannot re-arm" in operator
     assert 'href="/operator/rearm"' in section(admin, "safety")
@@ -406,8 +406,9 @@ async def test_controls_work_as_plain_forms_without_javascript(monkeypatch, tmp_
             "/operator/login", data={"token": "operator-secret"}, headers={"accept": "text/html"}
         )
         html = (await client.get("/operator")).text
-        # Only the display-only clock script (#163); the controls need no script.
-        assert SCRIPT_TAG.findall(html) == ['<script src="' + clock_script_url(html) + '" defer>']
+        scripts = SCRIPT_TAG.findall(html)
+        assert scripts[0] == '<script src="' + clock_script_url(html) + '" defer>'
+        assert len(scripts) == 2 and "/operator/static/operator-workspace.js?v=" in scripts[1]
         assert "hx-" not in html
         assert '<form method="post" action="/operator/pause">' in html
         paused = await client.post("/operator/pause", headers={"accept": "text/html"})
@@ -644,10 +645,18 @@ async def test_page_structure_supports_keyboard_and_screen_reader_use(monkeypatc
     assert '<a class="skip-link" href="#main">Skip to main content</a>' in html
     assert '<main id="main" tabindex="-1">' in html
     assert '<header class="topbar">' in html
-    assert '<nav class="sections" aria-label="Dashboard sections">' in html
+    assert '<nav class="sections" id="workspace-nav" aria-label="Primary navigation">' in html
+    assert 'aria-current="page">Overview</a>' in html
+    assert 'href="/operator/watchlist" data-module="watch-coins">Watch Coins</a>' in html
+    assert 'href="/operator/history/orders" data-module="activity">Activity</a>' in html
+    assert 'href="/operator/research" data-module="research">Research</a>' in html
+    assert 'href="/operator#health" data-module="system">System</a>' in html
+    assert (
+        'id="workspace-nav-toggle" aria-expanded="true" aria-controls="workspace-nav" hidden'
+        in html
+    )
     assert '<section class="safety tone-crit" aria-labelledby="safety-heading">' in html
     for anchor in ("overview", "portfolio", "activity", "alerts", "safety", "health"):
-        assert f'<a href="#{anchor}">' in html
         assert f'<section id="{anchor}"' in html
     outline = _Outline()
     outline.feed(html)
@@ -800,8 +809,10 @@ async def test_state_text_is_escaped_not_rendered_as_markup(monkeypatch):
     )
     application.state.operator_state.set_runtime("degraded", '<img src=x onerror="alert(1)">')
     html = await page(application)
-    # The one script is the clock's file (#163); the alert text never becomes a tag.
-    assert SCRIPT_TAG.findall(html) == ['<script src="' + clock_script_url(html) + '" defer>']
+    # The scripts are same-origin display helpers; alert text never becomes a tag.
+    scripts = SCRIPT_TAG.findall(html)
+    assert scripts[0] == '<script src="' + clock_script_url(html) + '" defer>'
+    assert len(scripts) == 2 and "/operator/static/operator-workspace.js?v=" in scripts[1]
     assert "<script>" not in html
     assert "<img" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html

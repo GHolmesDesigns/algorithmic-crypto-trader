@@ -868,15 +868,27 @@ async def test_history_pages_are_structured_script_free_and_token_free(tmp_path)
         assert parsed.headings.count(1) == 1 and parsed.headings[0] == 1, path
         assert all(b - a <= 1 for a, b in zip(parsed.headings, parsed.headings[1:], strict=False))
         assert parsed.visible_marks == 0, path
-        assert "<script" not in html
+        scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.S)
+        assert scripts and all(not body.strip() for body in scripts)
         assert html.count("<link") == 1 and ICON_LINK in html, path
         assert '<a class="skip-link" href="#main">Skip to main content</a>' in html
         assert '<nav class="history-nav" aria-label="History views">' in html
-        nav = html[html.index('<nav class="history-nav"') : html.index("</nav>")]
+        nav_start = html.index('<nav class="history-nav"')
+        nav = html[nav_start : html.index("</nav>", nav_start)]
         assert nav.count('aria-current="page"') == (0 if "/orders/" in path else 1)
         methods = [(form.get("method"), form.get("action")) for form in parsed.forms]
         assert ("post", "/operator/logout") in methods
-        assert all(method == "get" for method, action in methods if action != "/operator/logout")
+        assert all(
+            method == "get"
+            or action
+            in {
+                "/operator/logout",
+                "/operator/pause",
+                "/operator/emergency-stop",
+                "/operator/orders/close",
+            }
+            for method, action in methods
+        ), path
         for url in parsed.urls:
             assert "token" not in url.lower(), url
 

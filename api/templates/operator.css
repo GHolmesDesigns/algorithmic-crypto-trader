@@ -282,7 +282,18 @@ h1 {
   color: var(--text);
 }
 
-/* Section navigation: a scrolling row on small screens, a fixed rail on wide ones. */
+/* Workspace actions and primary navigation. */
+
+.workspace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav-toggle {
+  min-width: 2.75rem;
+}
 
 .sections {
   background: var(--rail-bg);
@@ -313,6 +324,12 @@ h1 {
   text-decoration: underline;
 }
 
+.sections a[aria-current="page"] {
+  background: var(--rail-active);
+  box-shadow: inset 3px 0 var(--rail-accent);
+  font-weight: 700;
+}
+
 .sections :focus-visible {
   outline-color: var(--rail-accent);
   outline-offset: -3px;
@@ -340,6 +357,18 @@ h1 {
     padding: 0;
     overflow: visible;
   }
+
+  html.nav-collapsed .shell {
+    padding-left: 0;
+  }
+
+  html.nav-collapsed .sections {
+    display: none;
+  }
+}
+
+html.nav-collapsed .sections {
+  display: none;
 }
 
 /* Safety bar: kill-switch state, cause, and controls on every view. */

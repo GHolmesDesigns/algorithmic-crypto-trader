@@ -68,7 +68,7 @@ def assert_result_page(html: str, *, action: str, heading: str, role: str) -> No
     assert re.search(r'<dt>Time \(UTC\)</dt><dd><time datetime="[^"]+">[^<]+ UTC</time>', html)
     assert f"<dt>Acting role</dt><dd>{role}</dd>" in html
     assert "<strong>Next safe step:</strong>" in html
-    assert "<script" not in html
+    assert all("src=" in tag for tag in re.findall(r"<script[^>]*>", html))
 
 
 # Result pages
@@ -108,7 +108,7 @@ async def test_each_form_post_lands_on_a_result_page(tokens, tmp_path):
         assert_result_page(out.text, action="Sign out", heading="Signed out", role="Operator")
         assert "Signed out. The session cookie is cleared." in out.text
         assert '<a class="button button-quiet" href="/operator/login">Sign in again</a>' in out.text
-        assert "<dt>Signed in as</dt>\n            <dd>Signed out</dd>" in out.text
+        assert re.search(r"<dt>Signed in as</dt>\s*<dd>Signed out</dd>", out.text)
         assert 'action="/operator/logout"' not in out.text
 
         await sign_in(client, ADMIN_TOKEN)

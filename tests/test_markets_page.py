@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -303,11 +304,16 @@ async def test_other_operator_pages_remain_javascript_free(tmp_path):
         response = await client.get("/operator", headers=HTML)
         history = await client.get("/operator/history/orders", headers=HTML)
     assert response.status_code == 200
-    # The dashboard's only script is the display-only UTC clock (#163): no inline code.
+    # The shared shell loads only the display-only clock and navigation preference scripts.
     assert SCRIPT_TAG.findall(response.text) == [
-        '<script src="' + clock_script_url(response.text) + '" defer>'
+        '<script src="' + clock_script_url(response.text) + '" defer>',
+        re.search(
+            r'<script src="/operator/static/operator-workspace\.js\?v=[^"]+" defer>',
+            response.text,
+        ).group(0),
     ]
-    assert "<script" not in history.text.lower()
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", history.text, re.S | re.I)
+    assert scripts and all(not body.strip() for body in scripts)
 
 
 @pytest.mark.asyncio

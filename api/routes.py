@@ -46,9 +46,16 @@ _ROLE_LABELS = {"operator": "Operator", "admin": "Administrator"}
 FAVICON_FILE = Path(__file__).resolve().parent / "static" / "icons" / "bitcoin.ico"
 UTC_CLOCK_PATH = "/operator/static/utc-clock.js"
 UTC_CLOCK_FILE = Path(__file__).resolve().parent / "static" / "dashboard" / "utc-clock.js"
+WORKSPACE_SCRIPT_PATH = "/operator/static/operator-workspace.js"
+WORKSPACE_SCRIPT_FILE = (
+    Path(__file__).resolve().parent / "static" / "dashboard" / "operator-workspace.js"
+)
 # The file is cached for a year, so its address changes whenever its content does.
 templates.env.globals["utc_clock_script_url"] = (
     f"{UTC_CLOCK_PATH}?v={hashlib.sha256(UTC_CLOCK_FILE.read_bytes()).hexdigest()[:12]}"
+)
+templates.env.globals["workspace_script_url"] = (
+    f"{WORKSPACE_SCRIPT_PATH}?v={hashlib.sha256(WORKSPACE_SCRIPT_FILE.read_bytes()).hexdigest()[:12]}"
 )
 
 
@@ -79,6 +86,20 @@ def utc_clock_script() -> FileResponse:
 
     return FileResponse(
         UTC_CLOCK_FILE,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(WORKSPACE_SCRIPT_PATH, include_in_schema=False)
+def workspace_script() -> FileResponse:
+    """Serve the display-only, same-origin sidebar preference controller."""
+
+    return FileResponse(
+        WORKSPACE_SCRIPT_FILE,
         media_type="application/javascript",
         headers={
             "Cache-Control": "public, max-age=31536000, immutable",
@@ -175,6 +196,7 @@ async def _render_dashboard(request: Request, template: str) -> Response:
             "snapshot": snapshot,
             "auth_role": role,
             "view": build_dashboard(snapshot, role=role),
+            "page": _page(request, role),
         },
     )
 
@@ -547,17 +569,45 @@ def _result_response(
 
 
 def _page(request: Request, role: str | None) -> dict[str, object]:
-    """Header facts for the result and review pages, without refreshing the broker."""
+    """Shared shell facts from the current in-process snapshot; never refreshes providers."""
 
     settings = request.app.state.startup_settings
     mode = settings.trading_mode.value
-    return {
+    page: dict[str, object] = {
         "mode": mode,
         "mode_tone": "crit" if mode == "live" else "accent",
         "credential_scope": settings.credential_scope.value,
         "role": _ROLE_LABELS.get(role or "", "Signed out"),
         "signed_in": role is not None,
     }
+    if role is None:
+        return page
+
+    snapshot = _operator_state(request).to_dict()
+    dashboard = build_dashboard(snapshot, role=role)
+    path = request.url.path
+    active_module = (
+        "overview"
+        if path == "/operator"
+        else "watch-coins"
+        if path.startswith(("/operator/watchlist", "/operator/markets"))
+        else "activity"
+        if path.startswith(("/operator/history", "/operator/soak"))
+        else "research"
+        if path.startswith("/operator/research")
+        else "system"
+    )
+    page.update(
+        {
+            "safety": dashboard["safety"],
+            "clock": dashboard["clock"],
+            "updated": dashboard["header"]["updated"],
+            "active_module": active_module,
+            "is_dashboard": path == "/operator",
+            "is_fragment": path == "/operator/fragment",
+        }
+    )
+    return page
 
 
 def _wants_html(request: Request) -> bool:

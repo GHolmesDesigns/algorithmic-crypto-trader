@@ -562,10 +562,13 @@ async def test_the_trends_page_is_structured_script_free_and_linked(tmp_path):
         assert parsed.headings[0] == 1 and parsed.headings.count(1) == 1
         assert all(b - a <= 1 for a, b in zip(parsed.headings, parsed.headings[1:], strict=False))
         assert parsed.visible_marks == 0, window
-        assert "<script" not in html and "http" not in html.split("<main")[1]
+        scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.S)
+        assert scripts and all(not body.strip() for body in scripts)
+        assert "http" not in html.split("<main")[1]
         assert html.count("<link") == 1 and ICON_LINK in html, window
         assert f'<option value="{window}" selected>' in html
-        nav = html[html.index('<nav class="history-nav"') : html.index("</nav>")]
+        nav_start = html.index('<nav class="history-nav"')
+        nav = html[nav_start : html.index("</nav>", nav_start)]
         assert f'<a href="{PATH}" aria-current="page">Trends</a>' in nav
         assert "token" not in html.split("<main")[1].lower()
     one = (await get(application, headers=BROWSER)).text
