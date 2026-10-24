@@ -107,6 +107,52 @@
             {%- if view.full %}
             <p class="note">The watchlist is full ({{ view.limit }} coins). Remove one to add another.</p>
             {%- else %}
+            <div class="catalog-search">
+              <h3>Find by name or symbol</h3>
+              <p class="note">Search uses only the loaded in-memory catalog. Typing and searching make no provider request.</p>
+              {% if view.catalog.as_of %}
+              <p class="note">{{ view.catalog.source }} · {{ view.catalog.as_of }}{% if view.catalog.status == 'stale' %} · Stale{% endif %}</p>
+              {% else %}
+              <p class="note">{{ view.catalog.detail }}</p>
+              {% endif %}
+              {% if view.catalog.detail and view.catalog.as_of %}<p class="note">{{ view.catalog.detail }}</p>{% endif %}
+              <form method="post" action="{{ view.path }}/catalog/refresh">
+                <button class="button button-quiet" type="submit">Load or refresh catalog</button>
+                <span class="note">Up to 10 credential-free public Coinbase reads and 10 seconds; a fresh catalog is reused.</span>
+              </form>
+              <form method="get" action="{{ view.path }}">
+                <div class="field">
+                  <label for="coin-search">Coin name, symbol or product ID</label>
+                  <input id="coin-search" name="q" type="search" maxlength="80" autocomplete="off" value="{{ view.catalog.query }}" placeholder="Bitcoin, BTC or BTC-USD">
+                </div>
+                <div class="actions"><button class="button button-quiet" type="submit">Search loaded catalog</button></div>
+              </form>
+              {% if view.catalog.query %}
+              {% if view.catalog.matches %}
+              <p class="note">Showing up to {{ view.catalog.match_limit }} separate candidates. Confirm the exact product before adding it.</p>
+              <div class="table-wrap" role="region" aria-label="Coin catalog matches" tabindex="0">
+                <table class="data">
+                  <thead><tr><th scope="col">Name</th><th scope="col">Symbol</th><th scope="col">Quote</th><th scope="col">Availability</th><th scope="col">Source and as of</th><th scope="col">Action</th></tr></thead>
+                  <tbody>
+                    {% for match in view.catalog.matches %}
+                    <tr>
+                      <th scope="row">{{ match.display_name }}</th>
+                      <td><span class="mono">{{ match.base_symbol }}</span><p class="event-meta">{{ match.product_id }}</p></td>
+                      <td>{{ match.quote_currency }}</td>
+                      <td>{{ match.availability }}</td>
+                      <td>{{ match.source }}<p class="event-meta">{{ match.as_of }}</p></td>
+                      <td><form method="post" action="{{ view.path }}/add"><input type="hidden" name="symbol" value="{{ match.product_id }}"><button class="button button-rearm" type="submit">Add {{ match.base_symbol }}</button></form></td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% else %}
+              <p class="note" role="status">No catalog matches for “{{ view.catalog.query }}”. The exact-symbol form below remains available.</p>
+              {% endif %}
+              {% endif %}
+            </div>
+            <h3>Or enter an exact Coinbase product</h3>
             <form method="post" action="{{ view.path }}/add">
               <div class="field">
                 <label for="watch-symbol">Coinbase product</label>

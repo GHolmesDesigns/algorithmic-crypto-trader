@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.exc import SQLAlchemyError
 
+from api.coin_catalog import CoinbaseCatalog
 from api.routes import _authorize, _page, _wants_html, templates
 from api.watchlist_view import WATCHLIST_PATH, build_watchlist_view
 
@@ -43,15 +44,45 @@ class _Unavailable(RuntimeError):
 @router.get(WATCHLIST_PATH)
 def watchlist_page(request: Request) -> Response:
     role = _authorize(request)
-    if request.query_params:
+    if set(request.query_params) - {"q"}:
         return _refused(request, role, ("This view takes no parameters.",), 422)
+    query = request.query_params.get("q", "")
+    if len(query) > 80:
+        return _refused(request, role, ("Search text must be 80 characters or fewer.",), 422)
     try:
         payload = _payload(request)
     except _Unavailable as exc:
         return _unavailable(request, role, str(exc))
     if not _wants_html(request):
         return JSONResponse(payload)
-    return _render(request, role, build_watchlist_view(payload, role=role), 200)
+    catalog = _catalog(request).view(query)
+    return _render(request, role, build_watchlist_view(payload, role=role, catalog=catalog), 200)
+
+
+@router.get(f"{WATCHLIST_PATH}/catalog")
+def search_catalog(request: Request) -> Response:
+    _authorize(request)
+    if set(request.query_params) - {"q"}:
+        return JSONResponse({"detail": "This view takes no parameters."}, 422)
+    query = request.query_params.get("q", "")
+    if len(query) > 80:
+        return JSONResponse({"detail": "Search text must be 80 characters or fewer."}, 422)
+    return JSONResponse(_catalog(request).view(query))
+
+
+@router.post(f"{WATCHLIST_PATH}/catalog/refresh")
+async def refresh_catalog(request: Request) -> Response:
+    _authorize(request)
+    catalog = getattr(request.app.state, "watch_catalog", None)
+    if catalog is None:
+        return JSONResponse(
+            {"detail": {"status": "unavailable", "reason": "catalog is not configured"}},
+            503,
+        )
+    await catalog.refresh()
+    if not _wants_html(request):
+        return JSONResponse(catalog.view())
+    return RedirectResponse(WATCHLIST_PATH, status_code=303)
 
 
 @router.post(f"{WATCHLIST_PATH}/add")
@@ -172,6 +203,13 @@ def _store(request: Request) -> SqlAlchemyWatchlist:
     if store is None:
         raise _Unavailable(_NOT_CONFIGURED)
     return store
+
+
+def _catalog(request: Request):
+    catalog = getattr(request.app.state, "watch_catalog", None)
+    if catalog is None:
+        catalog = CoinbaseCatalog(None)
+    return catalog
 
 
 def _reason(exc: Exception) -> str:
