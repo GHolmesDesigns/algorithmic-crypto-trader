@@ -13,6 +13,9 @@ from api.markets import CandleQueryRefused, CandlesUnavailable
 from api.markets_routes import _activity, _feed_states
 from api.markets_view import MARKETS_PATH, build_markets_view, parse_markets_query
 from api.routes import _authorize, _page, _wants_html, templates
+from api.watchlist_routes import _payload as _watchlist_payload
+from api.watchlist_routes import _Unavailable
+from api.watchlist_view import build_watchlist_view
 
 router = APIRouter()
 
@@ -79,6 +82,7 @@ def markets_page(request: Request) -> Response:
                 None, form=form, unavailable="the candle database is not configured"
             ),
             503,
+            watchlist=_watchlist_view(request, role),
         )
     try:
         query = parse_markets_query(
@@ -87,19 +91,33 @@ def markets_page(request: Request) -> Response:
         )
     except CandleQueryRefused as refused:
         return _render(
-            request, role, build_markets_view(None, form=form, errors=refused.errors), 400
+            request,
+            role,
+            build_markets_view(None, form=form, errors=refused.errors),
+            400,
+            watchlist=_watchlist_view(request, role),
         )
     try:
         payload = reads.read(query, feed_states=_feed_states(request))
     except CandlesUnavailable as exc:
         return _render(
-            request, role, build_markets_view(None, form=form, unavailable=str(exc)), 503
+            request,
+            role,
+            build_markets_view(None, form=form, unavailable=str(exc)),
+            503,
+            watchlist=_watchlist_view(request, role),
         )
     payload["activity"] = _activity(request, query)
     view = build_markets_view(payload, form=form)
     if not _wants_html(request):
         return JSONResponse({"kind": "markets", "status": "available", **payload})
-    return _render(request, role, view, 200)
+    return _render(
+        request,
+        role,
+        view,
+        200,
+        watchlist=_watchlist_view(request, role),
+    )
 
 
 def _watchlist(request: Request) -> tuple[str, ...]:
@@ -112,11 +130,26 @@ def _watchlist(request: Request) -> tuple[str, ...]:
         return ()
 
 
-def _render(request: Request, role: str, view: dict[str, Any], status_code: int) -> Response:
+def _watchlist_view(request: Request, role: str) -> dict[str, Any]:
+    try:
+        payload = _watchlist_payload(request)
+    except _Unavailable as exc:
+        return build_watchlist_view(None, role=role, unavailable=str(exc))
+    return build_watchlist_view(payload, role=role)
+
+
+def _render(
+    request: Request,
+    role: str,
+    view: dict[str, Any],
+    status_code: int,
+    *,
+    watchlist: dict[str, Any] | None = None,
+) -> Response:
     response = templates.TemplateResponse(
         request=request,
         name="operator_markets.html",
-        context={"page": _page(request, role), "view": view},
+        context={"page": _page(request, role), "view": view, "watchlist": watchlist},
         status_code=status_code,
     )
     response.headers["Content-Security-Policy"] = MARKETS_CSP

@@ -1089,6 +1089,12 @@ time,
   gap: 0.75rem;
 }
 
+.watch-feed-statuses {
+  display: grid;
+  gap: 0.5rem;
+  padding-left: 1.25rem;
+}
+
 .dismiss {
   display: flex;
   margin: 0;

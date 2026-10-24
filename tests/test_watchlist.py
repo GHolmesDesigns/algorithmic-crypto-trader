@@ -795,8 +795,15 @@ async def test_the_form_adds_moves_and_removes_and_redirects(tmp_path) -> None:
         assert page.status_code == 200
         body = page.text
         assert body.index("SOL-USD") < body.index("ETH-USD")
+        assert '<nav class="history-nav" aria-label="Watch Coins views">' in body
+        assert 'href="/operator/markets">Charts</a>' in body
+        assert 'href="/operator/watchlist" aria-current="page">Watched coins</a>' in body
         assert "The watch-only feed is off" in body
         assert "Watched coins (2 of 9)" in body
+        assert 'href="#new-coin">New Coin</a>' in body
+        assert '<section class="panel" id="new-coin"' in body
+        assert 'action="/operator/watchlist/add"' in body
+        assert 'name="symbol"' in body
         removed = await client.post(f"{PATH}/remove", data={"symbol": "ETH-USD"}, headers=BROWSER)
         assert removed.status_code == 303
     assert application.state.watchlist.symbols() == ("SOL-USD",)

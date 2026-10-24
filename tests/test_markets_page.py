@@ -234,6 +234,15 @@ async def test_page_is_server_rendered_with_metrics_table_and_only_tradingview_e
     response = await get_page(application)
     assert response.status_code == 200
     body = response.text
+    assert '<nav class="history-nav" aria-label="Watch Coins views">' in body
+    assert 'href="/operator/markets" aria-current="page">Charts</a>' in body
+    assert 'href="/operator/watchlist">Watched coins</a>' in body
+    assert "Watch-only feed" in body
+    assert "1 of 9 watched coins" in body
+    assert "Public Coinbase market data only" in body
+    assert "BTC-USD" in body
+    assert "Last candle" in body
+    assert "none yet" in body
     assert 'class="market-grid"' in body
     assert 'class="market-line-svg"' in body
     assert "Accessible data table for BTC-USD" in body
@@ -245,6 +254,29 @@ async def test_page_is_server_rendered_with_metrics_table_and_only_tradingview_e
     assert "<iframe" not in body.lower()
     assert "<img" not in body.lower()
     assert "https://" not in body.replace("https://www.tradingview.com/", "")
+
+
+@pytest.mark.asyncio
+async def test_chart_page_keeps_watchlist_unavailable_distinct_from_empty(tmp_path):
+    response = await get_page(history_app(tmp_path))
+
+    assert response.status_code == 400
+    assert "Watchlist unavailable: the watchlist is not configured" in response.text
+    assert "No coins are watched yet" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_markets_json_contract_does_not_include_workspace_presentation(tmp_path):
+    response = await get_page(
+        app_with_watchlist(tmp_path, "BTC-USD"),
+        headers=OPERATOR,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["kind"] == "markets"
+    assert [item["symbol"] for item in payload["symbols"]] == ["BTC-USD"]
+    assert "watchlist" not in payload
 
 
 def test_vendored_lightweight_charts_build_has_the_recorded_checksum_and_notices():

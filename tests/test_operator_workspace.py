@@ -43,6 +43,11 @@ async def test_existing_operator_pages_use_the_same_authenticated_workspace(monk
                     r'aria-current="page">[^<]+</a>',
                     html,
                 )
+            if path in {"/operator/watchlist", "/operator/markets"}:
+                assert '<nav class="history-nav" aria-label="Watch Coins views">' in html
+                assert 'href="/operator/markets"' in html and 'href="/operator/watchlist"' in html
+                current_path = path
+                assert re.search(rf'<a href="{re.escape(current_path)}" aria-current="page">', html)
 
 
 @pytest.mark.asyncio
