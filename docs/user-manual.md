@@ -488,11 +488,24 @@ and operators reviewing approved historical data. It is read-only: a run never
 contacts a broker, places an order, changes the trading mode, or pauses the
 system. Open it from the dashboard or go to `/operator/research`.
 
-Choose an approved dataset and a versioned reference strategy, then choose a
-**Backtest** or a **Replay through the simulator**. You can set initial cash,
-quantity, maker and taker fees, spread, slippage, fee asset, and walk-forward
-training, test, step, and sealed-holdout bars. The page identifies the dataset
-window, interval, approval note, and content digest before you run it.
+Choose an approved dataset, a versioned reference strategy, and **Backtest** or
+**Replay through the simulator**. Expand **Execution and cost assumptions** to
+set initial cash, order quantity, maker and taker fee rates, spread, slippage,
+fee asset, and partial-fill ratio. Expand **Walk-forward windows and holdout**
+to set training, test, step, and sealed-holdout bars. Fee rates start at zero;
+zero does not represent realistic trading costs. Replay requires a full-fill
+ratio of 1.
+
+Select **Review run** before queueing. The review lists the exact approved
+dataset identity and digest, strategy version, run type, all execution and cost
+assumptions, the calculated walk-forward window count, and current server
+limits. **Queue this simulation** rechecks dataset approval and current bounds
+on the server. If the run is rejected or the review expires, the setup form
+keeps the values you entered so you can correct them and review again. Reviews
+and forms work without JavaScript.
+
+The page identifies each dataset's window, interval, approval note, candle
+count, and content digest before you review it.
 
 Runs are bounded background jobs, so a long research run does not block the
 dashboard, trading loop, or safety controls. The server allows at most 5,000

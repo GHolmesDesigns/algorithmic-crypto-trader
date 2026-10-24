@@ -17,40 +17,85 @@
             <ul>{% for error in view.errors %}<li>{{ error }}</li>{% endfor %}</ul>
           </div>
           {%- endif %}
-          <section class="panel" aria-labelledby="run-heading">
+          {% if view.review %}
+          {% set review = view.review %}
+          <section class="panel" aria-labelledby="review-heading">
             <div class="block-head">
-              <h2 id="run-heading">Start a bounded run</h2>
-              <p class="block-note">The server caps each dataset at {{ view.limits.candles }} candles, {{ view.limits.windows }} walk-forward windows, and {{ view.limits.active_jobs }} active jobs.</p>
+              <h2 id="review-heading">Review this simulation</h2>
+              <p class="block-note">Confirm only if these are the assumptions you intend to run. The server checks current approval and limits again when you queue.</p>
             </div>
+            <dl class="facts">
+              <div><dt>Dataset</dt><dd>{{ review.dataset.name }} ({{ review.dataset.id }})</dd></div>
+              <div><dt>Dataset window</dt><dd>{{ review.dataset.window_start }} to {{ review.dataset.window_end }} · {{ review.dataset.interval }} · {{ review.dataset.candle_count }} candles</dd></div>
+              <div><dt>Approval</dt><dd>{{ review.dataset.approval }} · {{ review.dataset.approved_at }} · digest {{ review.dataset.digest }}</dd></div>
+              <div><dt>Strategy</dt><dd>{{ review.strategy.name }} · {{ review.strategy.version }}</dd></div>
+              <div><dt>Run type</dt><dd>{{ 'Replay through the simulator' if review.request.run_type == 'replay' else 'Backtest' }}</dd></div>
+              <div><dt>Initial cash</dt><dd>{{ review.request.initial_cash }} USD</dd></div>
+              <div><dt>Order quantity</dt><dd>{{ review.request.quantity }}</dd></div>
+              <div><dt>Maker fee rate</dt><dd>{{ review.request.maker_fee_rate }}</dd></div>
+              <div><dt>Taker fee rate</dt><dd>{{ review.request.taker_fee_rate }}</dd></div>
+              <div><dt>Spread</dt><dd>{{ review.request.spread_bps }} basis points</dd></div>
+              <div><dt>Slippage</dt><dd>{{ review.request.slippage_bps }} basis points</dd></div>
+              <div><dt>Fee asset</dt><dd>{{ review.request.fee_asset }}</dd></div>
+              <div><dt>Partial-fill ratio</dt><dd>{{ review.request.partial_fill_ratio }}</dd></div>
+              <div><dt>Walk-forward</dt><dd>{{ review.request.train_bars }} training · {{ review.request.test_bars }} test · {{ review.request.step_bars or review.request.test_bars }} step · {{ review.request.holdout_bars }} sealed holdout bars</dd></div>
+              <div><dt>Calculated windows</dt><dd>{{ review.windows }} of {{ view.limits.windows }} maximum</dd></div>
+              <div><dt>Run bounds</dt><dd>{{ review.dataset.candle_count }} of {{ view.limits.candles }} candles · {{ review.active_jobs }} of {{ view.limits.active_jobs }} active jobs now</dd></div>
+            </dl>
+            {% if review.request.maker_fee_rate == '0' and review.request.taker_fee_rate == '0' %}<p class="notice tone-warn" role="note">Both fee rates are zero. This run does not include realistic trading fees unless you enter measured assumptions.</p>{% endif %}
             <form method="post" action="/operator/research/runs">
-              <div class="split">
-                <div>
-                  <div class="field"><label for="dataset_id">Approved dataset</label><select id="dataset_id" name="dataset_id" required>{% for dataset in view.catalog %}<option value="{{ dataset.id }}">{{ dataset.name }} — {{ dataset.candle_count }} candles</option>{% endfor %}</select></div>
-                  <div class="field"><label for="strategy_version">Strategy version</label><select id="strategy_version" name="strategy_version" required>{% for strategy in view.strategies %}<option value="{{ strategy.version }}">{{ strategy.version }} — {{ strategy.name }}</option>{% endfor %}</select></div>
-                  <div class="field"><label for="run_type">Run type</label><select id="run_type" name="run_type"><option value="backtest">Backtest</option><option value="replay">Replay through the simulator</option></select></div>
-                  <div class="field"><label for="initial_cash">Initial cash (USD)</label><input id="initial_cash" name="initial_cash" value="100000" inputmode="decimal"></div>
-                  <div class="field"><label for="quantity">Order quantity</label><input id="quantity" name="quantity" value="1" inputmode="decimal"></div>
-                </div>
-                <div>
-                  <div class="field"><label for="maker_fee_rate">Maker fee rate</label><input id="maker_fee_rate" name="maker_fee_rate" value="0" inputmode="decimal"></div>
-                  <div class="field"><label for="taker_fee_rate">Taker fee rate</label><input id="taker_fee_rate" name="taker_fee_rate" value="0" inputmode="decimal"></div>
-                  <div class="field"><label for="spread_bps">Spread (basis points)</label><input id="spread_bps" name="spread_bps" value="0" inputmode="decimal"></div>
-                  <div class="field"><label for="slippage_bps">Slippage (basis points)</label><input id="slippage_bps" name="slippage_bps" value="0" inputmode="decimal"></div>
-                  <div class="field"><label for="fee_asset">Fee asset</label><input id="fee_asset" name="fee_asset" value="USD"></div>
-                </div>
-              </div>
-              <fieldset>
-                <legend>Walk-forward windows</legend>
-                <div class="split">
-                  <div class="field"><label for="train_bars">Training bars</label><input id="train_bars" name="train_bars" value="16" inputmode="numeric"></div>
-                  <div class="field"><label for="test_bars">Test bars</label><input id="test_bars" name="test_bars" value="16" inputmode="numeric"></div>
-                  <div class="field"><label for="step_bars">Step bars (optional)</label><input id="step_bars" name="step_bars" inputmode="numeric"></div>
-                  <div class="field"><label for="holdout_bars">Sealed holdout bars</label><input id="holdout_bars" name="holdout_bars" value="0" inputmode="numeric"></div>
-                </div>
-              </fieldset>
-              <div class="actions"><button class="button button-rearm" type="submit">Queue research run</button></div>
+              <input type="hidden" name="confirmation" value="queue">
+              <input type="hidden" name="review_id" value="{{ review.review_id }}">
+              {% for name, value in review.request.items() %}<input type="hidden" name="{{ name }}" value="{{ value if value is not none else '' }}">{% endfor %}
+              <div class="actions"><button class="button button-rearm" type="submit">Queue this simulation</button><a class="button button-quiet" href="/operator/research">Edit assumptions</a></div>
             </form>
           </section>
+          {% else %}
+          <section class="panel" id="run-setup" aria-labelledby="run-heading">
+            <div class="block-head">
+              <h2 id="run-heading">Set up a bounded run</h2>
+              <p class="block-note">The server caps each dataset at {{ view.limits.candles }} candles, {{ view.limits.windows }} walk-forward windows, and {{ view.limits.active_jobs }} active jobs.</p>
+            </div>
+            <form method="post" action="/operator/research/review">
+              <div class="split">
+                <div class="field"><label for="dataset_id">Approved dataset</label><select id="dataset_id" name="dataset_id" required{% if not view.catalog %} disabled{% endif %}>{% set dataset_ids = view.catalog|map(attribute='id')|list %}{% if view.form.dataset_id not in dataset_ids %}<option value="{{ view.form.dataset_id }}" selected>Unavailable selection: {{ view.form.dataset_id }}</option>{% endif %}{% for dataset in view.catalog %}<option value="{{ dataset.id }}"{% if view.form.dataset_id == dataset.id %} selected{% endif %}>{{ dataset.name }} — {{ dataset.candle_count }} candles</option>{% else %}<option value="">No approved datasets are available</option>{% endfor %}</select></div>
+                <div class="field"><label for="strategy_version">Strategy version</label><select id="strategy_version" name="strategy_version" required{% if not view.strategies %} disabled{% endif %}>{% set strategy_versions = view.strategies|map(attribute='version')|list %}{% if view.form.strategy_version not in strategy_versions %}<option value="{{ view.form.strategy_version }}" selected>Unavailable selection: {{ view.form.strategy_version }}</option>{% endif %}{% for strategy in view.strategies %}<option value="{{ strategy.version }}"{% if view.form.strategy_version == strategy.version %} selected{% endif %}>{{ strategy.version }} — {{ strategy.name }}</option>{% else %}<option value="">No approved strategies are available</option>{% endfor %}</select></div>
+                <div class="field"><label for="run_type">Run type</label><select id="run_type" name="run_type">{% if view.form.run_type not in ['backtest', 'replay'] %}<option value="{{ view.form.run_type }}" selected>Unsupported run type: {{ view.form.run_type }}</option>{% endif %}<option value="backtest"{% if view.form.run_type == 'backtest' %} selected{% endif %}>Backtest</option><option value="replay"{% if view.form.run_type == 'replay' %} selected{% endif %}>Replay through the simulator</option></select></div>
+              </div>
+              {% if view.catalog and view.strategies %}
+              <details class="fold">
+                <summary>Execution and cost assumptions</summary>
+                <div class="fold-body">
+                  <p class="note">Fee rates default to zero and do not represent realistic trading costs. Enter measured assumptions when available. Replay uses full fills.</p>
+                  <div class="split">
+                    <div class="field"><label for="initial_cash">Initial cash (USD)</label><input id="initial_cash" name="initial_cash" value="{{ view.form.initial_cash }}" inputmode="decimal"></div>
+                    <div class="field"><label for="quantity">Order quantity</label><input id="quantity" name="quantity" value="{{ view.form.quantity }}" inputmode="decimal"></div>
+                    <div class="field"><label for="maker_fee_rate">Maker fee rate</label><input id="maker_fee_rate" name="maker_fee_rate" value="{{ view.form.maker_fee_rate }}" inputmode="decimal"></div>
+                    <div class="field"><label for="taker_fee_rate">Taker fee rate</label><input id="taker_fee_rate" name="taker_fee_rate" value="{{ view.form.taker_fee_rate }}" inputmode="decimal"></div>
+                    <div class="field"><label for="spread_bps">Spread (basis points)</label><input id="spread_bps" name="spread_bps" value="{{ view.form.spread_bps }}" inputmode="decimal"></div>
+                    <div class="field"><label for="slippage_bps">Slippage (basis points)</label><input id="slippage_bps" name="slippage_bps" value="{{ view.form.slippage_bps }}" inputmode="decimal"></div>
+                    <div class="field"><label for="fee_asset">Fee asset</label><input id="fee_asset" name="fee_asset" value="{{ view.form.fee_asset }}"></div>
+                    <div class="field"><label for="partial_fill_ratio">Partial-fill ratio</label><input id="partial_fill_ratio" name="partial_fill_ratio" value="{{ view.form.partial_fill_ratio }}" inputmode="decimal"><span class="note">Backtests accept a ratio above 0 through 1. Replay requires 1.</span></div>
+                  </div>
+                </div>
+              </details>
+              <details class="fold">
+                <summary>Walk-forward windows and holdout</summary>
+                <div class="fold-body">
+                  <p class="note">The service calculates the number of windows from these values and refuses more than {{ view.limits.windows }}.</p>
+                  <div class="split">
+                    <div class="field"><label for="train_bars">Training bars</label><input id="train_bars" name="train_bars" value="{{ view.form.train_bars }}" inputmode="numeric"></div>
+                    <div class="field"><label for="test_bars">Test bars</label><input id="test_bars" name="test_bars" value="{{ view.form.test_bars }}" inputmode="numeric"></div>
+                    <div class="field"><label for="step_bars">Step bars (optional)</label><input id="step_bars" name="step_bars" value="{{ view.form.step_bars }}" inputmode="numeric"></div>
+                    <div class="field"><label for="holdout_bars">Sealed holdout bars</label><input id="holdout_bars" name="holdout_bars" value="{{ view.form.holdout_bars }}" inputmode="numeric"></div>
+                  </div>
+                </div>
+              </details>
+              <div class="actions"><button class="button button-rearm" type="submit">Review run</button></div>
+              {% else %}<p class="empty" role="status">A run cannot be configured until an approved dataset and strategy are available.</p>{% endif %}
+            </form>
+          </section>
+          {% endif %}
           <section class="panel" aria-labelledby="datasets-heading">
             <h2 id="datasets-heading">Approved datasets</h2>
             <div class="table-wrap" role="region" aria-labelledby="datasets-heading" tabindex="0">

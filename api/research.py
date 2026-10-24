@@ -41,6 +41,8 @@ MAX_STORED_JOBS = 24
 MAX_WALK_FORWARD_WINDOWS = 24
 MAX_JOB_SECONDS = 30
 MAX_EXPORT_BYTES = 250_000
+MAX_PENDING_REVIEWS = 24
+REVIEW_TTL = timedelta(minutes=15)
 
 
 class ResearchJobStatus(StrEnum):
@@ -386,6 +388,7 @@ class ResearchWorkspace:
     ) -> None:
         self.datasets = {item.dataset_id: item for item in (datasets or approved_datasets())}
         self.jobs: OrderedDict[str, ResearchJob] = OrderedDict()
+        self.pending_reviews: OrderedDict[str, tuple[datetime, dict[str, Any]]] = OrderedDict()
         self._semaphore = asyncio.Semaphore(MAX_ACTIVE_JOBS)
         self._runner = runner or self._run_sync
 
@@ -395,7 +398,8 @@ class ResearchWorkspace:
     def strategies(self) -> list[dict[str, str]]:
         return [{"version": version, "name": name} for version, name in STRATEGY_VERSIONS.items()]
 
-    async def submit(self, request: ResearchRunRequest) -> ResearchJob:
+    def validate_request(self, request: ResearchRunRequest) -> tuple[ApprovedDataset, int]:
+        """Validate a run without queueing it, for review and final confirmation."""
         dataset = self.datasets.get(request.dataset_id)
         if dataset is None:
             raise ValueError("dataset_id is not an approved dataset")
@@ -410,12 +414,43 @@ class ResearchWorkspace:
             raise ValueError(
                 f"walk-forward configuration exceeds {MAX_WALK_FORWARD_WINDOWS} windows"
             )
+        if request.run_type == "replay" and request.partial_fill_ratio != 1:
+            raise ValueError("replay requires a full-fill ratio of 1")
         active = sum(
             job.status in {ResearchJobStatus.QUEUED, ResearchJobStatus.RUNNING}
             for job in self.jobs.values()
         )
         if active >= MAX_ACTIVE_JOBS:
             raise ValueError("the research queue is full; wait for a run to finish")
+        return dataset, windows
+
+    def create_review(self, request: ResearchRunRequest) -> tuple[ApprovedDataset, int, str]:
+        """Issue a short-lived, one-use review token without starting a job."""
+        dataset, windows = self.validate_request(request)
+        now = datetime.now(UTC)
+        for token, (expires_at, _) in tuple(self.pending_reviews.items()):
+            if expires_at <= now:
+                self.pending_reviews.pop(token)
+        while len(self.pending_reviews) >= MAX_PENDING_REVIEWS:
+            self.pending_reviews.popitem(last=False)
+        token = str(uuid4())
+        self.pending_reviews[token] = (now + REVIEW_TTL, request.to_dict())
+        return dataset, windows, token
+
+    def consume_review(self, token: str, request: ResearchRunRequest) -> None:
+        """Refuse stale, altered, or repeated confirmations."""
+        saved = self.pending_reviews.pop(token, None)
+        if saved is None or saved[0] <= datetime.now(UTC):
+            raise ValueError(
+                "This review expired or was already used. Review the assumptions again."
+            )
+        if saved[1] != request.to_dict():
+            raise ValueError(
+                "The submitted assumptions changed. Review them again before queueing."
+            )
+
+    async def submit(self, request: ResearchRunRequest) -> ResearchJob:
+        dataset, _ = self.validate_request(request)
         job = ResearchJob(run_id=str(uuid4()), request=request)
         self.jobs[job.run_id] = job
         while len(self.jobs) > MAX_STORED_JOBS:
