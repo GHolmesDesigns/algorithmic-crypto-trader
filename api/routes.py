@@ -50,12 +50,20 @@ WORKSPACE_SCRIPT_PATH = "/operator/static/operator-workspace.js"
 WORKSPACE_SCRIPT_FILE = (
     Path(__file__).resolve().parent / "static" / "dashboard" / "operator-workspace.js"
 )
+APPEARANCE_SCRIPT_PATH = "/operator/static/operator-appearance.js"
+APPEARANCE_SCRIPT_FILE = (
+    Path(__file__).resolve().parent / "static" / "dashboard" / "operator-appearance.js"
+)
 # The file is cached for a year, so its address changes whenever its content does.
 templates.env.globals["utc_clock_script_url"] = (
     f"{UTC_CLOCK_PATH}?v={hashlib.sha256(UTC_CLOCK_FILE.read_bytes()).hexdigest()[:12]}"
 )
 templates.env.globals["workspace_script_url"] = (
     f"{WORKSPACE_SCRIPT_PATH}?v={hashlib.sha256(WORKSPACE_SCRIPT_FILE.read_bytes()).hexdigest()[:12]}"
+)
+templates.env.globals["appearance_script_url"] = (
+    f"{APPEARANCE_SCRIPT_PATH}?v="
+    f"{hashlib.sha256(APPEARANCE_SCRIPT_FILE.read_bytes()).hexdigest()[:12]}"
 )
 
 
@@ -100,6 +108,20 @@ def workspace_script() -> FileResponse:
 
     return FileResponse(
         WORKSPACE_SCRIPT_FILE,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(APPEARANCE_SCRIPT_PATH, include_in_schema=False)
+def appearance_script() -> FileResponse:
+    """Unauthenticated, so the sign-in page can honour the browser-local appearance too."""
+
+    return FileResponse(
+        APPEARANCE_SCRIPT_FILE,
         media_type="application/javascript",
         headers={
             "Cache-Control": "public, max-age=31536000, immutable",

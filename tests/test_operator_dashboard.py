@@ -442,7 +442,9 @@ async def test_controls_work_as_plain_forms_without_javascript(monkeypatch, tmp_
         html = (await client.get("/operator")).text
         scripts = SCRIPT_TAG.findall(html)
         assert scripts[0] == '<script src="' + clock_script_url(html) + '" defer>'
-        assert len(scripts) == 2 and "/operator/static/operator-workspace.js?v=" in scripts[1]
+        assert len(scripts) == 3
+        assert "/operator/static/operator-appearance.js?v=" in scripts[1]
+        assert "/operator/static/operator-workspace.js?v=" in scripts[2]
         assert "hx-" not in html
         assert '<form method="post" action="/operator/pause">' in html
         paused = await client.post("/operator/pause", headers={"accept": "text/html"})
@@ -1054,7 +1056,9 @@ async def test_state_text_is_escaped_not_rendered_as_markup(monkeypatch):
     # The scripts are same-origin display helpers; alert text never becomes a tag.
     scripts = SCRIPT_TAG.findall(html)
     assert scripts[0] == '<script src="' + clock_script_url(html) + '" defer>'
-    assert len(scripts) == 2 and "/operator/static/operator-workspace.js?v=" in scripts[1]
+    assert len(scripts) == 3
+    assert "/operator/static/operator-appearance.js?v=" in scripts[1]
+    assert "/operator/static/operator-workspace.js?v=" in scripts[2]
     assert "<script>" not in html
     assert "<img" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html

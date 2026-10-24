@@ -251,6 +251,13 @@ in the order you need it:
    and errors. A failed alert delivery means someone may not have been told. It
    says nothing about whether the trading condition changed, and dismissing an
    alert records review but does not clear a halt.
+7. **Appearance.** Choose **Light mode**, **Dark mode** or **Follow device** (the
+   default) for every operator page. The choice is kept in this browser only. It
+   is not a trading setting, is not stored on the server, and changing it does
+   not touch the feed, a provider, the kill switch or any order. Follow device
+   changes when the device does. If the browser blocks storage the choice lasts
+   only until you leave the page, and the page says so. Without JavaScript the
+   pages follow the device and the choices are hidden.
 
 EMERGENCY STOP and, unless the switch is halted, PAUSE stay in the safety bar
 and work without JavaScript. `/health` only proves the web process answers; it
@@ -919,7 +926,7 @@ provider, credential, live confirmation, or reconciliation interval.
 | `POST /operator/logout` | None | Ends the session: revokes it on the server and clears the cookie. |
 | `GET /operator` | Operator | Server-rendered dashboard. |
 | `GET /operator/fragment` | Operator | The dashboard body without the page shell or styles. The page does not refresh itself. |
-| `GET /operator/system` | Operator | Server-rendered System page: cause, recovery checklist, orders waiting on the venue, bounded diagnostics, health, and alert and kill-switch history. Reads only. |
+| `GET /operator/system` | Operator | Server-rendered System page: cause, recovery checklist, orders waiting on the venue, bounded diagnostics, health, alert and kill-switch history, and the browser-local Appearance choice. Reads only. |
 | `GET /operator/state` | Operator | Full operator snapshot as JSON. |
 | `GET /operator/kill-switch` | Operator | Current kill-switch state. |
 | `POST /operator/pause` | Operator | Persist `paused` from `running`. Never lowers `halted`; returns the unchanged state instead. |

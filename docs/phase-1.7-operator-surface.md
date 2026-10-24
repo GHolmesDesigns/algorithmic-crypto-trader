@@ -67,6 +67,23 @@ markup, size and place in every kill-switch state.
   load**. The dashboard does not refresh itself, and every age on the page is still measured at
   page load.
 
+### Appearance (#177)
+
+System ends with an Appearance section: Light mode, Dark mode or Follow device. The choice is
+kept in the browser (`localStorage`, `act.operator.appearance.v1`) and nowhere else: no route
+accepts it, nothing is saved on the server, and choosing runs no request. See
+`docs/operator-appearance-c004-v1.md`.
+
+- **Script.** `api/static/dashboard/operator-appearance.js` is served from
+  `/operator/static/operator-appearance.js?v=<hash of the file>` with immutable caching and no
+  login, so the sign-in page honours the choice too. It loads in the `<head>` without `defer`
+  so `data-theme` is set before the first paint. It sets or clears only `data-theme` on `<html>`.
+- **Palette.** `operator.css` keeps one dark token list for the device query and one for
+  `data-theme="dark"`; `:root:not([data-theme="light"])` keeps a dark device from overriding an
+  explicit Light choice.
+- **Failures.** Without JavaScript, or with storage denied or corrupt, the pages follow the
+  device. This card adds no Content-Security-Policy and loosens none.
+
 ### Average price of a position
 
 Gemini and Coinbase build positions from balances and report no cost basis, so a

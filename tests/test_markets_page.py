@@ -304,9 +304,13 @@ async def test_other_operator_pages_remain_javascript_free(tmp_path):
         response = await client.get("/operator", headers=HTML)
         history = await client.get("/operator/history/orders", headers=HTML)
     assert response.status_code == 200
-    # The shared shell loads only the display-only clock and navigation preference scripts.
+    # The shared shell loads only the display-only clock, appearance and navigation scripts.
     assert SCRIPT_TAG.findall(response.text) == [
         '<script src="' + clock_script_url(response.text) + '" defer>',
+        re.search(
+            r'<script src="/operator/static/operator-appearance\.js\?v=[^"]+">',
+            response.text,
+        ).group(0),
         re.search(
             r'<script src="/operator/static/operator-workspace\.js\?v=[^"]+" defer>',
             response.text,

@@ -186,6 +186,9 @@ async def test_the_page_loads_one_hashed_same_origin_script_and_no_inline_code(m
     # No inline script or handler, and no policy was added or loosened by this card.
     assert re.findall(r"<script[^>]*>", html) == [
         f'<script src="{url}" defer>',
+        re.search(r'<script src="/operator/static/operator-appearance\.js\?v=[0-9a-f]{12}">', html)[
+            0
+        ],
         f'<script src="{workspace_url}" defer>',
     ]
     assert re.search(r"\son[a-z]+=", html) is None
