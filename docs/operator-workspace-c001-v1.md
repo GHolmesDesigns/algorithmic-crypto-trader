@@ -30,7 +30,7 @@ The detailed dashboard sections remain Overview, Portfolio, Activity, Alerts & e
 | Research | `/operator/research` | Existing catalog, replay and result routes |
 | System | `/operator/system` | Overview System health anchor; `/operator/diagnostics`, re-arm and order-close routes (C003) |
 
-The current watchlist's Add a coin symbol form and separate market-chart page are retained. C001 does not replace the flow with a new coin-name editor. Manual appearance choices and the dedicated System content were left to later cards (System in C003, appearance choices in C004; see `operator-appearance-c004-v1.md`); C001 artboards document the existing OS/browser light and dark appearances.
+The watchlist's Add a coin flow now includes the bounded Coinbase name and symbol catalog from C007, while retaining the exact-product form and separate market charts. Manual appearance choices and the dedicated System content were left to later cards (System in C003, appearance choices in C004; see `operator-appearance-c004-v1.md`); C001 artboards document the existing OS/browser light and dark appearances.
 
 > **Implemented in C006 (#179):** the existing chart and watched-list routes now share a Watch Coins sub-navigation. Both remain directly addressable. The Charts view also shows watch-feed status, source, collection freshness and request budget; the Watched coins view keeps the saved list controls and canonical-symbol New Coin form.
 

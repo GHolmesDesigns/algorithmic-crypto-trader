@@ -11,6 +11,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from api.alerts import Alert, AlertRouter, build_alert_router
+from api.coin_catalog import CoinbaseCatalog
 from api.diagnostics import SqlAlchemyDiagnostics
 from api.diagnostics_routes import router as diagnostics_router
 from api.history import SqlAlchemyHistory
@@ -268,6 +269,7 @@ def attach_watchlist(application: FastAPI) -> Callable[[], Awaitable[None]]:
     application.state.watchlist = SqlAlchemyWatchlist(create_session_factory(engine))
     client = build_watch_client()
     application.state.watch_client = client
+    application.state.watch_catalog = CoinbaseCatalog(client)
 
     async def close() -> None:
         try:

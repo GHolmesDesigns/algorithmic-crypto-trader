@@ -185,3 +185,25 @@ class CoinbaseRESTClient:
         except Exception:
             self._circuit_breaker.record_failure()
             raise
+
+    async def list_public_products_page(self, *, limit: int, offset: int) -> dict[str, Any]:
+        """Read one bounded page of public spot product metadata, without credentials."""
+
+        if not 1 <= limit <= 500 or offset < 0:
+            raise ValueError("public product page bounds are invalid")
+        self._circuit_breaker.before_request()
+        await self._rate_limiter.acquire()
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/market/products",
+                params={"product_type": "SPOT", "limit": limit, "offset": offset},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise CoinbaseMarketDataError("Coinbase product catalog response is malformed")
+            self._circuit_breaker.record_success()
+            return payload
+        except Exception:
+            self._circuit_breaker.record_failure()
+            raise

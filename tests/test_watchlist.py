@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 from api.alerts import AlertRouter
+from api.coin_catalog import CoinbaseCatalog
 from app import watch_feed as watch_feed_module
 from app.main import attach_watchlist, create_app, start_watch_feed
 from app.paper_runtime import PaperRuntimeConfig, parse_paper_symbols
@@ -340,6 +341,26 @@ async def test_the_rest_client_reads_a_public_product_without_credentials() -> N
     result = await coinbase_client(handler).get_product("ETH-USD")
     assert result.tradable
     assert seen[0].url.path.endswith("/market/products/ETH-USD")
+    assert "authorization" not in seen[0].headers
+
+
+async def test_the_rest_client_reads_a_bounded_public_spot_product_page_without_credentials():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={"products": [], "num_products": 0, "pagination": {"has_next": False}},
+        )
+
+    await coinbase_client(handler).list_public_products_page(limit=500, offset=1000)
+    assert seen[0].url.path.endswith("/market/products")
+    assert dict(seen[0].url.params) == {
+        "product_type": "SPOT",
+        "limit": "500",
+        "offset": "1000",
+    }
     assert "authorization" not in seen[0].headers
 
 
@@ -724,6 +745,7 @@ class RouteLookup:
     def __init__(self) -> None:
         self.results: dict[str, CoinbaseProduct | Exception] = {}
         self.asked: list[str] = []
+        self.catalog_calls: list[tuple[int, int]] = []
 
     async def get_product(self, product_id):
         self.asked.append(product_id)
@@ -731,6 +753,25 @@ class RouteLookup:
         if isinstance(result, Exception):
             raise result
         return result
+
+    async def list_public_products_page(self, *, limit, offset):
+        self.catalog_calls.append((limit, offset))
+        return {
+            "products": [
+                {
+                    "product_id": "BTC-USD",
+                    "base_display_symbol": "BTC",
+                    "base_name": "Bitcoin",
+                    "quote_currency_id": "USD",
+                    "product_type": "SPOT",
+                    "status": "online",
+                    "trading_disabled": False,
+                    "is_disabled": False,
+                }
+            ],
+            "num_products": 1,
+            "pagination": {"has_next": False},
+        }
 
 
 def watch_app(tmp_path):
@@ -740,6 +781,7 @@ def watch_app(tmp_path):
         sessionmaker(bind=engine, expire_on_commit=False)
     )
     application.state.watch_client = RouteLookup()
+    application.state.watch_catalog = CoinbaseCatalog(application.state.watch_client)
     return application
 
 
@@ -754,8 +796,63 @@ async def test_the_routes_need_a_signed_in_operator(tmp_path) -> None:
         assert (await client.post(f"{PATH}/add", json={"symbol": "ETH-USD"})).status_code == 401
         assert (await client.post(f"{PATH}/remove", json={"symbol": "ETH-USD"})).status_code == 401
         assert (await client.post(f"{PATH}/reorder", json={"order": []})).status_code == 401
+        assert (await client.get(f"{PATH}/catalog?q=bitcoin")).status_code == 401
+        assert (await client.post(f"{PATH}/catalog/refresh")).status_code == 401
         assert (await client.get(f"{PATH}?token=x", headers=OPERATOR)).status_code == 400
     assert application.state.watch_client.asked == []
+    assert application.state.watch_client.catalog_calls == []
+
+
+async def test_catalog_search_and_page_render_never_fetch_products(tmp_path) -> None:
+    application = watch_app(tmp_path)
+    async with client_for(application) as client:
+        page_response = await client.get(PATH, headers=BROWSER)
+        search_response = await client.get(f"{PATH}?q=bitcoin", headers=BROWSER)
+        json_response = await client.get(f"{PATH}/catalog?q=BTC-USD", headers=OPERATOR)
+    assert page_response.status_code == search_response.status_code == 200
+    assert "Name search has not been loaded" in page_response.text
+    assert "exact Coinbase product" in search_response.text
+    assert json_response.json()["matches"] == []
+    assert application.state.watch_client.catalog_calls == []
+
+
+async def test_explicit_catalog_refresh_is_bounded_sanitized_and_reused_when_fresh(tmp_path):
+    application = watch_app(tmp_path)
+    async with client_for(application) as client:
+        response = await client.post(f"{PATH}/catalog/refresh", headers=OPERATOR)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "available"
+        assert payload["source"] == "Coinbase public market data"
+        assert payload["matches"] == []
+        search = await client.get(f"{PATH}/catalog?q=btc", headers=OPERATOR)
+        repeat = await client.post(f"{PATH}/catalog/refresh", headers=OPERATOR)
+    assert search.json()["matches"][0]["product_id"] == "BTC-USD"
+    assert repeat.status_code == 200
+    assert application.state.watch_client.catalog_calls == [(500, 0)]
+
+
+async def test_name_search_results_keep_exact_symbol_add_fallback(tmp_path) -> None:
+    application = watch_app(tmp_path)
+    async with client_for(application) as client:
+        await client.post(f"{PATH}/catalog/refresh", headers=OPERATOR)
+        page_response = await client.get(f"{PATH}?q=Bitcoin", headers=BROWSER)
+    assert page_response.status_code == 200
+    assert 'value="BTC-USD"' in page_response.text
+    assert "Add BTC" in page_response.text
+    assert 'placeholder="ETH-USD"' in page_response.text
+    assert 'action="/operator/watchlist/add"' in page_response.text
+
+
+async def test_catalog_candidate_still_passes_through_existing_add_validation(tmp_path):
+    application = watch_app(tmp_path)
+    async with client_for(application) as client:
+        await client.post(f"{PATH}/catalog/refresh", headers=OPERATOR)
+        response = await client.post(f"{PATH}/add", data={"symbol": "BTC-USD"}, headers=OPERATOR)
+    assert response.status_code == 200
+    assert response.json() == {"status": "added", "symbol": "BTC-USD"}
+    assert application.state.watch_client.asked == ["BTC-USD"]
+    assert application.state.watchlist.symbols() == ("BTC-USD",)
 
 
 async def test_add_remove_and_reorder_as_json(tmp_path) -> None:

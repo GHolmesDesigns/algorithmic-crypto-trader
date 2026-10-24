@@ -41,6 +41,7 @@
 >   - Every tile is server-drawn SVG with a table alternative. A pinned, vendored copy of TradingView's open-source Lightweight Charts library, served from the app's own origin, may add zoom, pan, and crosshair on that page only.
 >   - This is the one exception to "no JavaScript" on the operator surface. The other pages, and every safety control, stay JavaScript-free, and nothing loads from a CDN.
 > - **C006 (#179) implementation:** `/operator/watchlist` and `/operator/markets` are linked views in the Watch Coins workspace. The Charts view shows saved-list/feed state and links to management. Watched coins keeps existing add/remove/reorder and administrator-only feed controls, with a clearly labeled New Coin anchor to the canonical-symbol form. Both routes, APIs, gap-aware SVG fallback, accessible tables, and local chart enhancement remain.
+> - **C007 (#180) implementation:** New Coin offers an explicitly loaded, 15-minute in-memory Coinbase public spot catalog. The picker searches cached coin names, symbols, and product IDs locally, shows distinct candidates with source/as-of details, and keeps the validated exact-product form available when the catalog is empty or stale. Loading/refreshing is an explicit button with a visible limit of 10 public requests and 10 seconds; page rendering and typing make no provider requests.
 
 ## 1. How to read this report
 
