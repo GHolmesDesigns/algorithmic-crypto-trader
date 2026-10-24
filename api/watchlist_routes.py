@@ -11,7 +11,7 @@ import json
 import logging
 from collections.abc import Sequence
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from data.feed_setting import ORIGIN_SAVED, FeedOrigin, FeedSettingError
 from data.watchlist import (
@@ -23,7 +23,7 @@ from data.watchlist import (
 )
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from api.coin_catalog import CoinbaseCatalog
 from api.routes import _authorize, _page, _wants_html, templates
@@ -44,7 +44,9 @@ class _Unavailable(RuntimeError):
 @router.get(WATCHLIST_PATH)
 def watchlist_page(request: Request) -> Response:
     role = _authorize(request)
-    if set(request.query_params) - {"q"}:
+    if not _wants_html(request) and request.query_params:
+        return _refused(request, role, ("This view takes no parameters.",), 422)
+    if set(request.query_params) - {"q", "added"}:
         return _refused(request, role, ("This view takes no parameters.",), 422)
     query = request.query_params.get("q", "")
     if len(query) > 80:
@@ -55,8 +57,14 @@ def watchlist_page(request: Request) -> Response:
         return _unavailable(request, role, str(exc))
     if not _wants_html(request):
         return JSONResponse(payload)
-    catalog = _catalog(request).view(query)
-    return _render(request, role, build_watchlist_view(payload, role=role, catalog=catalog), 200)
+    catalog = _catalog_view(request, query, payload)
+    added = request.query_params.get("added")
+    try:
+        added_symbol = normalize_symbol(added) if added else None
+    except WatchlistRefused as exc:
+        return _refused(request, role, (str(exc),), 422)
+    view = build_watchlist_view(payload, role=role, catalog=catalog, added_symbol=added_symbol)
+    return _render(request, role, view, 200)
 
 
 @router.get(f"{WATCHLIST_PATH}/catalog")
@@ -67,7 +75,11 @@ def search_catalog(request: Request) -> Response:
     query = request.query_params.get("q", "")
     if len(query) > 80:
         return JSONResponse({"detail": "Search text must be 80 characters or fewer."}, 422)
-    return JSONResponse(_catalog(request).view(query))
+    try:
+        payload = _payload(request)
+    except _Unavailable as exc:
+        return JSONResponse({"detail": {"status": "unavailable", "reason": str(exc)}}, 503)
+    return JSONResponse(_catalog_view(request, query, payload))
 
 
 @router.post(f"{WATCHLIST_PATH}/catalog/refresh")
@@ -90,12 +102,14 @@ async def add_symbol(request: Request) -> Response:
     role = _authorize(request)
     form = await _body(request)
     raw = str(form.get("symbol", ""))
+    query = str(form.get("q", ""))[:80]
+    symbol: str | None = None
     try:
         symbol = normalize_symbol(raw)
         store = _store(request)
         current = store.symbols()
         if symbol in current:
-            raise WatchlistRefused(f"{symbol} is already on the watchlist.")
+            raise WatchlistRefused(f"{symbol} is already watched; the list is unchanged.")
         if len(current) >= WATCHLIST_LIMIT:
             raise WatchlistRefused(
                 f"The watchlist holds at most {WATCHLIST_LIMIT} coins. Remove one first."
@@ -103,7 +117,21 @@ async def add_symbol(request: Request) -> Response:
         await check_product(request.app.state.watch_client, symbol)
         store.add(symbol, role=role)
     except WatchlistRefused as exc:
-        return _refused(request, role, (str(exc),), 422, add_form={"symbol": raw})
+        return _refused(request, role, (str(exc),), 422, add_form={"symbol": raw, "q": query})
+    except IntegrityError:
+        try:
+            already_saved = symbol is not None and symbol in _store(request).symbols()
+        except SQLAlchemyError:
+            already_saved = False
+        if already_saved:
+            return _refused(
+                request,
+                role,
+                (f"{symbol} was added by another request; the list is unchanged.",),
+                422,
+                add_form={"symbol": raw, "q": query},
+            )
+        return _unavailable(request, role, _UNREADABLE)
     except (_Unavailable, SQLAlchemyError) as exc:
         return _unavailable(request, role, _reason(exc))
     feed = getattr(request.app.state, "watch_feed", None)
@@ -205,11 +233,24 @@ def _store(request: Request) -> SqlAlchemyWatchlist:
     return store
 
 
-def _catalog(request: Request):
+def _catalog(request: Request) -> CoinbaseCatalog:
     catalog = getattr(request.app.state, "watch_catalog", None)
     if catalog is None:
         catalog = CoinbaseCatalog(None)
     return catalog
+
+
+def _catalog_view(request: Request, query: str, payload: dict[str, Any]) -> dict[str, Any]:
+    result = _catalog(request).view(query)
+    watched = {item["symbol"] for item in payload["symbols"]}
+    matches = [
+        {**item, "already_watched": item["product_id"] in watched} for item in result["matches"]
+    ]
+    return {
+        **result,
+        "has_selectable_match": any(not item["already_watched"] for item in matches),
+        "matches": matches,
+    }
 
 
 def _reason(exc: Exception) -> str:
@@ -286,6 +327,9 @@ def _feed_done(request: Request, status: str, enabled: bool) -> Response:
 def _done(request: Request, status: str, symbol: str) -> Response:
     if not _wants_html(request):
         return JSONResponse({"status": status, "symbol": symbol})
+    if status == "added":
+        query = urlencode({"added": symbol})
+        return RedirectResponse(f"{WATCHLIST_PATH}?{query}#added-coin", status_code=303)
     return RedirectResponse(WATCHLIST_PATH, status_code=303)
 
 
@@ -303,7 +347,14 @@ def _refused(
         payload = _payload(request)
     except _Unavailable as exc:
         return _unavailable(request, role, str(exc))
-    view = build_watchlist_view(payload, role=role, errors=errors, add_form=add_form)
+    query = (add_form or {}).get("q", "")
+    view = build_watchlist_view(
+        payload,
+        role=role,
+        errors=errors,
+        add_form=add_form,
+        catalog=_catalog_view(request, query, payload),
+    )
     return _render(request, role, view, status_code)
 
 

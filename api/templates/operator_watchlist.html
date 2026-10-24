@@ -6,6 +6,7 @@
 {% block page_class %} page-wide{% endblock %}
 
 {% block content %}
+        <script src="{{ watchlist_picker_script_url }}" defer></script>
         <nav class="history-nav" aria-label="Watch Coins views">
           <ul>
             <li><a href="{{ view.markets_path }}">Charts</a></li>
@@ -58,7 +59,7 @@
           <section class="panel" aria-labelledby="watched-heading">
             <div class="panel-head">
               <h2 id="watched-heading">Watched coins ({{ view.rows|length }} of {{ view.limit }})</h2>
-              {%- if not view.full %}<a class="button button-rearm" href="#new-coin">New Coin</a>{% endif %}
+              {%- if not view.full %}<a class="button button-rearm" id="new-coin-trigger" href="#new-coin" aria-controls="new-coin">New Coin</a>{% endif %}
             </div>
             {%- if view.rows %}
             <div class="table-wrap" role="region" aria-labelledby="watched-heading" tabindex="0">
@@ -102,7 +103,13 @@
             <p>{{ ui.absent("No coins are watched yet.") }}</p>
             {%- endif %}
           </section>
-          <section class="panel" id="new-coin" aria-labelledby="add-heading">
+          {%- if view.saved_coin %}
+          <div class="notice tone-ok" id="added-coin" tabindex="-1" role="status" aria-live="polite">
+            <p><strong>{{ view.saved_coin.symbol }}</strong> is on the watchlist.</p>
+            <p>Collection state: {{ ui.pill(view.saved_coin.status) }}{% if view.saved_coin.detail %} {{ view.saved_coin.detail }}{% endif %}{% if view.saved_coin.last_candle %} Last candle: {{ ui.stamp(view.saved_coin.last_candle) }}.{% endif %}</p>
+          </div>
+          {%- endif %}
+          <section class="panel" id="new-coin" aria-labelledby="add-heading" tabindex="-1">
             <h2 id="add-heading">New Coin</h2>
             {%- if view.full %}
             <p class="note">The watchlist is full ({{ view.limit }} coins). Remove one to add another.</p>
@@ -111,14 +118,14 @@
               <h3>Find by name or symbol</h3>
               <p class="note">Search uses only the loaded in-memory catalog. Typing and searching make no provider request.</p>
               {% if view.catalog.as_of %}
-              <p class="note">{{ view.catalog.source }} · {{ view.catalog.as_of }}{% if view.catalog.status == 'stale' %} · Stale{% endif %}</p>
+              <p class="note">{{ view.catalog.source }} · {{ view.catalog.as_of }} · {{ 'Stale' if view.catalog.status == 'stale' else 'Current' }}</p>
               {% else %}
-              <p class="note">{{ view.catalog.detail }}</p>
+              <p class="note" role="status">Catalog: {{ view.catalog.status }}. {{ view.catalog.detail }}</p>
               {% endif %}
-              {% if view.catalog.detail and view.catalog.as_of %}<p class="note">{{ view.catalog.detail }}</p>{% endif %}
-              <form method="post" action="{{ view.path }}/catalog/refresh">
+              {% if view.catalog.detail and view.catalog.as_of %}<p class="note" role="status">{{ view.catalog.detail }}</p>{% endif %}
+              <form method="post" action="{{ view.path }}/catalog/refresh" data-catalog-refresh>
                 <button class="button button-quiet" type="submit">Load or refresh catalog</button>
-                <span class="note">Up to 10 credential-free public Coinbase reads and 10 seconds; a fresh catalog is reused.</span>
+                <span class="note">Up to 10 credential-free public Coinbase reads and 10 seconds; a fresh catalog is reused. The button shows when loading starts.</span>
               </form>
               <form method="get" action="{{ view.path }}">
                 <div class="field">
@@ -129,26 +136,36 @@
               </form>
               {% if view.catalog.query %}
               {% if view.catalog.matches %}
-              <p class="note">Showing up to {{ view.catalog.match_limit }} separate candidates. Confirm the exact product before adding it.</p>
-              <div class="table-wrap" role="region" aria-label="Coin catalog matches" tabindex="0">
-                <table class="data">
-                  <thead><tr><th scope="col">Name</th><th scope="col">Symbol</th><th scope="col">Quote</th><th scope="col">Availability</th><th scope="col">Source and as of</th><th scope="col">Action</th></tr></thead>
-                  <tbody>
-                    {% for match in view.catalog.matches %}
-                    <tr>
-                      <th scope="row">{{ match.display_name }}</th>
-                      <td><span class="mono">{{ match.base_symbol }}</span><p class="event-meta">{{ match.product_id }}</p></td>
-                      <td>{{ match.quote_currency }}</td>
-                      <td>{{ match.availability }}</td>
-                      <td>{{ match.source }}<p class="event-meta">{{ match.as_of }}</p></td>
-                      <td><form method="post" action="{{ view.path }}/add"><input type="hidden" name="symbol" value="{{ match.product_id }}"><button class="button button-rearm" type="submit">Add {{ match.base_symbol }}</button></form></td>
-                    </tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
+              <p class="note">Choose one candidate, then confirm it. Typing, searching or selecting never saves a coin.</p>
+              <form method="post" action="{{ view.path }}/add" aria-label="Choose a coin to add">
+                <input type="hidden" name="q" value="{{ view.catalog.query }}">
+                <fieldset class="coin-candidates">
+                  <legend>Coin catalog matches (up to {{ view.catalog.match_limit }})</legend>
+                  {% for match in view.catalog.matches %}
+                  <div class="coin-candidate">
+                    <input id="coin-candidate-{{ loop.index }}" type="radio" name="symbol" value="{{ match.product_id }}"{% if view.add_symbol == match.product_id %} checked{% endif %}{% if not match.already_watched %} required{% else %} disabled{% endif %}>
+                    <label for="coin-candidate-{{ loop.index }}">
+                      <strong>{{ match.display_name }}</strong>
+                      <span class="mono">{{ match.base_symbol }} · {{ match.product_id }}</span>
+                      <span>{{ match.quote_currency }} · {{ match.availability }}</span>
+                      <span class="event-meta">{{ match.source }} · {{ match.as_of }}</span>
+                      {% if match.already_watched %}<span class="candidate-state">Already watched</span>{% else %}<span class="candidate-state">Select this product</span>{% endif %}
+                    </label>
+                  </div>
+                  {% endfor %}
+                </fieldset>
+                {% if view.catalog.has_selectable_match %}
+                <div class="actions">
+                  <button class="button button-rearm" type="submit">Confirm selected coin</button>
+                  <a class="button button-quiet" href="#new-coin-trigger">Cancel</a>
+                </div>
+                {% else %}
+                <p class="note" role="status">Every matching product is already watched. Search for another coin or cancel.</p>
+                <a class="button button-quiet" href="#new-coin-trigger">Cancel</a>
+                {% endif %}
+              </form>
               {% else %}
-              <p class="note" role="status">No catalog matches for “{{ view.catalog.query }}”. The exact-symbol form below remains available.</p>
+              <p class="note" role="status">No catalog matches for “{{ view.catalog.query }}”. If the product is unsupported or unavailable, the exact-product form below asks Coinbase and explains the refusal.</p>
               {% endif %}
               {% endif %}
             </div>
