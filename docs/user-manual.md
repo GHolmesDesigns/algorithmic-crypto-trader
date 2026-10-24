@@ -296,6 +296,10 @@ pages read the persisted records, so they cover earlier runs and survive a
 restart. Open them from the dashboard's **Activity** or **Risk & safety**
 section, or go to `/operator/history/orders`.
 
+Activity is saved history, not a live broker check; process-local activity stays
+on Overview. The client-order-ID detail link can be reloaded to read the same
+saved lineage, and its timestamps show when those records were saved.
+
 | Page | What it answers |
 | --- | --- |
 | **Orders** | Every order, newest first, with its status and fills. Select an order to expand its lineage: signal, risk decision, order, and fills. **Open this order's lineage page** gives a page you can link to. |
@@ -319,8 +323,11 @@ Read these the same way as the dashboard:
 - **○ Not available** means the history could not be read. It is not a zero.
 - **Signal not recorded**, **Risk decision not recorded**, or a **▲ Lineage
   gap** means a link in the audit chain is missing. Report it as an incident.
-- An **■ unknown** order carries its rule: look it up by client order ID and
-  never resubmit it.
+- For `pending_submit` and **■ unknown**, the submission outcome is unverified.
+  Check the broker using the saved client order ID before any retry. Zero fills
+  recorded in local history do not confirm that the broker has no fills. The
+  detail page links to **System** for saved-order review and bounded diagnostics;
+  an administrator's existing close control remains there.
 
 The history is read-only. Nothing on these pages can submit, cancel, or retry an
 order.

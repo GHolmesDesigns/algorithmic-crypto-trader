@@ -816,7 +816,7 @@ class _Page(HTMLParser):
 
 
 @pytest.mark.asyncio
-async def test_every_order_status_is_shown_and_unknown_carries_the_rule(tmp_path):
+async def test_unresolved_orders_carry_next_steps_and_no_fill_claim(tmp_path):
     application = history_app(tmp_path)
     now = utc_now()
     rows = []
@@ -825,9 +825,17 @@ async def test_every_order_status_is_shown_and_unknown_carries_the_rule(tmp_path
     add(tmp_path, *rows)
 
     payload = (await get(application, PATHS["orders"])).json()
+    pending = next(row for row in payload["rows"] if row["status"] == "pending_submit")
     unknown = next(row for row in payload["rows"] if row["status"] == "unknown")
-    assert unknown["rule"] == "Look it up by client order ID. Never resubmit it."
-    assert all("rule" not in row for row in payload["rows"] if row["status"] != "unknown")
+    assert "Submission is unverified." in pending["rule"]
+    assert "do not retry it" in pending["rule"]
+    assert "Submission outcome is unverified." in unknown["rule"]
+    assert "before any retry" in unknown["rule"] and "never resubmit" in unknown["rule"]
+    assert all(
+        "rule" not in row
+        for row in payload["rows"]
+        if row["status"] not in {"pending_submit", "unknown"}
+    )
 
     html = (await get(application, PATHS["orders"], headers=BROWSER)).text
     tones = {
@@ -850,8 +858,37 @@ async def test_every_order_status_is_shown_and_unknown_carries_the_rule(tmp_path
     summary = re.search(
         r"<summary>(?:(?!</summary>).)*■</span> unknown</span>.*?</summary>", html, re.S
     )
-    assert summary and "Never resubmit it." in summary.group(0)
+    assert summary and "never resubmit it." in summary.group(0)
+    assert "Submission outcome is unverified." in ledger
+    assert "Submission is unverified." in ledger
+    assert 'href="/operator/system#orders"' in ledger
+    assert 'href="/operator/system#diagnostics"' in ledger
+    assert "Their absence does not confirm the broker has no fills" in ledger
     assert "The submission outcome is ambiguous. Look it up by client order ID." in legend
+
+
+@pytest.mark.asyncio
+async def test_unknown_lineage_direct_link_keeps_saved_facts_and_unverified_fills_distinct(
+    tmp_path,
+):
+    application = history_app(tmp_path)
+    now = utc_now()
+    chain = lineage(now, status="unknown", fills=0)
+    add(tmp_path, *chain)
+    client_order_id = chain[2].client_order_id
+
+    async with client_for(application) as client:
+        html = (await client.get(f"{PATHS['orders']}/{client_order_id}", headers=BROWSER)).text
+        reloaded = (await client.get(f"{PATHS['orders']}/{client_order_id}", headers=BROWSER)).text
+
+    for page in (html, reloaded):
+        assert "not a live broker check" in page.lower()
+        assert "process-local activity remains on overview" in page.lower()
+        assert "Submission outcome is unverified." in page
+        assert "Their absence does not confirm the broker has no fills" in page
+        assert f'<code class="copy">{client_order_id}</code>' in page
+        assert chain[0].strategy_version in page
+        assert "outcome is still unverified" in page
 
 
 @pytest.mark.asyncio

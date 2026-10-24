@@ -185,6 +185,25 @@ when that fails or no journal is attached.
 Issue #61. Authenticated, read-only views of the persisted audit tables. Each
 route is a GET that answers JSON, or HTML when the request accepts `text/html`.
 
+### Activity lineage (C005, issue #178)
+
+The Activity module shows bounded persisted records. It is not a live broker
+check, and process-local activity remains on Overview. Open an order's stable
+client-order-ID link to rebuild its signal, risk decision, order, and fills
+after navigation or a restart. Timestamps identify when each fact was saved.
+
+`pending_submit` and `unknown` orders say their submission outcome is
+unverified and direct the operator to inspect the same client order ID. The
+lineage links to System's saved-order review and bounded diagnostics; an
+administrator's existing close-order control remains on System. No retry or
+other order action is added to Activity. Zero locally recorded fills on an
+unresolved order do not establish that the broker has no fills. Empty history,
+missing lineage, and unreadable history retain their separate states. The
+existing event, risk-decision, and fill subviews, filters, and pagination remain
+available.
+See `docs/operator-activity-c005-v1.md` for both-theme desktop and mobile
+captures from the synthetic fixture.
+
 | Route | Shows |
 | --- | --- |
 | `/operator/history/orders` | Orders with their fills; each order expands into its lineage. |
@@ -217,8 +236,10 @@ broker; no route can submit, cancel, or retry an order. Discrepancy payloads sta
 in the database: only the names of the fields that differ are returned. Events
 return only a kill-switch transition's from, to, actor, automatic flag, reason,
 and known checklist items. Free-text reasons pass through `redact_free_text`.
-An `unknown` order is critical and carries "Look it up by client order ID. Never
-resubmit it."
+`pending_submit` and `unknown` orders carry status-specific next steps. An
+`unknown` submission explicitly says its outcome is unverified and must be
+checked by client order ID before any retry. Neither status suggests a generic
+retry, and missing recorded fills are not treated as a broker answer.
 
 **Indexes.** Migration `0006_history_indexes` indexes each time column the lists
 window on, the lineage joins (`orders.signal_id`, `orders.risk_approval_id`,

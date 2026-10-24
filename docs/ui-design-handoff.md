@@ -505,7 +505,19 @@ Design an audit-oriented activity view that can eventually connect:
 
 `signal -> risk decision -> order -> fill(s) -> portfolio/reconciliation effect`
 
-Merged data already has identifiers and correlation IDs, but a complete browser view requires read endpoints for risk decisions, audit lineage, events, and bounded historical queries.
+The persisted records have stable identifiers and correlation IDs. C005 delivers the saved-order lineage; connecting it to portfolio and reconciliation effects remains future work.
+
+**Current implementation (C005, issue #178):** `/operator/history/orders` is
+the Activity module backed by bounded persisted history. Order details expose
+the saved Signal → Risk decision → Order → Fills hierarchy and retain stable
+client order ID links, timestamps, existing subviews, filters, and pagination.
+The page says it is not a live broker check and process-local activity remains
+on Overview. Unresolved submission states name the client-order-ID lookup as
+the next step and link to System order review and bounded diagnostics. Zero
+recorded local fills do not answer whether the broker has fills. The page adds
+no submission, retry, closure, or kill-switch action.
+See `docs/operator-activity-c005-v1.md` for visual review in both themes and
+desktop/mobile layouts.
 
 ### 8.3 Portfolio
 
@@ -549,6 +561,8 @@ Design for:
 > **Implemented in C003 (#176):** `GET /operator/system` now presents most of this list. See `docs/operator-system-c003-v1.md`. Backup, restore and drill evidence and market-data connection freshness are still not part of the page.
 >
 > **Implemented in C004 (#177):** the page ends with an Appearance section (Light mode, Dark mode, Follow device), kept in the browser only. See `docs/operator-appearance-c004-v1.md`.
+>
+> **Implemented in C005 (#178):** Activity order details make the saved Signal → Risk decision → Order → Fills lineage explicit, keep process-local activity separate, and distinguish saved history from a live broker check. `pending_submit` and `unknown` have status-specific next steps and System review/diagnostic links; no Activity retry or close control is introduced.
 
 ## 9. Roadmap additions the design must anticipate
 
