@@ -10,25 +10,25 @@
   <main id="main" tabindex="-1">
     <section id="overview" class="block" aria-labelledby="overview-heading">
       <div class="block-head">
-        <h2 id="overview-heading">Overview</h2>
-        <p class="block-note">Authenticated state at the snapshot time. <code>/health</code> only proves that the web process responds.</p>
+        <h2 id="overview-heading">Needs attention</h2>
+        <p class="block-note">Actionable conditions from this operator snapshot. Running is not a health or readiness verdict.</p>
       </div>
-      <ul class="cards">
-        {%- for card in view.cards %}
-        <li class="card tone-{{ card.status.tone }}">
-          <h3 class="card-label"><a href="#{{ card.anchor }}">{{ card.label }}</a></h3>
-          <p class="card-status">{{ ui.pill(card.status, "pill-large") }}</p>
-          <p class="card-detail">{{ card.detail }}</p>
-          <p class="card-fresh">{{ card.fresh_label }}{% if card.fresh %} {{ ui.stamp(card.fresh) }}{% endif %}</p>
-          {%- if card.anchor == "alerts" and view.alerts.can_dismiss %}
-          <form class="dismiss" method="post" action="/operator/alerts/dismiss">
-            <input type="hidden" name="through" value="{{ view.alerts.through }}">
-            <button class="button button-quiet" type="submit">Dismiss alerts</button>
-          </form>
-          {%- endif %}
+      {%- if not view.attention.available %}
+      <p class="notice tone-unknown"><span class="mark" aria-hidden="true">○</span> {{ view.attention.detail }}</p>
+      {%- elif view.attention.rows %}
+      <ol class="attention-list">
+        {%- for item in view.attention.rows %}
+        <li class="attention-item tone-{{ item.status.tone }}">
+          <div class="attention-heading">{{ ui.pill(item.status, "pill-large") }} <h3>{{ item.title }}</h3></div>
+          <p>{{ item.detail }}</p>
+          <p class="attention-next"><strong>Next step:</strong> {{ item.next_step }} <a href="{{ item.href }}">Investigate</a></p>
         </li>
         {%- endfor %}
-      </ul>
+      </ol>
+      {%- if view.attention.total > view.attention.limit %}<p class="note">Showing {{ view.attention.limit }} of {{ view.attention.total }} attention items.</p>{% endif %}
+      {%- else %}
+      <p class="empty"><span class="count">0</span> {{ view.attention.status.word }}. {{ view.attention.detail }}</p>
+      {%- endif %}
       <p class="legend"><span class="eyebrow">Key</span>
         {%- for item in view.legend %} {{ ui.pill(item) }}{% endfor %}
       </p>
@@ -37,8 +37,18 @@
     <section id="portfolio" class="block" aria-labelledby="portfolio-heading">
       <div class="block-head">
         <h2 id="portfolio-heading">Portfolio</h2>
-        <p class="block-note">{{ ui.pill(portfolio.status) }} {{ portfolio.detail }}.{% if portfolio.current %} Current means the broker was read at the snapshot time. It says nothing about whether the values are right.{% endif %}</p>
+        <p class="block-note"><span class="eyebrow">Source</span> {{ portfolio.source }}. {{ ui.pill(portfolio.status) }} {{ portfolio.detail }}.{% if portfolio.current %} Current means the broker was read at the snapshot time. It says nothing about whether the values are right.{% endif %}</p>
       </div>
+      <ul class="cards portfolio-summary">
+        {%- for card in view.portfolio_cards %}
+        <li class="card tone-{{ card.status.tone }}">
+          <h3 class="card-label"><a href="#portfolio">{{ card.label }}</a></h3>
+          <p class="card-status">{{ ui.pill(card.status, "pill-large") }}</p>
+          <p class="card-detail">{{ card.detail }}</p>
+          <p class="card-fresh">{{ card.fresh_label }}{% if card.fresh %} {{ ui.stamp(card.fresh) }}{% endif %}</p>
+        </li>
+        {%- endfor %}
+      </ul>
       {%- if portfolio.last_known %}
       <p class="notice tone-warn"><span class="mark" aria-hidden="true">▲</span> Last-known values, kept for diagnosis only. They are not current and may not match the broker.</p>
       {%- endif %}
@@ -89,87 +99,56 @@
       </div>
     </section>
 
-    <section id="activity" class="block" aria-labelledby="activity-heading">
+    <section id="operational-checks" class="block" aria-labelledby="operational-checks-heading">
       <div class="block-head">
-        <h2 id="activity-heading">Activity</h2>
-        <p class="block-note">Records this process holds since it started. The persisted history, with risk decisions and each order's lineage, is under <a href="/operator/history/orders">Order history</a>.</p>
+        <h2 id="operational-checks-heading">Operational checks</h2>
+        <p class="block-note">Recorded health and safety facts. Unknown and unavailable values remain visible; <code>/health</code> only proves the web process responds.</p>
       </div>
-      <dl class="lineage">
-        <div><dt>Signals</dt><dd><span class="count">{{ activity.counts.signals }}</span></dd></div>
-        <div><dt>Risk decisions</dt><dd>{{ ui.absent("not held here") }} <a href="/operator/history/risk-decisions">History</a></dd></div>
-        <div><dt>Orders</dt><dd><span class="count">{{ activity.counts.orders }}</span></dd></div>
-        <div><dt>Fills</dt><dd><span class="count">{{ activity.counts.fills }}</span></dd></div>
-      </dl>
-      <div class="panel">
-        <h3 id="orders-heading">Recent orders</h3>
-        {%- if activity.orders %}
-        <div class="table-wrap" role="region" aria-labelledby="orders-heading" tabindex="0">
+      <ul class="cards">
+        {%- for card in view.checks %}
+        <li class="card tone-{{ card.status.tone }}">
+          <h3 class="card-label"><a href="#{{ card.anchor }}">{{ card.label }}</a></h3>
+          <p class="card-status">{{ ui.pill(card.status, "pill-large") }}</p>
+          <p class="card-detail">{{ card.detail }}</p>
+          <p class="card-fresh">{{ card.fresh_label }}{% if card.fresh %} {{ ui.stamp(card.fresh) }}{% endif %}</p>
+          {%- if card.anchor == "alerts" and view.alerts.can_dismiss %}
+          <form class="dismiss" method="post" action="/operator/alerts/dismiss">
+            <input type="hidden" name="through" value="{{ view.alerts.through }}">
+            <button class="button button-quiet" type="submit">Dismiss alerts</button>
+          </form>
+          {%- endif %}
+        </li>
+        {%- endfor %}
+      </ul>
+      <div class="panel watch-feed" id="watch-feed" aria-labelledby="watch-feed-heading">
+        <div class="panel-head">
+          <h3 id="watch-feed-heading">Watch-only market data</h3>
+          <p>{{ ui.pill(view.watch_feed.status) }}</p>
+        </div>
+        <p>{{ view.watch_feed.detail }} <a href="/operator/watchlist">Open Watch Coins</a>.</p>
+        {%- if not view.watch_feed.available %}
+        <p class="notice tone-unknown">Freshness is unavailable. This is not an empty or healthy feed result.</p>
+        {%- elif view.watch_feed.rows %}
+        <div class="table-wrap" role="region" aria-labelledby="watch-feed-heading" tabindex="0">
           <table class="data">
-            <thead>
-              <tr><th scope="col">Client order ID</th><th scope="col">Symbol</th><th scope="col">Side · type</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Filled</th><th scope="col">Status</th><th scope="col">Updated</th></tr>
-            </thead>
+            <thead><tr><th scope="col">Symbol</th><th scope="col">Freshness</th><th scope="col">Last candle</th><th scope="col">Detail</th></tr></thead>
             <tbody>
-              {%- for order in activity.orders %}
-              <tr>
-                <td class="mono id">{{ order.client_order_id }}</td><td class="sym">{{ order.symbol }}</td><td>{{ order.side }} · {{ order.order_type }}</td><td class="num">{{ order.quantity }}</td><td class="num">{{ order.filled }}</td>
-                <td>{{ ui.pill(order.status) }}{% if order.status.word == "unknown" %}<span class="rule">Look it up by client order ID. Never resubmit it.</span>{% endif %}</td>
-                <td>{{ ui.stamp(order.updated) }}</td>
-              </tr>
+              {%- for item in view.watch_feed.rows %}
+              <tr><th scope="row">{{ item.symbol }}</th><td>{{ ui.pill(item.status) }}</td><td>{{ ui.stamp(item.last_candle) }}</td><td>{{ item.detail or "No additional detail recorded." }}</td></tr>
               {%- endfor %}
             </tbody>
           </table>
         </div>
-        {{ ui.more(activity.counts.orders, activity.limit, "orders") }}
+        {{ ui.more(view.watch_feed.total, view.watch_feed.limit, "watch-only symbols") }}
         {%- else %}
-        <p class="empty"><span class="count">0</span> orders recorded by this process.</p>
+        <p class="empty">No watch-only symbol freshness rows are available.</p>
         {%- endif %}
       </div>
-      <div class="panel">
-        <h3 id="fills-heading">Recent fills</h3>
-        {%- if activity.fills %}
-        <div class="table-wrap" role="region" aria-labelledby="fills-heading" tabindex="0">
-          <table class="data">
-            <thead>
-              <tr><th scope="col">Fill ID</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Price</th><th scope="col" class="num">Fee</th><th scope="col">Time</th></tr>
-            </thead>
-            <tbody>
-              {%- for fill in activity.fills %}
-              <tr><td class="mono id">{{ fill.fill_id }}</td><td class="sym">{{ fill.symbol }}</td><td>{{ fill.side }}</td><td class="num">{{ fill.quantity }}</td><td class="num">{{ fill.price }}</td><td class="num">{{ fill.fee }} {{ fill.fee_asset }}</td><td>{{ ui.stamp(fill.occurred) }}</td></tr>
-              {%- endfor %}
-            </tbody>
-          </table>
-        </div>
-        {{ ui.more(activity.counts.fills, activity.limit, "fills") }}
-        {%- else %}
-        <p class="empty"><span class="count">0</span> fills recorded by this process.</p>
-        {%- endif %}
-      </div>
-      <div class="panel">
-        <h3 id="signals-heading">Recent signals</h3>
-        {%- if activity.signals %}
-        <div class="table-wrap" role="region" aria-labelledby="signals-heading" tabindex="0">
-          <table class="data">
-            <thead>
-              <tr><th scope="col">Signal ID</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col" class="num">Quantity</th><th scope="col">Strategy version</th><th scope="col">Created</th></tr>
-            </thead>
-            <tbody>
-              {%- for signal in activity.signals %}
-              <tr><td class="mono id">{{ signal.signal_id }}</td><td class="sym">{{ signal.symbol }}</td><td>{{ signal.side }}</td><td class="num">{{ signal.quantity }}</td><td class="mono">{{ signal.strategy_version }}</td><td>{{ ui.stamp(signal.created) }}</td></tr>
-              {%- endfor %}
-            </tbody>
-          </table>
-        </div>
-        {{ ui.more(activity.counts.signals, activity.limit, "signals") }}
-        {%- else %}
-        <p class="empty"><span class="count">0</span> signals recorded by this process.</p>
-        {%- endif %}
-      </div>
-    </section>
 
     <section id="alerts" class="block" aria-labelledby="alerts-heading">
       <div class="block-head">
         <h2 id="alerts-heading">Alerts &amp; errors</h2>
-        <p class="block-note">Newest first, since this process started.</p>
+        <p class="block-note">Newest first, since this process started. Dismissing an alert records review; it does not resolve the condition.</p>
       </div>
       <div class="split split-wide">
         <div class="panel">
@@ -354,6 +333,77 @@
         <p class="empty">{{ ui.absent("No strategy heartbeat is registered.") }}</p>
         {%- endif %}
       </div>
+    </section>
+    </section>
+
+    <section id="activity" class="block" aria-labelledby="activity-heading">
+      <div class="block-head">
+        <h2 id="activity-heading">Recent activity</h2>
+        <p class="block-note">Source: {{ activity.source }}. Snapshot age is shown in the header. Persisted history, risk decisions, and order lineage are under <a href="/operator/history/orders">Order history</a>.</p>
+      </div>
+      {%- if not activity.available %}
+      <p class="notice tone-unknown"><span class="mark" aria-hidden="true">○</span> Process activity is unavailable in this snapshot. No activity or zero state can be confirmed.</p>
+      {%- else %}
+      <p class="note">Signals, orders, and fills below are held by this process since it started. They are separate from persisted history.</p>
+      <dl class="lineage">
+        <div><dt>Signals</dt><dd><span class="count">{{ activity.counts.signals }}</span></dd></div>
+        <div><dt>Risk decisions</dt><dd>{{ ui.absent("not held here") }} <a href="/operator/history/risk-decisions">History</a></dd></div>
+        <div><dt>Orders</dt><dd><span class="count">{{ activity.counts.orders }}</span></dd></div>
+        <div><dt>Fills</dt><dd><span class="count">{{ activity.counts.fills }}</span></dd></div>
+      </dl>
+      <div class="panel">
+        <h3 id="orders-heading">Recent orders</h3>
+        {%- if activity.orders %}
+        <div class="table-wrap" role="region" aria-labelledby="orders-heading" tabindex="0">
+          <table class="data">
+            <thead><tr><th scope="col">Client order ID</th><th scope="col">Symbol</th><th scope="col">Side · type</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Filled</th><th scope="col">Status</th><th scope="col">Updated</th></tr></thead>
+            <tbody>
+              {%- for order in activity.orders %}
+              <tr>
+                <td class="mono id">{% if order.href %}<a href="{{ order.href }}">{{ order.client_order_id }}</a>{% else %}{{ order.client_order_id }}{% endif %}</td><td class="sym">{{ order.symbol }}</td><td>{{ order.side }} · {{ order.order_type }}</td><td class="num">{{ order.quantity }}</td><td class="num">{{ order.filled }}</td>
+                <td>{{ ui.pill(order.status) }}{% if order.status.word in ["unknown", "pending_submit"] %}<span class="rule">Look it up by client order ID. Never resubmit it.</span>{% endif %}</td>
+                <td>{{ ui.stamp(order.updated) }}</td>
+              </tr>
+              {%- endfor %}
+            </tbody>
+          </table>
+        </div>
+        {{ ui.more(activity.counts.orders, activity.limit, "orders") }}
+        {%- else %}<p class="empty"><span class="count">0</span> orders recorded by this process.</p>{% endif %}
+      </div>
+      <div class="panel">
+        <h3 id="fills-heading">Recent fills</h3>
+        {%- if activity.fills %}
+        <div class="table-wrap" role="region" aria-labelledby="fills-heading" tabindex="0">
+          <table class="data">
+            <thead><tr><th scope="col">Fill ID</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Price</th><th scope="col" class="num">Fee</th><th scope="col">Time</th></tr></thead>
+            <tbody>
+              {%- for fill in activity.fills %}
+              <tr><td class="mono id">{{ fill.fill_id }}</td><td class="sym">{{ fill.symbol }}</td><td>{{ fill.side }}</td><td class="num">{{ fill.quantity }}</td><td class="num">{{ fill.price }}</td><td class="num">{{ fill.fee }} {{ fill.fee_asset }}</td><td>{{ ui.stamp(fill.occurred) }}</td></tr>
+              {%- endfor %}
+            </tbody>
+          </table>
+        </div>
+        {{ ui.more(activity.counts.fills, activity.limit, "fills") }}
+        {%- else %}<p class="empty"><span class="count">0</span> fills recorded by this process.</p>{% endif %}
+      </div>
+      <div class="panel">
+        <h3 id="signals-heading">Recent signals</h3>
+        {%- if activity.signals %}
+        <div class="table-wrap" role="region" aria-labelledby="signals-heading" tabindex="0">
+          <table class="data">
+            <thead><tr><th scope="col">Signal ID</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col" class="num">Quantity</th><th scope="col">Strategy version</th><th scope="col">Created</th></tr></thead>
+            <tbody>
+              {%- for signal in activity.signals %}
+              <tr><td class="mono id">{{ signal.signal_id }}</td><td class="sym">{{ signal.symbol }}</td><td>{{ signal.side }}</td><td class="num">{{ signal.quantity }}</td><td class="mono">{{ signal.strategy_version }}</td><td>{{ ui.stamp(signal.created) }}</td></tr>
+              {%- endfor %}
+            </tbody>
+          </table>
+        </div>
+        {{ ui.more(activity.counts.signals, activity.limit, "signals") }}
+        {%- else %}<p class="empty"><span class="count">0</span> signals recorded by this process.</p>{% endif %}
+      </div>
+      {%- endif %}
     </section>
   </main>
 </div>

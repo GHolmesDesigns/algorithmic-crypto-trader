@@ -730,6 +730,50 @@ time,
   color: var(--tone-fg);
 }
 
+.attention-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attention-item {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 0.35rem solid var(--tone-fg);
+}
+
+.attention-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.attention-heading h3 {
+  font-size: 1rem;
+}
+
+.attention-next {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+}
+
+.watch-feed .panel-head p {
+  margin: 0;
+}
+
+.attention-item a,
+.watch-feed a {
+  text-underline-offset: 0.2em;
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from api import routes as operator_routes
 from api.alerts import Alert, AlertRouter, build_alert_router
 from api.dashboard import ROW_LIMIT, build_dashboard
 from app.main import create_app
@@ -114,6 +115,39 @@ async def page(application, headers=OPERATOR, path="/operator") -> str:
         response = await client.get(path, headers=headers)
     assert response.status_code == 200, response.text
     return response.text
+
+
+def attention_snapshot(**updates):
+    """Complete, deterministic operator read model for Overview attention cases."""
+
+    snapshot = {
+        "updated_at": "2026-09-27T12:00:00+00:00",
+        "application": {"status": "healthy", "heartbeat": "2026-09-27T12:00:00+00:00"},
+        "trading": {"mode": "paper", "credential_scope": "view"},
+        "connectivity": {"status": "healthy"},
+        "risk": {"kill_switch": "running", "transitions": []},
+        "recovery": {"status": "reconciled", "detail": "startup recovery complete"},
+        "reconciliation": {"last_result": "clean", "last_discrepancies": 0, "runs": 1},
+        "runtime": {"status": "running", "detail": "paper runtime running"},
+        "watch_feed": {"enabled": False, "symbols": []},
+        "portfolio": {
+            "status": "current",
+            "detail": "reported by the broker",
+            "balances": [],
+            "positions": [],
+            "pnl": {"status": "unavailable", "detail": "no trustworthy valuation is available"},
+        },
+        "orders": [],
+        "fills": [],
+        "signals": [],
+        "strategies": [],
+        "alerts": [],
+        "errors": [],
+        "alert_destinations": [],
+        "unresolved_orders": {"readable": True, "orders": []},
+    }
+    snapshot.update(updates)
+    return snapshot
 
 
 def section(html: str, anchor: str) -> str:
@@ -506,9 +540,54 @@ async def test_activity_counts_orders_and_flags_unknown_orders(monkeypatch):
     ]:
         assert has_pill(activity, status, tone)
     assert "◆" not in activity
-    assert activity.count("Never resubmit it.") == 1
+    assert activity.count("Never resubmit it.") == 2
     assert str(orders[0].request.client_order_id) in activity
     assert '<span class="count">0</span> fills recorded by this process.' in activity
+
+
+@pytest.mark.asyncio
+async def test_operator_overview_links_saved_unknown_orders_without_showing_admin_close_controls(
+    monkeypatch,
+):
+    client_order_id = "00000000-0000-0000-0000-000000000009"
+
+    def add_saved_orders(_request, snapshot):
+        snapshot["unresolved_orders"] = {
+            "readable": True,
+            "orders": [
+                {
+                    "status": "unknown",
+                    "request": {"client_order_id": client_order_id, "symbol": "BTC-USD"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(operator_routes, "_add_unresolved_orders", add_saved_orders)
+    html = await page(dashboard_app(monkeypatch), headers=OPERATOR)
+    attention = section(html, "overview")
+    assert f'href="/operator/history/orders/{client_order_id}"' in attention
+    assert "Never resubmit it." in attention
+    assert ">Investigate</a>" in attention
+    assert 'action="/operator/orders/close"' not in html
+
+
+@pytest.mark.asyncio
+async def test_overview_orders_four_sections_and_separates_empty_process_activity(monkeypatch):
+    html = await page(dashboard_app(monkeypatch, broker=HealthyBroker()))
+    positions = [
+        html.index('<section id="overview"'),
+        html.index('<section id="portfolio"'),
+        html.index('<section id="operational-checks"'),
+        html.index('<section id="activity"'),
+    ]
+    assert positions == sorted(positions)
+    assert "Needs attention" in section(html, "overview")
+    activity = section(html, "activity")
+    assert "Source: process-local operator snapshot" in activity
+    assert "Persisted history" in activity
+    assert '<span class="count">0</span> signals recorded by this process.' in activity
+    assert "This is not a zero balance." not in section(html, "portfolio")
+    assert "No active incident is recorded" not in activity
 
 
 def test_long_lists_are_capped_with_a_note():
@@ -745,6 +824,169 @@ def test_days_old_values_show_days():
     assert view["header"]["updated"].age == "2 d 3 h ago"
 
 
+def test_overview_distinguishes_no_incident_from_an_unavailable_read_model_and_no_activity():
+    now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    view = build_dashboard(attention_snapshot(), role="operator", now=now)
+    assert view["attention"]["available"] is True
+    assert view["attention"]["status"].word == "no active incident recorded"
+    assert "not a readiness verdict" in view["attention"]["detail"]
+    assert view["activity"]["available"] is True
+    assert view["activity"]["counts"] == {"signals": 0, "orders": 0, "fills": 0}
+
+    unavailable = build_dashboard({}, role="operator", now=now)
+    assert unavailable["attention"]["available"] is False
+    assert unavailable["attention"]["status"].word == "read model unavailable"
+    assert "incomplete" in unavailable["attention"]["detail"]
+    assert unavailable["activity"]["available"] is False
+
+
+@pytest.mark.parametrize("state", ["paused", "halted"])
+def test_safety_attention_uses_recorded_cause_or_says_cause_is_unavailable(state):
+    snapshot = attention_snapshot(risk={"kill_switch": state, "transitions": []})
+    view = build_dashboard(snapshot, role="operator")
+    item = next(row for row in view["attention"]["rows"] if row["title"] == f"Kill switch {state}")
+    assert "Cause unavailable" in item["detail"]
+    assert "unknown order" not in item["detail"].lower()
+    assert item["href"] == "#safety"
+
+
+def test_safety_attention_uses_a_recorded_manual_transition():
+    snapshot = attention_snapshot(
+        risk={
+            "kill_switch": "paused",
+            "transitions": [
+                {
+                    "from": "running",
+                    "to": "paused",
+                    "actor": "operator",
+                    "automatic": False,
+                    "reason": "operator pause",
+                    "created_at": "2026-09-27T11:59:00+00:00",
+                }
+            ],
+        }
+    )
+    item = build_dashboard(snapshot, role="operator")["attention"]["rows"][0]
+    assert "Recorded change: running to paused by Operator" in item["detail"]
+    assert "operator pause" in item["detail"]
+
+
+def test_unknown_and_pending_orders_link_to_persisted_detail_and_never_suggest_resubmission():
+    unknown_id = "00000000-0000-0000-0000-000000000001"
+    pending_id = "00000000-0000-0000-0000-000000000002"
+    snapshot = attention_snapshot(
+        unresolved_orders={
+            "readable": True,
+            "orders": [
+                {
+                    "status": "unknown",
+                    "request": {"client_order_id": unknown_id, "symbol": "BTC-USD"},
+                },
+                {
+                    "status": "pending_submit",
+                    "request": {"client_order_id": pending_id, "symbol": "ETH-USD"},
+                },
+            ],
+        }
+    )
+    view = build_dashboard(snapshot, role="operator")
+    by_title = {row["title"]: row for row in view["attention"]["rows"]}
+    unknown = by_title["Unknown order"]
+    pending = by_title["Pending submission order"]
+    assert unknown["href"] == f"/operator/history/orders/{unknown_id}"
+    assert pending["href"] == f"/operator/history/orders/{pending_id}"
+    assert "Never resubmit it." in unknown["next_step"]
+    assert "Never resubmit it." in pending["next_step"]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_tone", "detail"),
+    [
+        ("diverged", "crit", "2 difference(s)"),
+        ("unavailable", "crit", "could not read the broker"),
+    ],
+)
+def test_reconciliation_attention_keeps_divergence_and_unavailability_distinct(
+    result, expected_tone, detail
+):
+    snapshot = attention_snapshot(
+        reconciliation={"last_result": result, "last_discrepancies": 2, "runs": 3}
+    )
+    item = next(
+        row
+        for row in build_dashboard(snapshot, role="operator")["attention"]["rows"]
+        if row["title"] == "Reconciliation needs review"
+    )
+    assert item["status"].tone == expected_tone
+    assert detail in item["detail"]
+    assert item["href"] == "/operator/history/discrepancies"
+
+
+def test_watch_feed_attention_uses_per_symbol_freshness_and_names_its_boundary():
+    snapshot = attention_snapshot(
+        watch_feed={
+            "enabled": True,
+            "symbols": [
+                {
+                    "symbol": "BTC-USD",
+                    "state": "fresh",
+                    "last_candle_at": "2026-09-27T11:59:00+00:00",
+                },
+                {"symbol": "ETH-USD", "state": "stale", "detail": "old candle"},
+                {"symbol": "SOL-USD", "state": "unavailable", "detail": "request failed"},
+                {"symbol": "LTC-USD", "state": "not_collected"},
+            ],
+        }
+    )
+    view = build_dashboard(snapshot, role="operator")
+    attention = [row for row in view["attention"]["rows"] if row["title"].startswith("Watch-only")]
+    assert {row["title"] for row in attention} == {
+        "Watch-only data stale: ETH-USD",
+        "Watch-only data unavailable: SOL-USD",
+        "Watch-only data not collected: LTC-USD",
+    }
+    assert all(row["href"] == "/operator/watchlist" for row in attention)
+    assert all("does not drive trading" in row["next_step"] for row in attention)
+    assert view["watch_feed"]["status"].word == "unavailable"
+
+
+def test_portfolio_states_keep_last_known_unavailable_and_confirmed_zero_separate():
+    current = build_dashboard(attention_snapshot(), role="operator")["portfolio"]
+    assert current["status"].word == "current"
+    assert current["source"] == "broker snapshot"
+    assert current["balances"] == [] and current["positions"] == []
+
+    last_known = build_dashboard(
+        attention_snapshot(
+            portfolio={
+                "status": "unavailable",
+                "detail": "refresh failed",
+                "balances": [{"asset": "USD", "available": "0", "hold": "0"}],
+                "positions": [],
+                "pnl": {"status": "unavailable", "detail": "no trusted valuation"},
+            }
+        ),
+        role="operator",
+    )["portfolio"]
+    assert last_known["status"].word == "last known"
+    assert last_known["source"] == "last-known broker snapshot"
+
+    unavailable = build_dashboard(
+        attention_snapshot(
+            portfolio={
+                "status": "unavailable",
+                "detail": "refresh failed",
+                "balances": [],
+                "positions": [],
+                "pnl": {"status": "unavailable", "detail": "no trusted valuation"},
+            }
+        ),
+        role="operator",
+    )["portfolio"]
+    assert unavailable["status"].tone == "unknown"
+    assert unavailable["source"] == "unavailable"
+
+
 def test_live_mode_badge_is_critical():
     view = build_dashboard({"trading": {"mode": "live"}}, role="operator")
     assert view["header"]["mode_tone"] == "crit"
@@ -948,6 +1190,9 @@ async def test_a_dismissed_failed_delivery_stays_on_its_row_but_not_on_the_tile(
     assert has_pill(card(html, "Alerts"), "0 new", "neutral")
     assert "delivery attempt(s) failed" not in card(html, "Alerts")
     assert "Delivery to Email failed." in section(html, "alerts")
+    assert "Dismissing an alert records review; it does not resolve the condition." in section(
+        html, "alerts"
+    )
 
 
 @pytest.mark.asyncio
@@ -960,6 +1205,23 @@ async def test_dismissal_keeps_the_alert_text_and_the_kill_switch(monkeypatch):
     assert state.kill_switch.state == before
     assert state.snapshot.errors == errors
     assert state.snapshot.alerts[0]["message"] == "feed lost 0"
+
+
+@pytest.mark.asyncio
+async def test_overview_refresh_does_not_dismiss_alerts_or_change_the_kill_switch(monkeypatch):
+    application = dashboard_app(monkeypatch, broker=HealthyBroker())
+    state = application.state.operator_state
+    await state.emit_alert(
+        Alert(condition="market_data_disconnected", severity="warning", message="feed lost")
+    )
+    state.kill_switch.set_state(KillSwitchState.PAUSED)
+    html = await page(application, headers=ADMIN)
+    assert "feed lost" in section(html, "alerts")
+    assert "Dismissing an alert records review; it does not resolve the condition." in section(
+        html, "alerts"
+    )
+    assert state.kill_switch.state is KillSwitchState.PAUSED
+    assert "dismissed_at" not in state.snapshot.alerts[0]
 
 
 @pytest.mark.asyncio

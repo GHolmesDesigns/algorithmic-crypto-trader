@@ -187,8 +187,9 @@ async def _render_dashboard(request: Request, template: str) -> Response:
     state = _operator_state(request)
     await state.refresh()
     snapshot = state.to_dict()
-    if role == "admin":
-        _add_unresolved_orders(request, snapshot)
+    # Pending/unknown order status is visible to both operator roles. Only the
+    # administrator receives the separate close control model below.
+    _add_unresolved_orders(request, snapshot)
     return templates.TemplateResponse(
         request=request,
         name=template,
