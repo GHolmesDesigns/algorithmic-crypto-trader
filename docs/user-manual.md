@@ -368,12 +368,26 @@ The **Watchlist** page saves up to nine coins you want to chart without
 trading them. Open it from the dashboard's navigation or go to
 `/operator/watchlist`.
 
-Enter a Coinbase product such as `ETH-USD` and select **Add to watchlist**.
-Before saving, the service asks Coinbase's public product list, with no
-credentials, whether the product exists and is trading. It refuses, and says
-why, when the product is unknown, delisted, or trading-disabled; when the list
-already holds nine coins; when the coin is already on it; and when Coinbase
-cannot confirm the product. A coin that could not be confirmed is not saved.
+Select **New Coin**, enter a name, symbol, or canonical product such as
+`Bitcoin`, `BTC`, or `BTC-USD`, and search the loaded Coinbase catalog. Loading
+or refreshing it is an explicit action, limited to ten credential-free public
+reads and ten seconds. Search uses the in-memory catalog; typing and selecting
+do not call Coinbase or save anything. If more than one product matches, choose
+the exact candidate and select **Confirm selected coin**. The page shows its
+name, symbol, USD pair, availability, source, freshness, and whether it is
+already watched. **Cancel** returns to the New Coin control. Search remains
+available without JavaScript.
+
+When name search is unavailable or has no match, enter an exact product such as
+`ETH-USD` in the fallback form. Before saving any selection, the service checks
+the exact product with Coinbase. It refuses and explains why when the product
+is unknown, delisted, trading-disabled, or invalid; when the list already holds
+nine coins; when the coin is already watched; or when the save fails. A
+concurrent duplicate is refused by the server. After a successful add, the
+page names the canonical saved coin and reports its current collection state;
+the saved list remains after reload. Use **Up**, **Down**, and **Remove** to
+reorder or drop a coin. Every change is recorded as a `watchlist_change` event,
+with the role that made it, under **System events**.
 Use **Up**, **Down**, and **Remove** to reorder or drop a coin. Every change is
 recorded as a `watchlist_change` event, with the role that made it, under
 **System events**.
@@ -940,9 +954,11 @@ provider, credential, live confirmation, or reconciliation interval.
 | `POST /operator/emergency-stop` | Operator | Persist `halted`. Unchanged if already halted. |
 | `GET /operator/rearm` | Administrator | Re-arm review page: active warnings, recent kill-switch changes, and the checklist form. |
 | `POST /operator/rearm` | Administrator | Persist `running` after the review. Requires every checklist item and a reason. The only route that lowers the kill switch. |
-| `GET /operator/watchlist` | Operator | The saved watchlist with each coin's feed state, as a page or JSON. Takes no parameters. |
+| `GET /operator/watchlist` | Operator | The saved watchlist with each coin's feed state, as a page or JSON. The HTML page accepts `q` for a local catalog search and `added` for the post-save confirmation; the JSON view takes no parameters. |
 | `GET /operator/markets` | Operator | Server-drawn one-to-nine-coin grid from stored candles. Parameters: `c` (shareable comma-separated `*-USD` symbols), `window`, and `interval`; invalid, duplicate, or oversized layouts are refused. |
 | `POST /operator/watchlist/add` | Operator | Form or JSON `symbol`. Refuses unknown, delisted, or trading-disabled products, duplicates, and a tenth coin. |
+| `GET /operator/watchlist/catalog` | Operator | Local search `q` over the loaded catalog; includes source/as-of and already-watched status. Makes no provider request. |
+| `POST /operator/watchlist/catalog/refresh` | Operator | Explicitly load or refresh the bounded in-memory public catalog. Uses at most 10 public reads and 10 seconds; never enables the feed or trades. |
 | `POST /operator/watchlist/remove` | Operator | Form or JSON `symbol`. |
 | `POST /operator/watchlist/reorder` | Operator | JSON `order` (every coin once), or `symbol` with `direction` `up` or `down`. |
 | `GET /operator/markets/candles` | Operator | Stored candles as bars for charts, as JSON only. Parameters: `symbols` (up to nine, comma-separated, default the watchlist), `window` (`24h`, `7d`, `30d`, `90d`), `interval` (`15m`, `1h`, `6h`, `1d`; default the finest that keeps a series within 300 points). Each coin returns its bars, gaps, source, and one freshness state: `fresh`, `stale`, `not_collected`, or `unavailable`. Refuses anything beyond the caps with `400`. |

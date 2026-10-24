@@ -24,6 +24,7 @@ from app.watch_feed import (
     WatchOnlyFeed,
     build_watch_client,
 )
+from brokers.coinbase_catalog import CoinbaseCatalogProduct
 from core.guards import StartupGuardError
 from core.models import Candle, KillSwitchState
 from core.resilience import CircuitBreaker, TokenBucketRateLimiter
@@ -39,7 +40,7 @@ from data.watchlist import (
 )
 from db.models import Base, MarketCandleRecord, SystemEventRecord, WatchlistRecord
 from sqlalchemy import create_engine, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 from tests.operator_support import history_app
@@ -839,9 +840,154 @@ async def test_name_search_results_keep_exact_symbol_add_fallback(tmp_path) -> N
         page_response = await client.get(f"{PATH}?q=Bitcoin", headers=BROWSER)
     assert page_response.status_code == 200
     assert 'value="BTC-USD"' in page_response.text
-    assert "Add BTC" in page_response.text
+    assert "Confirm selected coin" in page_response.text
     assert 'placeholder="ETH-USD"' in page_response.text
     assert 'action="/operator/watchlist/add"' in page_response.text
+
+
+async def test_name_search_requires_an_explicit_candidate_and_confirms_saved_state(
+    tmp_path,
+) -> None:
+    application = watch_app(tmp_path)
+    async with client_for(application) as client:
+        await client.post(f"{PATH}/catalog/refresh", headers=OPERATOR)
+        for query in ("Bitcoin", "btc", "BTC-USD"):
+            page = await client.get(f"{PATH}?q={query}", headers=BROWSER)
+            assert page.status_code == 200
+            assert 'type="radio" name="symbol" value="BTC-USD"' in page.text
+            assert "required" in page.text
+            assert "Confirm selected coin" in page.text
+            assert "Typing, searching or selecting never saves" in page.text
+            assert "Coinbase public market data" in page.text
+            assert "Select this product" in page.text
+        assert application.state.watchlist.symbols() == ()
+        assert application.state.watch_client.asked == []
+
+        selected = await client.post(
+            f"{PATH}/add", data={"symbol": "BTC-USD", "q": "bitcoin"}, headers=BROWSER
+        )
+        assert (selected.status_code, selected.headers["location"]) == (
+            303,
+            f"{PATH}?added=BTC-USD#added-coin",
+        )
+        saved = await client.get(selected.headers["location"], headers=BROWSER)
+        reloaded = await client.get(PATH, headers=BROWSER)
+
+    assert application.state.watchlist.symbols() == ("BTC-USD",)
+    assert "<strong>BTC-USD</strong> is on the watchlist" in saved.text
+    assert "Collection state" in saved.text and "The watch-only feed is off" in saved.text
+    assert "BTC-USD" in reloaded.text
+    assert application.state.watch_client.asked == ["BTC-USD"]
+    assert application.state.watch_client.catalog_calls == [(500, 0)]
+    assert application.state.kill_switch.state is KillSwitchState.RUNNING
+    assert application.state.startup_settings.trading_mode.value == "backtest"
+    assert parse_paper_symbols({}) == ("BTC-USD",)
+    assert getattr(application.state, "watch_feed", None) is None
+
+
+async def test_ambiguous_names_show_distinct_products_and_escape_catalog_text(tmp_path) -> None:
+    application = watch_app(tmp_path)
+    await application.state.watch_catalog.refresh()
+    application.state.watch_catalog._products = (
+        *application.state.watch_catalog._products,
+        CoinbaseCatalogProduct(
+            product_id="WBTC-USD",
+            base_symbol="WBTC",
+            display_name="Wrapped <Bitcoin>",
+            quote_currency="USD",
+            availability="online",
+        ),
+    )
+    async with client_for(application) as client:
+        response = await client.get(f"{PATH}?q=bitcoin", headers=BROWSER)
+
+    assert response.status_code == 200
+    assert 'value="BTC-USD"' in response.text
+    assert 'value="WBTC-USD"' in response.text
+    assert "Wrapped &lt;Bitcoin&gt;" in response.text
+    assert "Wrapped <Bitcoin>" not in response.text
+    assert "Confirm selected coin" in response.text
+    assert application.state.watchlist.symbols() == ()
+
+
+async def test_stale_catalog_keeps_results_and_labels_freshness(tmp_path) -> None:
+    application = watch_app(tmp_path)
+    await application.state.watch_catalog.refresh()
+    application.state.watch_catalog._loaded_at = datetime.now(UTC) - timedelta(minutes=16)
+    async with client_for(application) as client:
+        response = await client.get(f"{PATH}?q=BTC", headers=BROWSER)
+
+    assert "Stale" in response.text
+    assert 'value="BTC-USD"' in response.text
+    assert application.state.watch_client.catalog_calls == [(500, 0)]
+
+
+async def test_already_watched_candidates_are_identified_and_not_selectable(tmp_path) -> None:
+    application = watch_app(tmp_path)
+    application.state.watchlist.add("BTC-USD", role="operator")
+    async with client_for(application) as client:
+        await client.post(f"{PATH}/catalog/refresh", headers=OPERATOR)
+        response = await client.get(f"{PATH}?q=bitcoin", headers=BROWSER)
+
+    assert response.status_code == 200
+    assert "Already watched" in response.text
+    assert 'value="BTC-USD" disabled' in response.text
+    assert application.state.watchlist.symbols() == ("BTC-USD",)
+    assert application.state.watch_client.catalog_calls == [(500, 0)]
+
+
+async def test_candidate_search_cancel_returns_to_new_coin_and_keyboard_controls_are_native(
+    tmp_path,
+) -> None:
+    application = watch_app(tmp_path)
+    await application.state.watch_catalog.refresh()
+    async with client_for(application) as client:
+        page = await client.get(f"{PATH}?q=bitcoin", headers=BROWSER)
+
+    assert 'id="new-coin-trigger"' in page.text
+    assert 'href="#new-coin-trigger">Cancel</a>' in page.text
+    assert 'id="new-coin"' in page.text and 'tabindex="-1"' in page.text
+    assert 'type="radio" name="symbol" value="BTC-USD"' in page.text
+    assert (
+        ".coin-candidate input:focus-visible + label"
+        in Path("api/templates/operator.css").read_text()
+    )
+    assert "min-height: 2.75rem" in Path("api/templates/operator.css").read_text()
+    assert application.state.watchlist.symbols() == ()
+
+
+async def test_failed_save_keeps_watchlist_unchanged_and_reports_store_failure(tmp_path) -> None:
+    application = watch_app(tmp_path)
+
+    def fail_save(symbol, *, role):
+        raise SQLAlchemyError("local persistence unavailable")
+
+    application.state.watchlist.add = fail_save
+    async with client_for(application) as client:
+        response = await client.post(f"{PATH}/add", data={"symbol": "BTC-USD"}, headers=BROWSER)
+
+    assert response.status_code == 503
+    assert "could not be read or saved" in response.text
+    assert application.state.watchlist.symbols() == ()
+
+
+async def test_concurrent_duplicate_conflict_is_a_safe_refusal(tmp_path, monkeypatch) -> None:
+    application = watch_app(tmp_path)
+    store = application.state.watchlist
+    add = store.add
+
+    def conflict_after_another_request_commits(symbol, *, role):
+        add(symbol, role=role)
+        raise IntegrityError("insert", {}, RuntimeError("unique conflict"))
+
+    monkeypatch.setattr(store, "add", conflict_after_another_request_commits)
+    async with client_for(application) as client:
+        response = await client.post(f"{PATH}/add", json={"symbol": "BTC-USD"}, headers=OPERATOR)
+
+    assert response.status_code == 422
+    assert "added by another request" in response.json()["detail"]["errors"][0]
+    assert store.symbols() == ("BTC-USD",)
+    assert len(events(store.session_factory)) == 1
 
 
 async def test_catalog_candidate_still_passes_through_existing_add_validation(tmp_path):
@@ -882,7 +1028,10 @@ async def test_the_form_adds_moves_and_removes_and_redirects(tmp_path) -> None:
     application = watch_app(tmp_path)
     async with client_for(application) as client:
         added = await client.post(f"{PATH}/add", data={"symbol": "ETH-USD"}, headers=BROWSER)
-        assert (added.status_code, added.headers["location"]) == (303, PATH)
+        assert (added.status_code, added.headers["location"]) == (
+            303,
+            f"{PATH}?added=ETH-USD#added-coin",
+        )
         await client.post(f"{PATH}/add", data={"symbol": "SOL-USD"}, headers=BROWSER)
         moved = await client.post(
             f"{PATH}/reorder", data={"symbol": "SOL-USD", "direction": "up"}, headers=BROWSER
@@ -897,7 +1046,7 @@ async def test_the_form_adds_moves_and_removes_and_redirects(tmp_path) -> None:
         assert 'href="/operator/watchlist" aria-current="page">Watched coins</a>' in body
         assert "The watch-only feed is off" in body
         assert "Watched coins (2 of 9)" in body
-        assert 'href="#new-coin">New Coin</a>' in body
+        assert 'id="new-coin-trigger" href="#new-coin"' in body
         assert '<section class="panel" id="new-coin"' in body
         assert 'action="/operator/watchlist/add"' in body
         assert 'name="symbol"' in body

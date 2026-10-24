@@ -54,6 +54,10 @@ APPEARANCE_SCRIPT_PATH = "/operator/static/operator-appearance.js"
 APPEARANCE_SCRIPT_FILE = (
     Path(__file__).resolve().parent / "static" / "dashboard" / "operator-appearance.js"
 )
+WATCHLIST_PICKER_SCRIPT_PATH = "/operator/static/watchlist-picker.js"
+WATCHLIST_PICKER_SCRIPT_FILE = (
+    Path(__file__).resolve().parent / "static" / "dashboard" / "watchlist-picker.js"
+)
 # The file is cached for a year, so its address changes whenever its content does.
 templates.env.globals["utc_clock_script_url"] = (
     f"{UTC_CLOCK_PATH}?v={hashlib.sha256(UTC_CLOCK_FILE.read_bytes()).hexdigest()[:12]}"
@@ -64,6 +68,10 @@ templates.env.globals["workspace_script_url"] = (
 templates.env.globals["appearance_script_url"] = (
     f"{APPEARANCE_SCRIPT_PATH}?v="
     f"{hashlib.sha256(APPEARANCE_SCRIPT_FILE.read_bytes()).hexdigest()[:12]}"
+)
+templates.env.globals["watchlist_picker_script_url"] = (
+    f"{WATCHLIST_PICKER_SCRIPT_PATH}?v="
+    f"{hashlib.sha256(WATCHLIST_PICKER_SCRIPT_FILE.read_bytes()).hexdigest()[:12]}"
 )
 
 
@@ -122,6 +130,19 @@ def appearance_script() -> FileResponse:
 
     return FileResponse(
         APPEARANCE_SCRIPT_FILE,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(WATCHLIST_PICKER_SCRIPT_PATH, include_in_schema=False)
+def watchlist_picker_script() -> FileResponse:
+    """Serve the small optional loading indicator for the watchlist catalog form."""
+    return FileResponse(
+        WATCHLIST_PICKER_SCRIPT_FILE,
         media_type="application/javascript",
         headers={
             "Cache-Control": "public, max-age=31536000, immutable",

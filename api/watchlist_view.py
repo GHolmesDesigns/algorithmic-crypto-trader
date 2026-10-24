@@ -38,6 +38,7 @@ def build_watchlist_view(
     unavailable: str | None = None,
     add_form: Mapping[str, str] | None = None,
     catalog: Mapping[str, Any] | None = None,
+    added_symbol: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     moment = now or datetime.now(UTC)
@@ -58,6 +59,7 @@ def build_watchlist_view(
         "feed_budget": _BUDGET,
         "can_toggle": False,
         "full": False,
+        "saved_coin": None,
         "catalog": catalog
         or {
             "status": "not_loaded",
@@ -102,6 +104,10 @@ def build_watchlist_view(
                 "added_by": item["added_by"],
             }
         )
+    if added_symbol is not None:
+        saved = next((row for row in view["rows"] if row["symbol"] == added_symbol), None)
+        if saved is not None:
+            view["saved_coin"] = saved
     return view
 
 
