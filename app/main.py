@@ -29,6 +29,7 @@ from api.system_events import (
     RESTART_EVENT,
     SqlAlchemySystemEventJournal,
 )
+from api.system_routes import router as system_router
 from api.trends import SqlAlchemyTrends
 from api.watchlist_routes import router as watchlist_router
 from brokers.http import describe_provider_failure
@@ -113,6 +114,7 @@ def create_app(
     application.router.routes.extend(markets_page_router.routes)
     application.router.routes.extend(research_router.routes)
     application.router.routes.extend(soak_router.routes)
+    application.router.routes.extend(system_router.routes)
     application.router.routes.extend(watchlist_router.routes)
     switch_path = os.environ.get("KILL_SWITCH_FILE")
     application.state.kill_switch = KillSwitch(Path(switch_path) if switch_path else None)

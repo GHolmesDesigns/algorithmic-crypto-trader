@@ -3,7 +3,7 @@ const vm = require("vm");
 
 const source = fs.readFileSync(process.argv[2], "utf8");
 
-function boot(storage) {
+function boot(storage, pathname = "/operator") {
   const classes = new Set();
   const listeners = {};
   const attributes = { "aria-expanded": "true" };
@@ -15,6 +15,20 @@ function boot(storage) {
     addEventListener(name, handler) { listeners[name] = handler; },
   };
   const navigation = {};
+  const modules = ["overview", "watch-coins", "activity", "research", "system"];
+  const links = modules.map((name) => {
+    const linkAttributes = {
+      "data-module": name,
+      ...(name === "overview" ? { "aria-current": "page" } : {}),
+    };
+    return {
+      getAttribute(key) { return linkAttributes[key] ?? null; },
+      setAttribute(key, value) { linkAttributes[key] = value; },
+      removeAttribute(key) { delete linkAttributes[key]; },
+      current() { return "aria-current" in linkAttributes; },
+      name,
+    };
+  });
   const context = {
     document: {
       documentElement: {
@@ -28,10 +42,10 @@ function boot(storage) {
       getElementById(id) {
         return id === "workspace-nav-toggle" ? button : navigation;
       },
-      querySelectorAll() { return []; },
+      querySelectorAll() { return links; },
     },
     localStorage: storage,
-    location: { pathname: "/operator", hash: "" },
+    location: { pathname, hash: "" },
     addEventListener() {},
   };
   context.window = context;
@@ -41,6 +55,7 @@ function boot(storage) {
     button,
     classes,
     click() { listeners.click(); },
+    current() { return links.filter((link) => link.current()).map((link) => link.name); },
     state() {
       return {
         expanded: button.getAttribute("aria-expanded"),
@@ -73,7 +88,21 @@ const deniedWrite = boot({
 });
 deniedWrite.click();
 
+const current = {};
+for (const path of [
+  "/operator",
+  "/operator/system",
+  "/operator/rearm",
+  "/operator/diagnostics",
+  "/operator/watchlist",
+  "/operator/history/orders",
+  "/operator/research",
+]) {
+  current[path] = boot({ getItem() { return null; }, setItem() {} }, path).current();
+}
+
 console.log(JSON.stringify({
+  current,
   initial: expandedByDefault,
   collapsed,
   storedValue,

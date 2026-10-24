@@ -15,10 +15,7 @@
 
   function markCurrentModule() {
     var path = root.location.pathname;
-    var hash = root.location.hash;
-    var active = path === "/operator" && hash === "#health"
-      ? "system"
-      : path === "/operator"
+    var active = path === "/operator"
       ? "overview"
       : path.indexOf("/operator/watchlist") === 0 || path.indexOf("/operator/markets") === 0
       ? "watch-coins"
@@ -26,6 +23,10 @@
       ? "activity"
       : path.indexOf("/operator/research") === 0
       ? "research"
+      : path.indexOf("/operator/system") === 0
+        || path.indexOf("/operator/rearm") === 0
+        || path.indexOf("/operator/diagnostics") === 0
+      ? "system"
       : null;
     var links = root.document.querySelectorAll("#workspace-nav a[data-module]");
     for (var index = 0; index < links.length; index += 1) {
@@ -49,7 +50,6 @@
   apply(collapsed);
   button.hidden = false;
   markCurrentModule();
-  root.addEventListener("hashchange", markCurrentModule);
 
   button.addEventListener("click", function () {
     collapsed = button.getAttribute("aria-expanded") === "true";

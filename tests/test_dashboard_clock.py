@@ -239,6 +239,16 @@ def test_sidebar_expands_by_default_persists_and_fails_open_when_storage_is_deni
     assert result["denied"]["expanded"] == "true"
     assert result["denied"]["collapsedClass"] is False
     assert result["deniedWrite"]["expanded"] == "true"
+    # The script marks the same module the server rendered, so System is not cleared on load.
+    assert result["current"] == {
+        "/operator": ["overview"],
+        "/operator/system": ["system"],
+        "/operator/rearm": ["system"],
+        "/operator/diagnostics": ["system"],
+        "/operator/watchlist": ["watch-coins"],
+        "/operator/history/orders": ["activity"],
+        "/operator/research": ["research"],
+    }
 
 
 def test_the_script_makes_no_request_and_writes_no_markup():

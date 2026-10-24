@@ -781,6 +781,80 @@ time,
   gap: 0.5rem;
 }
 
+/* System: ordered recovery guidance and expandable history */
+
+.recovery-steps {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recovery-step {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 0.35rem solid var(--tone-fg);
+}
+
+.attention-heading h4 {
+  font-size: 1rem;
+}
+
+.step-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.step-links a,
+.fold a {
+  text-underline-offset: 0.2em;
+}
+
+.facts-inline {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.fold {
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.fold + .fold {
+  margin-top: 0.75rem;
+}
+
+.fold > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fold[open] > summary {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.fold-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
 /* Overview cards */
 
 .cards {

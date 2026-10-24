@@ -546,6 +546,8 @@ Design for:
 - alert destinations and delivery results;
 - backup/restore/drill evidence when a safe read model is added.
 
+> **Implemented in C003 (#176):** `GET /operator/system` now presents most of this list. See `docs/operator-system-c003-v1.md`. Backup, restore and drill evidence and market-data connection freshness are still not part of the page.
+
 ## 9. Roadmap additions the design must anticipate
 
 ### 9.1 Draft: paper runtime and concrete alerts (`#51`, PR `#54`)

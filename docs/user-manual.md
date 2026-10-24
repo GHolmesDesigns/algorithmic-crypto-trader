@@ -161,9 +161,10 @@ authenticated `/operator/state` returns:
   (**Operator** or **Administrator**), the snapshot time, **Refresh**, and
   **Sign out**. When only `OPERATOR_TOKEN` is configured, that token has the
   administrator role.
-- **Section links:** Overview, Portfolio, Activity, Alerts & errors, Risk &
-  safety, and System health. A wide screen shows them in a left rail; a phone
-  shows a row that scrolls sideways.
+- **Navigation:** Overview, Watch Coins, Activity, Research, and System. A wide
+  screen shows them in a left rail; a phone shows a row that scrolls sideways.
+  The Overview's own sections (Portfolio, Activity, Alerts & errors, Risk &
+  safety, and System health) keep their anchors.
 - **Safety bar:** the kill-switch state, its cause, the next safe step, the
   current UTC time, and the **PAUSE** and **EMERGENCY STOP** controls. It stays
   at the top of the window while you scroll. On a phone, the two controls stay
@@ -218,6 +219,42 @@ kill-switch file or environment flag too.
 When no saved transition explains the state, for example one set before
 transitions were saved, the bar says the cause is not recorded. Check
 **Alerts & errors** and the application log.
+
+### The System page
+
+**System** (`/operator/system`) gathers incident detail and recovery guidance
+in the order you need it:
+
+1. **Cause and next safe step.** The recorded cause of a pause or halt, or the
+   plain statement that none is recorded, then what to do next. Other recorded
+   conditions follow.
+2. **Recovery checklist.** Seven checks in order. Each is **verified** (the
+   snapshot has evidence), **required** (someone must act), **unavailable** (no
+   evidence either way), or **stale** (evidence that is too old to rely on). The
+   list is guidance only. Opening the page runs no recovery and does not compare
+   the broker again, so a verified item never means the broker was just
+   reconciled. **RUNNING does not repair causes**; re-arming only lowers the kill
+   switch.
+3. **Orders waiting on the venue.** Saved pending or unknown orders, each linked
+   to its saved detail by client order ID. Look the order up there; never
+   resubmit it. Only an administrator sees the close control, and the server
+   keeps its own refusals.
+4. **Diagnostics.** The same bounded report as `/operator/diagnostics`: pending
+   orders and what the venue said, recent discrepancies, and recent fills with
+   their balance check. A section that could not be read says so; it is not an
+   empty result. In `live` mode or with a trade-capable credential scope the
+   report is refused.
+5. **Health and runtime.** Application version and heartbeat, broker, startup
+   recovery, scheduled reconciliation, paper runtime, persistence and the
+   strategy heartbeats.
+6. **Alerts and safety history.** Expandable alert delivery, kill-switch changes
+   and errors. A failed alert delivery means someone may not have been told. It
+   says nothing about whether the trading condition changed, and dismissing an
+   alert records review but does not clear a halt.
+
+EMERGENCY STOP and, unless the switch is halted, PAUSE stay in the safety bar
+and work without JavaScript. `/health` only proves the web process answers; it
+is never trading readiness.
 
 ### What to check
 
@@ -882,6 +919,7 @@ provider, credential, live confirmation, or reconciliation interval.
 | `POST /operator/logout` | None | Ends the session: revokes it on the server and clears the cookie. |
 | `GET /operator` | Operator | Server-rendered dashboard. |
 | `GET /operator/fragment` | Operator | The dashboard body without the page shell or styles. The page does not refresh itself. |
+| `GET /operator/system` | Operator | Server-rendered System page: cause, recovery checklist, orders waiting on the venue, bounded diagnostics, health, and alert and kill-switch history. Reads only. |
 | `GET /operator/state` | Operator | Full operator snapshot as JSON. |
 | `GET /operator/kill-switch` | Operator | Current kill-switch state. |
 | `POST /operator/pause` | Operator | Persist `paused` from `running`. Never lowers `halted`; returns the unchanged state instead. |

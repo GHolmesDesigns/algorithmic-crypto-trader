@@ -1,0 +1,368 @@
+{%- extends "_operator_page.html" -%}
+{%- import "_operator_macros.html" as ui -%}
+{%- set safety = view.safety -%}
+{% block title %}System{% endblock %}
+{% block page_name %}System{% endblock %}
+{% block content %}
+        <section id="cause" class="block" aria-labelledby="system-heading">
+          <div class="block-head">
+            <h1 id="system-heading">System</h1>
+            <p class="block-note">Health, incident detail and recovery guidance, read from the saved snapshot when this page loaded. Opening it runs no recovery, writes nothing at a provider and does not change the kill switch. <code>/health</code> only proves the web process answers; it is not trading readiness.</p>
+          </div>
+
+          <h2 id="cause-heading">Cause and next safe step</h2>
+          {%- if not view.cause.complete %}
+          <p class="notice tone-unknown"><span class="mark" aria-hidden="true">○</span> {{ view.cause.incomplete_detail }}</p>
+          {%- endif %}
+          <div class="panel tone-{{ safety.status.tone }}" aria-labelledby="cause-heading">
+            <p>{{ ui.pill(safety.status, "pill-large") }} {{ safety.summary }}</p>
+            {%- if safety.running %}
+            <p class="note">Running means the kill switch permits work. It does not repair a cause, prove health, or show that trading is happening.</p>
+            {%- elif safety.causes or safety.last_change %}
+            <h3>Recorded cause</h3>
+            {%- if safety.causes %}
+            <ul class="causes">
+              {%- for item in safety.causes %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+            {%- endif %}
+            {%- if safety.last_change %}{%- set change = safety.last_change %}
+            <p><strong>Last change:</strong> {{ change.change }} by {{ change.actor }} ({{ change.kind }}), {{ ui.stamp(change.at) }}. {{ change.reason }}</p>
+            {%- endif %}
+            {%- else %}
+            <p class="notice tone-unknown"><span class="mark" aria-hidden="true">○</span> {{ view.cause.unavailable }}</p>
+            {%- endif %}
+            <p><strong>Next safe step:</strong> {{ safety.next_step }}</p>
+            <p class="note">{% if safety.halted %}EMERGENCY STOP stays in the safety bar above and works without JavaScript. PAUSE cannot lower a halt.{% else %}EMERGENCY STOP and PAUSE stay in the safety bar above and work without JavaScript.{% endif %}</p>
+          </div>
+
+          {%- if view.cause.others %}
+          <h3 id="others-heading">Other conditions in this snapshot</h3>
+          <ol class="attention-list" aria-labelledby="others-heading">
+            {%- for item in view.cause.others %}
+            <li class="attention-item tone-{{ item.status.tone }}">
+              <div class="attention-heading">{{ ui.pill(item.status, "pill-large") }} <h4>{{ item.title }}</h4></div>
+              <p>{{ item.detail }}</p>
+              <p class="attention-next"><strong>Next step:</strong> {{ item.next_step }} <a href="{{ item.href }}">Investigate</a></p>
+            </li>
+            {%- endfor %}
+          </ol>
+          {%- elif view.cause.no_incident %}
+          <p class="note">No other active incident is recorded in the available snapshot. This is not a readiness verdict; the checks below can still be unavailable or stale.</p>
+          {%- endif %}
+          <p class="legend"><span class="eyebrow">Key</span>
+            {%- for item in view.legend %} {{ ui.pill(item) }}{% endfor %}
+          </p>
+        </section>
+
+        <section id="recovery" class="block" aria-labelledby="recovery-heading">
+          <div class="block-head">
+            <h2 id="recovery-heading">Recovery checklist</h2>
+            <p class="block-note">Guidance in order. Each status is read from the snapshot: <em>verified</em> has evidence, <em>required</em> needs a person, <em>unavailable</em> has no evidence, and <em>stale</em> has evidence that is too old. Nothing here runs a recovery, and a verified step does not mean the broker was reconciled just now.</p>
+          </div>
+          <ol class="recovery-steps">
+            {%- for step in view.steps %}
+            <li class="recovery-step tone-{{ step.status.tone }}">
+              <div class="attention-heading">{{ ui.pill(step.status, "pill-large") }} <h3>{{ step.number }}. {{ step.title }}</h3></div>
+              <p>{{ step.detail }}</p>
+              {%- if step.stamp %}<p class="note">Evidence recorded {{ ui.stamp(step.stamp) }}</p>{% endif %}
+              {%- if step.links %}
+              <p class="step-links">
+                {%- for label, href in step.links %}<a href="{{ href }}">{{ label }}</a>{% endfor %}
+              </p>
+              {%- endif %}
+            </li>
+            {%- endfor %}
+          </ol>
+          <div class="panel" id="rearm">
+            <h3>Re-arm</h3>
+            <p>{{ view.rearm.explanation }}</p>
+            <p>Only an administrator re-arms, on the review page, after confirming every item and recording the cause and approval:</p>
+            <ol class="checklist">
+              {%- for key, text in view.rearm.checklist %}
+              <li>{{ text }}</li>
+              {%- endfor %}
+            </ol>
+            {%- if not view.rearm.is_admin %}
+            <p class="note">Your operator role cannot re-arm. Ask an administrator.</p>
+            {%- elif view.rearm.running %}
+            <p class="note">Nothing to re-arm: the kill switch is running.</p>
+            {%- else %}
+            <p><a class="button button-rearm" href="/operator/rearm">Review and re-arm</a></p>
+            {%- endif %}
+          </div>
+        </section>
+
+        <section id="orders" class="block" aria-labelledby="orders-heading">
+          <div class="block-head">
+            <h2 id="orders-heading">Orders waiting on the venue</h2>
+            <p class="block-note">{{ ui.pill(view.orders.state) }} Saved orders that are pending or unknown. An ambiguous submission is looked up by its saved client order ID before anything else; it is never resubmitted.</p>
+          </div>
+          {%- if not view.orders.readable %}
+          <p class="notice tone-{{ view.orders.state.tone }}"><span class="mark" aria-hidden="true">{{ view.orders.state.mark }}</span> {{ view.orders.detail }}</p>
+          {%- elif not view.orders.rows %}
+          <p class="empty"><span class="count">0</span> saved orders are pending or unknown. <a href="/operator/history/orders">Order history</a></p>
+          {%- else %}
+          <ul class="unresolved">
+            {%- for row in view.orders.rows %}
+            <li class="panel">
+              <p>{{ ui.pill(row.status) }} {{ row.side }} {{ row.quantity }} {{ row.symbol }} · strategy <span class="mono">{{ row.strategy_version }}</span> · saved {{ ui.stamp(row.created) }}</p>
+              <p>Client order ID <a class="mono" href="{{ row.href }}">{{ row.client_order_id }}</a></p>
+              <p class="note">Look it up by client order ID in its saved detail. Never resubmit it.</p>
+              {%- if view.orders.is_admin %}
+              <form method="post" action="/operator/orders/close">
+                <input type="hidden" name="client_order_id" value="{{ row.client_order_id }}">
+                <div class="field">
+                  <label for="system-close-reason-{{ loop.index }}">Reason for closing this order</label>
+                  <textarea id="system-close-reason-{{ loop.index }}" name="reason" rows="2" required maxlength="500"></textarea>
+                </div>
+                <div class="actions">
+                  <button class="button button-quiet" type="submit">Close order: never received by the venue</button>
+                </div>
+              </form>
+              {%- endif %}
+            </li>
+            {%- endfor %}
+          </ul>
+          {{ ui.more(view.orders.total, view.limit, "waiting orders") }}
+          {%- if view.orders.is_admin %}
+          <p class="note">Closing asks the venue about the order again, by client order ID, then for its fills. The order is closed only if the venue has no record and no fill; the server refuses otherwise. It never resubmits, creates a replacement, or re-arms.</p>
+          {%- else %}
+          <p class="note">Only an administrator can close an order the venue never received.</p>
+          {%- endif %}
+          {%- endif %}
+        </section>
+
+        <section id="diagnostics" class="block" aria-labelledby="diagnostics-heading">
+          {%- set diagnostics = view.diagnostics %}
+          <div class="block-head">
+            <h2 id="diagnostics-heading">Diagnostics</h2>
+            <p class="block-note">{{ ui.pill(diagnostics.state) }} {{ diagnostics.detail }} The full report is <a href="/operator/diagnostics">/operator/diagnostics</a>.</p>
+          </div>
+          {%- if diagnostics.outcome != "report" %}
+          <p class="notice tone-{{ diagnostics.state.tone }}"><span class="mark" aria-hidden="true">{{ diagnostics.state.mark }}</span> Diagnostics are {{ diagnostics.state.word }}. This is not an empty or clean result.</p>
+          {%- else %}
+          <p class="note">Report built {{ ui.stamp(diagnostics.generated) }}. Newest {{ diagnostics.limit }} rows per section. Orders and fills are shown by short references only.</p>
+
+          <div class="panel">
+            <h3 id="diag-pending-heading">Pending orders and the venue's answer</h3>
+            {%- if not diagnostics.pending.readable %}
+            <p class="notice tone-unknown"><span class="mark" aria-hidden="true">○</span> Unavailable: {{ diagnostics.pending.reason }}. This is not a zero count.</p>
+            {%- elif diagnostics.pending.rows %}
+            <div class="table-wrap" role="region" aria-labelledby="diag-pending-heading" tabindex="0">
+              <table class="data">
+                <thead><tr><th scope="col">Reference</th><th scope="col">Saved status</th><th scope="col">Order</th><th scope="col">Saved</th><th scope="col">Venue lookup</th></tr></thead>
+                <tbody>
+                  {%- for row in diagnostics.pending.rows %}
+                  <tr><th scope="row" class="mono">{{ row.ref }}</th><td>{{ ui.pill(row.status) }}</td><td>{{ row.side }} {{ row.quantity }} {{ row.symbol }}</td><td>{{ row.age }} ago</td><td>{{ ui.pill(row.venue) }}<span class="rule">{{ row.answer }}</span></td></tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- else %}
+            <p class="empty"><span class="count">0</span> pending or unknown orders in the saved store.</p>
+            {%- endif %}
+          </div>
+
+          <div class="panel">
+            <h3 id="diag-discrepancies-heading">Recent discrepancies</h3>
+            {%- if not diagnostics.discrepancies.readable %}
+            <p class="notice tone-unknown"><span class="mark" aria-hidden="true">○</span> Unavailable: {{ diagnostics.discrepancies.reason }}. This is not a zero count.</p>
+            {%- elif diagnostics.discrepancies.rows %}
+            <ol class="events">
+              {%- for row in diagnostics.discrepancies.rows %}
+              <li class="event">
+                <p class="event-head"><span class="mono">{{ row.kind }} {{ row.key }}</span> · safety response <span class="mono">{{ row.safety_action }}</span></p>
+                <p class="event-meta">{{ ui.stamp(row.at) }}</p>
+                <ul class="facts-inline">
+                  {%- for change in row.fields %}
+                  <li><span class="mono">{{ change.field }}</span>: ours {{ change.local }}, broker {{ change.broker }}{% if change.delta %} (broker − ours {{ change.delta }}){% endif %}</li>
+                  {%- endfor %}
+                </ul>
+              </li>
+              {%- endfor %}
+            </ol>
+            <p class="note"><a href="/operator/history/discrepancies">All discrepancies</a></p>
+            {%- else %}
+            <p class="empty"><span class="count">0</span> discrepancies are stored.</p>
+            {%- endif %}
+          </div>
+
+          <div class="panel">
+            <h3 id="diag-fills-heading">Recent fills and balance check</h3>
+            {%- if not diagnostics.fills.readable %}
+            <p class="notice tone-unknown"><span class="mark" aria-hidden="true">○</span> Unavailable: {{ diagnostics.fills.reason }}. This is not a zero count.</p>
+            {%- elif diagnostics.fills.rows %}
+            <div class="table-wrap" role="region" aria-labelledby="diag-fills-heading" tabindex="0">
+              <table class="data">
+                <thead><tr><th scope="col">Time</th><th scope="col">Fill</th><th scope="col">Order</th><th scope="col">Side · symbol</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Price</th><th scope="col" class="num">Fee</th></tr></thead>
+                <tbody>
+                  {%- for row in diagnostics.fills.rows %}
+                  <tr><td>{{ ui.stamp(row.at) }}</td><td class="mono">{{ row.ref }}</td><td class="mono">{{ row.order }}</td><td>{{ row.side }} {{ row.symbol }}</td><td class="num">{{ row.quantity }}</td><td class="num">{{ row.price }}</td><td class="num">{{ row.fee }}</td></tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- if diagnostics.fills.checks %}
+            <ul class="facts-inline">
+              {%- for check in diagnostics.fills.checks %}
+              <li>Fills <span class="mono">{{ check.fills }}</span>: {{ check.status }}
+                {%- if check.assets %}
+                {%- for asset in check.assets %}; {{ asset.asset }} difference (broker − projected) {{ asset.difference }}{% endfor %}
+                {%- endif %}
+              </li>
+              {%- endfor %}
+            </ul>
+            {%- endif %}
+            {%- else %}
+            <p class="empty"><span class="count">0</span> fills are stored.</p>
+            {%- endif %}
+          </div>
+          {%- endif %}
+        </section>
+
+        <section id="health" class="block" aria-labelledby="health-heading">
+          <div class="block-head">
+            <h2 id="health-heading">Health and runtime</h2>
+            <p class="block-note">Ages are measured when this page loaded. Reload for a new snapshot. Unknown and unavailable values stay visible.</p>
+          </div>
+          <div class="facts-grid">
+            {%- for group in view.health %}
+            <div class="panel">
+              <h3>{{ group.title }}</h3>
+              <dl class="facts">
+                {%- for item in group.facts %}
+                <div><dt>{{ item.label }}</dt><dd>{{ ui.fact(item) }}</dd></div>
+                {%- endfor %}
+              </dl>
+            </div>
+            {%- endfor %}
+          </div>
+          <div class="panel">
+            <h3 id="heartbeats-heading">Strategy heartbeats</h3>
+            {%- if view.strategies %}
+            <div class="table-wrap" role="region" aria-labelledby="heartbeats-heading" tabindex="0">
+              <table class="data">
+                <thead><tr><th scope="col">Strategy</th><th scope="col">Version</th><th scope="col">Status</th><th scope="col">Detail</th><th scope="col">Last seen</th></tr></thead>
+                <tbody>
+                  {%- for strategy in view.strategies %}
+                  <tr><th scope="row">{{ strategy.name }}</th><td class="mono">{{ strategy.version }}</td><td>{{ ui.pill(strategy.status) }}</td><td>{{ strategy.detail }}</td><td>{{ ui.stamp(strategy.last_seen) }}</td></tr>
+                  {%- endfor %}
+                </tbody>
+              </table>
+            </div>
+            {%- else %}
+            <p class="empty">{{ ui.absent("No strategy heartbeat is registered.") }}</p>
+            {%- endif %}
+          </div>
+        </section>
+
+        <section id="history" class="block" aria-labelledby="history-heading">
+          <div class="block-head">
+            <h2 id="history-heading">Alerts and safety history</h2>
+            <p class="block-note">Expand a group for detail. Reconciliation runs over time are under <a href="/operator/history/trends">Trends</a>, and the 30-day paper soak digest is under <a href="/operator/history/soak">Soak &amp; readiness</a>.</p>
+          </div>
+
+          <details class="fold" id="alerts"{% if view.alerts.failed %} open{% endif %}>
+            <summary><span class="fold-title">Alerts and delivery</span> {{ ui.pill(view.alerts.summary) }}</summary>
+            <div class="fold-body">
+              <p class="note">{{ view.alerts.summary_detail }} An alert's delivery result is about whether someone was told. It does not say whether the trading condition changed. Dismissing an alert records review; it does not clear a halt or resolve its cause.</p>
+              {%- if view.alerts.failed %}
+              <p class="notice tone-warn"><span class="mark" aria-hidden="true">▲</span> Delivery failed for {{ view.alerts.failed | length }} alert(s). Someone may not have been told. The conditions themselves are unchanged.</p>
+              {%- endif %}
+              {%- if view.alerts.rows %}
+              <ol class="events">
+                {%- for alert in view.alerts.rows %}
+                <li class="event">
+                  <p class="event-head">{{ ui.pill(alert.severity) }} <span class="mono">{{ alert.condition }}</span></p>
+                  <p>{{ alert.message }}</p>
+                  <p class="event-meta">{{ ui.stamp(alert.created) }}</p>
+                  <p class="event-meta">Delivery:
+                    {%- for delivery in alert.deliveries %} {{ delivery.destination }} {{ ui.pill(delivery.status) }}{% if not loop.last %};{% endif %}{% endfor %}
+                    {%- if alert.undelivered %} {{ ui.absent(alert.undelivered) }}{% endif %}
+                  </p>
+                </li>
+                {%- endfor %}
+              </ol>
+              {{ ui.more(view.alerts.new_total, view.alerts.limit, "new alerts") }}
+              {%- elif view.alerts.dismissed_total %}
+              <p class="empty"><span class="count">0</span> new alerts since this process started.</p>
+              {%- else %}
+              <p class="empty"><span class="count">0</span> alerts since this process started.</p>
+              {%- endif %}
+              {%- if view.alerts.dismissed_rows %}
+              <h4 class="dismissed-label">Dismissed ({{ view.alerts.dismissed_total }})</h4>
+              <ol class="events events-dismissed">
+                {%- for alert in view.alerts.dismissed_rows %}
+                <li class="event">
+                  <p class="event-head">{{ ui.pill(alert.severity) }} <span class="mono">{{ alert.condition }}</span></p>
+                  <p>{{ alert.message }}</p>
+                  <p class="event-meta">Dismissed {{ ui.stamp(alert.dismissed_at) }} by {{ alert.dismissed_by }}.
+                    {%- for delivery in alert.deliveries %}{% if delivery.status.word == "failed" %} Delivery to {{ delivery.destination }} failed.{% endif %}{% endfor %}
+                  </p>
+                </li>
+                {%- endfor %}
+              </ol>
+              {{ ui.more(view.alerts.dismissed_total, view.alerts.limit, "dismissed alerts") }}
+              {%- endif %}
+              <h4>Alert destinations</h4>
+              <dl class="facts">
+                {%- for destination in view.alerts.destinations %}
+                <div><dt>{{ destination.label }}</dt><dd>{{ ui.pill(destination.status) }}</dd></div>
+                {%- endfor %}
+              </dl>
+              <p class="note">Only whether each destination is configured is shown. Recipients, topic addresses and tokens never appear here. {% if view.alerts.can_dismiss %}An administrator can dismiss alerts from the <a href="/operator#alerts">Overview</a>.{% endif %}</p>
+            </div>
+          </details>
+
+          <details class="fold" id="safety-history">
+            <summary><span class="fold-title">Kill-switch history</span> {{ ui.pill(safety.status) }}</summary>
+            <div class="fold-body">
+              {%- if view.transitions.recorded %}
+              <ol class="events">
+                {%- for item in view.transitions.rows %}
+                <li class="event">
+                  <p class="event-head">{{ ui.pill(item.status) }} {{ item.change }}</p>
+                  <p>{{ item.reason }}</p>
+                  <p class="event-meta">{{ item.actor }} ({{ item.kind }}) · {{ ui.stamp(item.at) }}</p>
+                </li>
+                {%- endfor %}
+              </ol>
+              {%- else %}
+              <p class="empty">{{ ui.absent("No recorded kill-switch change.") }} {{ view.transitions.empty }}</p>
+              {%- endif %}
+              <h4 id="states-heading">Kill-switch states</h4>
+              <div class="table-wrap" role="region" aria-labelledby="states-heading" tabindex="0">
+                <table class="data states">
+                  <thead><tr><th scope="col">State</th><th scope="col">Meaning</th></tr></thead>
+                  <tbody>
+                    {%- for state in view.kill_switch_states %}
+                    <tr{% if state.current %} class="current"{% endif %}><th scope="row">{{ ui.pill(state.status) }}{% if state.current %} <span class="current-tag">current</span>{% endif %}</th><td>{{ state.meaning }}</td></tr>
+                    {%- endfor %}
+                  </tbody>
+                </table>
+              </div>
+              <p class="note">Refusals by gate and the full audit trail are under <a href="/operator/history/risk">Risk &amp; safety history</a>.</p>
+            </div>
+          </details>
+
+          <details class="fold" id="errors">
+            <summary><span class="fold-title">Errors</span> <span class="count">{{ view.errors.total }}</span></summary>
+            <div class="fold-body">
+              {%- if view.errors.rows %}
+              <ol class="events">
+                {%- for error in view.errors.rows %}
+                <li class="event">
+                  <p class="event-head"><span class="mono">{{ error.condition }}</span></p>
+                  <p>{{ error.message }}</p>
+                  <p class="event-meta">{{ ui.stamp(error.created) }}</p>
+                </li>
+                {%- endfor %}
+              </ol>
+              {{ ui.more(view.errors.total, view.errors.limit, "errors") }}
+              {%- else %}
+              <p class="empty"><span class="count">0</span> errors since this process started.</p>
+              {%- endif %}
+            </div>
+          </details>
+        </section>
+{% endblock %}
