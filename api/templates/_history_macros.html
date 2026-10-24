@@ -97,7 +97,10 @@
                 <h3>3 · Order</h3>
                 <p>{{ ui.pill(order.status) }} {{ text(order.symbol) }} {{ order.side }} · {{ order.order_type }} · quantity {{ text(order.quantity) }} · limit price {{ text(order.limit_price) }}</p>
                 {%- if order.rule %}
-                <p class="rule">{{ order.rule }}</p>
+                <div class="notice tone-{{ 'crit' if order.status.word == 'unknown' else 'warn' }}" role="alert">
+                  <p><span class="mark" aria-hidden="true">{{ '■' if order.status.word == 'unknown' else '▲' }}</span> {{ order.rule }}</p>
+                  <p>Use the saved client order ID to inspect this order. <a href="/operator/system#orders">Review the order and its close eligibility in System</a>; <a href="/operator/system#diagnostics">open bounded diagnostics</a>.</p>
+                </div>
                 {%- endif %}
                 {%- if order.closure %}
                 <p class="rule"><strong>{{ order.closure.label }}.</strong> {{ order.closure.actor }} closed it {{ ui.stamp(order.closure.closed) }}. It was {{ order.closure.was }}, and the venue answered: {{ order.closure.broker_lookup }}. Reason: {{ order.closure.reason }}</p>
@@ -131,7 +134,11 @@
                 <p class="note">Showing the first {{ order.fills | length }} of {{ order.fill_count }} fills. The total above counts them all.</p>
                 {%- endif %}
                 {%- else %}
+                {%- if order.unresolved %}
+                <p class="notice tone-unknown" role="status"><span class="mark" aria-hidden="true">○</span> <span class="count">0</span> fills are recorded in persisted history. Their absence does not confirm the broker has no fills; check by client order ID.</p>
+                {%- else %}
                 <p class="empty"><span class="count">0</span> fills recorded.</p>
+                {%- endif %}
                 {%- endif %}
               </li>
             </ol>
@@ -144,6 +151,8 @@
                 {%- endfor %}
               </ul>
             </div>
+            {%- elif order.unresolved %}
+            <p class="note">The saved signal, risk decision, order and fills are shown here; the order outcome is still unverified.</p>
             {%- else %}
             <p class="note">Lineage complete: the signal, the approved risk decision, the order, and every fill it needs are recorded.</p>
             {%- endif %}

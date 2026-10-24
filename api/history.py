@@ -73,7 +73,16 @@ GATE_LABELS = dict(RISK_GATES) | UNGATED
 _GATE_POSITIONS = {gate: position for position, (gate, _) in enumerate(RISK_GATES, start=1)}
 _CHECKLIST_KEYS = frozenset(key for key, _ in REARM_CHECKLIST)
 ORDER_STATUSES = tuple(status.value for status in OrderStatus)
-UNKNOWN_ORDER_RULE = "Look it up by client order ID. Never resubmit it."
+UNRESOLVED_ORDER_RULES = {
+    OrderStatus.PENDING_SUBMIT.value: (
+        "Submission is unverified. Check the order in System by its client order ID; "
+        "do not retry it."
+    ),
+    OrderStatus.UNKNOWN.value: (
+        "Submission outcome is unverified. Check the broker by client order ID before any retry; "
+        "never resubmit it."
+    ),
+}
 DISCREPANCY_TYPES = ("order", "fill", "position", "balance")
 EVENT_TYPES = (
     KILL_SWITCH_EVENT,
@@ -897,8 +906,8 @@ def _order(record: OrderRecord, fills: Mapping[str, Any] | None) -> dict[str, An
         "fill_count": fills["count"],
         "fills": fills["rows"],
     }
-    if record.status == OrderStatus.UNKNOWN.value:
-        row["rule"] = UNKNOWN_ORDER_RULE
+    if record.status in UNRESOLVED_ORDER_RULES:
+        row["rule"] = UNRESOLVED_ORDER_RULES[record.status]
     return row
 
 

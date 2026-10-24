@@ -49,8 +49,9 @@ PAGES: dict[str, tuple[str, str, str]] = {
     "orders": (
         "Orders",
         "orders",
-        "Every persisted order with its fills, newest first. Expand an order for its "
-        "lineage: signal, risk decision, order, and fills.",
+        "Persisted order history, newest first; this is not a live broker check. Process-local "
+        "activity remains on Overview. Expand an order for its lineage: signal, risk decision, "
+        "order, and recorded fills.",
     ),
     "signals": (
         "Signals",
@@ -85,8 +86,9 @@ PAGES: dict[str, tuple[str, str, str]] = {
     "lineage": (
         "Order lineage",
         "orders",
-        "One order from its signal through its risk decision to its fills, rebuilt from "
-        "the persisted records.",
+        "One order from its signal through its risk decision to its recorded fills, rebuilt "
+        "from persisted records. This is not a live broker check; process-local activity "
+        "remains on Overview.",
     ),
 }
 
@@ -370,6 +372,7 @@ def _decision_summary(decision: Mapping[str, Any] | None, now: datetime) -> dict
 def _order_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     fills = list(row.get("fills", ()))
     count = int(row.get("fill_count", 0))
+    status = _status(row.get("status"), _ORDER)
     return {
         "client_order_id": _copy(row.get("client_order_id")),
         "correlation_id": _copy(row.get("correlation_id")),
@@ -383,7 +386,8 @@ def _order_row(row: Mapping[str, Any], now: datetime) -> dict[str, Any]:
             "none: market order" if row.get("order_type") == "market" else "not recorded",
         ),
         "strategy_version": str(row.get("strategy_version", "")),
-        "status": _status(row.get("status"), _ORDER),
+        "status": status,
+        "unresolved": status.word in {"pending_submit", "unknown"},
         "rule": row.get("rule"),
         "closure": _closure_view(row.get("closure"), now),
         "created": _stamp(row.get("created_at"), now),
