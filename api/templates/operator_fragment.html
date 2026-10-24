@@ -1,92 +1,11 @@
-{%- import "_operator_macros.html" as ui -%}
 {%- set header = view.header -%}
 {%- set safety = view.safety -%}
 {%- set portfolio = view.portfolio -%}
 {%- set activity = view.activity -%}
+{%- import "_operator_macros.html" as ui -%}
 <div id="operator-state" class="shell">
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true">ACT</span>
-      <div>
-        <p class="brand-name">Algorithmic Crypto Trader</p>
-        <h1>Operator dashboard</h1>
-      </div>
-    </div>
-    <dl class="context">
-      <div>
-        <dt>Mode</dt>
-        <dd><span class="mode tone-{{ header.mode_tone }}"><span class="mark" aria-hidden="true">◆</span> {{ header.mode }}</span></dd>
-      </div>
-      <div>
-        <dt>Credential scope</dt>
-        <dd class="mono">{{ header.credential_scope }}</dd>
-      </div>
-      <div>
-        <dt>Signed in as</dt>
-        <dd>{{ header.role }}</dd>
-      </div>
-      <div>
-        <dt>Snapshot</dt>
-        <dd>{{ ui.stamp(header.updated) }}</dd>
-      </div>
-    </dl>
-    <a class="button button-quiet refresh" href="/operator">Refresh</a>
-    <form class="signout" method="post" action="/operator/logout"><button class="button button-quiet" type="submit">Sign out</button></form>
-  </header>
-
-  <nav class="sections" aria-label="Dashboard sections">
-    <ul>
-      <li><a href="#overview">Overview</a></li>
-      <li><a href="#portfolio">Portfolio</a></li>
-      <li><a href="#activity">Activity</a></li>
-      <li><a href="#alerts">Alerts &amp; errors</a></li>
-      <li><a href="#safety">Risk &amp; safety</a></li>
-      <li><a href="#health">System health</a></li>
-      <li><a href="/operator/research">Research &amp; replay</a></li>
-      <li><a href="/operator/history/orders">History</a></li>
-      <li><a href="/operator/watchlist">Watchlist</a></li>
-    </ul>
-  </nav>
-
-  <section class="safety tone-{{ safety.status.tone }}" aria-labelledby="safety-heading">
-    <div class="safety-state">
-      <div class="safety-line">
-        <h2 id="safety-heading" class="safety-heading"><span class="eyebrow">Kill switch</span> {{ ui.pill(safety.status, "pill-large") }}</h2>
-        <p class="safety-summary" aria-live="polite"><span class="visually-hidden">Kill switch {{ safety.status.word }}. </span>{{ safety.summary }}</p>
-      </div>
-      {%- if not safety.running %}
-      <div class="safety-cause">
-        <h3 class="eyebrow">Cause</h3>
-        {%- if safety.causes or safety.last_change %}
-        <ul>
-          {%- for cause in safety.causes %}
-          <li>{{ cause }}</li>
-          {%- endfor %}
-          {%- if safety.last_change %}
-          {%- set change = safety.last_change %}
-          <li>Last change: {{ change.change }} by {{ change.actor }} ({{ change.kind }}), {{ ui.stamp(change.at) }}. {{ change.reason }}</li>
-          {%- endif %}
-        </ul>
-        {%- else %}
-        <p>Not recorded. No saved kill-switch change explains this state: it may predate the change history, or the history could not be read. Check Alerts &amp; errors and the application log.</p>
-        {%- endif %}
-      </div>
-      {%- endif %}
-      <p class="next-step"><strong>Next safe step:</strong> {{ safety.next_step }}</p>
-    </div>
-    <div class="clock" data-utc-clock data-server-epoch-ms="{{ view.clock.epoch_ms }}">
-      <span class="eyebrow clock-label" aria-hidden="true" data-clock-label>At page load</span>
-      <time class="clock-time" datetime="{{ view.clock.iso }}" aria-label="UTC time at page load" data-clock-time>{{ view.clock.text }}</time>
-    </div>
-    <div class="controls" role="group" aria-label="Kill-switch controls">
-      {%- if safety.halted %}
-      <p class="controls-note">PAUSE hidden: administrator re-arm required.<span class="wide-only"> PAUSE cannot lower a halt.</span></p>
-      {%- else %}
-      <form method="post" action="/operator/pause"><button class="button button-pause" type="submit">PAUSE</button></form>
-      {%- endif %}
-      <form method="post" action="/operator/emergency-stop"><button class="button button-stop" type="submit">EMERGENCY STOP</button></form>
-    </div>
-  </section>
+  {% set workspace_page_name = "Overview" %}
+  {% include "_operator_workspace_header.html" %}
 
   <main id="main" tabindex="-1">
     <section id="overview" class="block" aria-labelledby="overview-heading">

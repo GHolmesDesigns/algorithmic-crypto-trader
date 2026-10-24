@@ -688,7 +688,8 @@ async def test_a_browser_form_ends_on_a_result_page_that_says_what_changed(tmp_p
     assert "not found (the venue has no record of this order)" in html
     assert "unchanged" in html  # the kill switch line
     assert "Closing does not re-arm" in html
-    assert "<script" not in html
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.S)
+    assert scripts and all(not body.strip() for body in scripts)
 
 
 @pytest.mark.asyncio

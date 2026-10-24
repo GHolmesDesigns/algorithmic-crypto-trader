@@ -33,6 +33,9 @@ from tests.test_operator_dashboard import (
 
 STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$")
 SCRIPT = Path(UTC_CLOCK_FILE)
+WORKSPACE_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "api" / "static" / "dashboard" / "operator-workspace.js"
+)
 NODE = shutil.which("node")
 
 
@@ -165,10 +168,77 @@ async def test_the_page_loads_one_hashed_same_origin_script_and_no_inline_code(m
     assert served.headers["cache-control"] == "public, max-age=31536000, immutable"
     assert served.headers["x-content-type-options"] == "nosniff"
     assert served.content == SCRIPT.read_bytes()
+    workspace_url = re.search(
+        r'<script src="(/operator/static/operator-workspace\.js\?v=[0-9a-f]{12})" defer>',
+        html,
+    )[1]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        workspace_served = await client.get(workspace_url)
+    assert workspace_url == (
+        "/operator/static/operator-workspace.js?"
+        f"v={hashlib.sha256(WORKSPACE_SCRIPT.read_bytes()).hexdigest()[:12]}"
+    )
+    assert workspace_served.status_code == 200
+    assert workspace_served.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert workspace_served.content == WORKSPACE_SCRIPT.read_bytes()
     # No inline script or handler, and no policy was added or loosened by this card.
-    assert re.findall(r"<script[^>]*>", html) == [f'<script src="{url}" defer>']
+    assert re.findall(r"<script[^>]*>", html) == [
+        f'<script src="{url}" defer>',
+        f'<script src="{workspace_url}" defer>',
+    ]
     assert re.search(r"\son[a-z]+=", html) is None
     assert "content-security-policy" not in {name.lower() for name in served.headers}
+
+
+def test_workspace_script_only_controls_the_sidebar_preference():
+    source = WORKSPACE_SCRIPT.read_text(encoding="utf-8")
+    for name in (
+        "fetch",
+        "XMLHttpRequest",
+        "WebSocket",
+        "EventSource",
+        "sendBeacon",
+        "innerHTML",
+        "outerHTML",
+        "document.write",
+        "eval(",
+        "Function(",
+        "cookie",
+    ):
+        assert name not in source, name
+    assert "localStorage" in source
+    assert "act.operator.sidebar-collapsed.v1" in source
+
+
+@pytest.mark.skipif(
+    NODE is None, reason="Node is not installed; check sidebar behavior in a browser"
+)
+def test_sidebar_expands_by_default_persists_and_fails_open_when_storage_is_denied():
+    harness = Path(__file__).parent / "fixtures" / "operator_workspace_harness.js"
+    done = subprocess.run(
+        [NODE, str(harness), str(WORKSPACE_SCRIPT)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    result = json.loads(done.stdout)
+    assert result["initial"] == {
+        "expanded": "true",
+        "hidden": False,
+        "label": "Collapse navigation",
+        "collapsedClass": False,
+    }
+    assert result["collapsed"]["expanded"] == "false"
+    assert result["collapsed"]["collapsedClass"] is True
+    assert result["storedValue"] == "collapsed"
+    assert result["reloaded"]["expanded"] == "false"
+    assert result["denied"]["expanded"] == "true"
+    assert result["denied"]["collapsedClass"] is False
+    assert result["deniedWrite"]["expanded"] == "true"
 
 
 def test_the_script_makes_no_request_and_writes_no_markup():

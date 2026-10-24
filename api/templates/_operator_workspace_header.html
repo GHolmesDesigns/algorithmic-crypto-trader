@@ -1,0 +1,81 @@
+{%- import "_operator_macros.html" as ui -%}
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">ACT</span>
+    <div>
+      <p class="brand-name">Algorithmic Crypto Trader</p>
+      {%- if page.is_dashboard or page.is_fragment %}<h1 class="page-name">Operator dashboard</h1>
+      {%- else %}<p class="page-name">{{ workspace_page_name or "Operator workspace" }}</p>{% endif %}
+    </div>
+  </div>
+  <dl class="context">
+    <div>
+      <dt>Mode</dt>
+      <dd><span class="mode tone-{{ page.mode_tone }}"><span class="mark" aria-hidden="true">◆</span> {{ page.mode }}</span></dd>
+    </div>
+    <div>
+      <dt>Credential scope</dt>
+      <dd class="mono">{{ page.credential_scope }}</dd>
+    </div>
+    <div>
+      <dt>Signed in as</dt>
+      <dd>{{ page.role }}</dd>
+    </div>
+    {%- if page.signed_in %}
+    <div>
+      <dt>Snapshot</dt>
+      <dd>{{ ui.stamp(page.updated) }}</dd>
+    </div>
+    {%- endif %}
+  </dl>
+  {%- if page.signed_in %}
+  <div class="workspace-actions">
+    {%- if page.is_dashboard %}<a class="button button-quiet refresh" href="/operator">Refresh</a>{% endif %}
+    <button class="button button-quiet nav-toggle" type="button" id="workspace-nav-toggle" aria-expanded="true" aria-controls="workspace-nav" hidden>Collapse navigation</button>
+    <form class="signout" method="post" action="/operator/logout"><button class="button button-quiet" type="submit">Sign out</button></form>
+  </div>
+  {%- endif %}
+</header>
+{%- if page.signed_in %}
+  <nav class="sections" id="workspace-nav" aria-label="Primary navigation">
+    <ul>
+      <li><a href="/operator" data-module="overview"{% if page.active_module == "overview" %} aria-current="page"{% endif %}>Overview</a></li>
+      <li><a href="/operator/watchlist" data-module="watch-coins"{% if page.active_module == "watch-coins" %} aria-current="page"{% endif %}>Watch Coins</a></li>
+      <li><a href="/operator/history/orders" data-module="activity"{% if page.active_module == "activity" %} aria-current="page"{% endif %}>Activity</a></li>
+      <li><a href="/operator/research" data-module="research"{% if page.active_module == "research" %} aria-current="page"{% endif %}>Research</a></li>
+      <li><a href="/operator#health" data-module="system"{% if page.active_module == "system" %} aria-current="page"{% endif %}>System</a></li>
+    </ul>
+  </nav>
+  <section class="safety tone-{{ page.safety.status.tone }}" aria-labelledby="safety-heading">
+    <div class="safety-state">
+      <div class="safety-line">
+        <p id="safety-heading" class="safety-heading"><span class="eyebrow">Kill switch</span> {{ ui.pill(page.safety.status, "pill-large") }}</p>
+        <p class="safety-summary" aria-live="polite"><span class="visually-hidden">Kill switch {{ page.safety.status.word }}. </span>{{ page.safety.summary }}</p>
+      </div>
+      {%- if not page.safety.running %}
+      <div class="safety-cause">
+        <p class="eyebrow">Cause</p>
+        {%- if page.safety.causes or page.safety.last_change %}
+        <ul>
+          {%- for cause in page.safety.causes %}<li>{{ cause }}</li>{% endfor %}
+          {%- if page.safety.last_change %}{%- set change = page.safety.last_change %}
+          <li>Last change: {{ change.change }} by {{ change.actor }} ({{ change.kind }}), {{ ui.stamp(change.at) }}. {{ change.reason }}</li>
+          {%- endif %}
+        </ul>
+        {%- else %}<p>Not recorded. No saved kill-switch change explains this state. Check Alerts &amp; errors and the application log.</p>{% endif %}
+      </div>
+      {%- endif %}
+      <p class="next-step"><strong>Next safe step:</strong> {{ page.safety.next_step }}</p>
+    </div>
+    <div class="clock" data-utc-clock data-server-epoch-ms="{{ page.clock.epoch_ms }}">
+      <span class="eyebrow clock-label" aria-hidden="true" data-clock-label>At page load</span>
+      <time class="clock-time" datetime="{{ page.clock.iso }}" aria-label="UTC time at page load" data-clock-time>{{ page.clock.text }}</time>
+    </div>
+    <div class="controls" role="group" aria-label="Kill-switch controls">
+      {%- if page.safety.halted %}<p class="controls-note">PAUSE hidden: administrator re-arm required.<span class="wide-only"> PAUSE cannot lower a halt.</span></p>
+      {%- else %}<form method="post" action="/operator/pause"><button class="button button-pause" type="submit">PAUSE</button></form>{% endif %}
+      <form method="post" action="/operator/emergency-stop"><button class="button button-stop" type="submit">EMERGENCY STOP</button></form>
+    </div>
+  </section>
+  {%- if not page.is_fragment %}<script src="{{ workspace_script_url }}" defer></script>{% endif %}
+{%- endif %}
