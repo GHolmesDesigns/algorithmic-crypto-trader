@@ -25,6 +25,38 @@ async def research_workspace(request: Request) -> Response:
     return _render_or_json(request, role, view)
 
 
+@router.post(PATH + "/review")
+async def review_research_run(request: Request) -> Response:
+    role = _authorize(request)
+    workspace = _workspace(request)
+    if not _wants_html(request):
+        return JSONResponse({"detail": "run review requires an HTML request"}, status_code=406)
+    values: dict[str, object] = {}
+    try:
+        values = await _request_values(request)
+        submitted = ResearchRunRequest.from_mapping(values)
+        dataset, windows, review_id = workspace.create_review(submitted)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return _error(request, role, [str(exc)], status_code=422, form_values=values)
+    strategy = next(
+        item for item in workspace.strategies() if item["version"] == submitted.strategy_version
+    )
+    active_jobs = sum(job.status.value in {"queued", "running"} for job in workspace.jobs.values())
+    review = {
+        "request": submitted.to_dict(),
+        "dataset": dataset.summary(),
+        "strategy": strategy,
+        "windows": windows,
+        "active_jobs": active_jobs,
+        "review_id": review_id,
+    }
+    return _render_or_json(
+        request,
+        role,
+        _view(workspace, form_values=submitted.to_dict(), review=review),
+    )
+
+
 @router.get(PATH + "/compare")
 async def compare_runs(request: Request) -> Response:
     role = _authorize(request)
@@ -40,10 +72,23 @@ async def submit_research_run(request: Request) -> Response:
     workspace = _workspace(request)
     try:
         values = await _request_values(request)
+        if _wants_html(request) and values.get("confirmation") != "queue":
+            raise ValueError("Review the run assumptions before queueing the simulation.")
         submitted = ResearchRunRequest.from_mapping(values)
+        if _wants_html(request):
+            review_id = str(values.get("review_id", ""))
+            if not review_id:
+                raise ValueError("Review the run assumptions before queueing the simulation.")
+            workspace.consume_review(review_id, submitted)
         job = await workspace.submit(submitted)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        return _error(request, role, [str(exc)], status_code=422)
+        return _error(
+            request,
+            role,
+            [str(exc)],
+            status_code=422,
+            form_values=values if "values" in locals() else {},
+        )
     if _wants_html(request):
         return RedirectResponse(f"{PATH}/runs/{job.run_id}", status_code=303)
     return JSONResponse(job.summary(), status_code=202)
@@ -90,6 +135,8 @@ def _view(
     selected: list[str] | None = None,
     job: dict[str, object] | None = None,
     errors: list[str] | None = None,
+    form_values: dict[str, object] | None = None,
+    review: dict[str, object] | None = None,
 ) -> dict[str, object]:
     selected = selected or []
     return build_research_view(
@@ -100,6 +147,8 @@ def _view(
         selected=selected,
         job=job,
         errors=errors or [],
+        form_values=form_values,
+        review=review,
     )
 
 
@@ -116,11 +165,23 @@ def _render_or_json(
     )
 
 
-def _error(request: Request, role: str, errors: list[str], *, status_code: int) -> Response:
+def _error(
+    request: Request,
+    role: str,
+    errors: list[str],
+    *,
+    status_code: int,
+    form_values: dict[str, object] | None = None,
+) -> Response:
     workspace = _workspace(request)
     if not _wants_html(request):
         return JSONResponse({"detail": {"status": "refused", "errors": errors}}, status_code=422)
-    return _render_or_json(request, role, _view(workspace, errors=errors), status_code=status_code)
+    return _render_or_json(
+        request,
+        role,
+        _view(workspace, errors=errors, form_values=form_values),
+        status_code=status_code,
+    )
 
 
 async def _request_values(request: Request) -> dict[str, object]:
