@@ -47,7 +47,10 @@ change the live-mode guards or authorize Coinbase order placement.
   periods and leave the five-minute window by age only, so a feed that drops
   every minute still raises the alert. The alert clears when the stream has
   received heartbeats continuously for 60 seconds and fewer than three
-  disconnects remain in the window. The reconnect delay also
+  disconnects remain in the window. The stream reports health once per
+  connection, so the check repeats on each closed live candle while the
+  connection stays up; a storm that ends with one stable connection clears once
+  its disconnects age out of the window. The reconnect delay also
   returns to its one-second base after that healthy period; repeated failures
   still back off to the 30-second ceiling.
 - Alert delivery failure is recorded as `failed` for that destination. Tokens,

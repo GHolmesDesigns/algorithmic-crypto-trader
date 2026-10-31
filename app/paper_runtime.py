@@ -198,6 +198,7 @@ class PaperRuntime:
         self._active_alerts: set[str] = set()
         self._alerted_at: dict[str, datetime] = {}
         self._disconnects: deque[datetime] = deque()
+        self._stream_healthy = False
         self.ingestor.on_candle = self.on_candle
         self.ingestor.gap_fill = self.gap_fill
         self.ingestor.on_disconnect = self.on_disconnect
@@ -268,6 +269,7 @@ class PaperRuntime:
                 {"at": at.isoformat(), "reason_kind": reason.kind, "reason_note": reason.note},
                 now=at,
             )
+        self._stream_healthy = False
         self._expire_disconnects(at)
         self._disconnects.append(at)
         if len(self._disconnects) >= self.config.reconnect_storm_threshold:
@@ -286,14 +288,23 @@ class PaperRuntime:
         """Clear reconnect alerts only after the stream's heartbeat health window.
 
         Disconnect history survives healthy periods and leaves the window by age only, so a feed
-        that drops every minute still counts as a storm. The storm alert clears once the window
-        holds fewer disconnects than the threshold.
+        that drops every minute still counts as a storm. The ingestor reports health once per
+        connection, often while the window still holds a storm, so the storm alert is checked
+        again by `_clear_recovered_storm` for as long as the connection stays up.
         """
 
+        self._stream_healthy = True
+        self._clear_recovered_storm(at)
+        self._clear_alert("market_data_disconnected")
+
+    def _clear_recovered_storm(self, at: datetime) -> None:
+        """Clear the storm alert once the stream is healthy and the window holds too few drops."""
+
+        if not self._stream_healthy:
+            return
         self._expire_disconnects(at)
         if len(self._disconnects) < self.config.reconnect_storm_threshold:
             self._clear_alert("market_data_reconnect_storm")
-        self._clear_alert("market_data_disconnected")
 
     def _expire_disconnects(self, at: datetime) -> None:
         cutoff = at - self.config.reconnect_storm_window
@@ -326,6 +337,8 @@ class PaperRuntime:
             await self.backfiller.run(symbol, start, end, granularity=WEBSOCKET_CANDLE_INTERVAL)
 
     async def on_candle(self, candle: Candle) -> None:
+        # A closed live candle arrives only on a connection that has stayed up.
+        self._clear_recovered_storm(utc_now())
         try:
             prior = self.store.latest(
                 candle.symbol,

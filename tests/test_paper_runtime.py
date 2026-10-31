@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -122,13 +123,13 @@ def operator(tmp_path, sink: RecordingSink) -> OperatorState:
     )
 
 
-def runtime(tmp_path, *, quote: Quote | None, system_events=None):
+def runtime(tmp_path, *, quote: Quote | None, system_events=None, ingestor=None):
     store = InMemoryCandleStore()
     store.upsert_many(tuple(candle(index) for index in range(8)))
     cycle = RecordingCycle()
     sink = RecordingSink()
     state = operator(tmp_path, sink)
-    ingestor = FakeIngestor(quote)
+    ingestor = ingestor if ingestor is not None else FakeIngestor(quote)
     instance = PaperRuntime(
         config=PaperRuntimeConfig(
             symbols=("BTC-USD",),
@@ -327,6 +328,131 @@ async def test_storm_alert_clears_when_window_has_aged_below_threshold_and_strea
     await instance.on_stream_healthy(T0 + timedelta(seconds=350))
     assert "market_data_reconnect_storm" not in instance._active_alerts
     assert len(sink.alerts) == 1
+
+
+class ScriptedTransport:
+    """Yields heartbeats, advancing a shared clock per receive; raises when the script ends."""
+
+    def __init__(self, clock: Any, heartbeats: int, step_seconds: float, *, stop=None) -> None:
+        self.clock = clock
+        self.remaining = heartbeats
+        self.step = timedelta(seconds=step_seconds)
+        self.stop = stop
+
+    async def send(self, _message: str) -> None:
+        return None
+
+    async def recv(self) -> str:
+        self.clock.now += self.step
+        if self.remaining == 0:
+            if self.stop is not None:
+                self.stop.set()
+                return json.dumps({"channel": "heartbeats", "events": []})
+            raise RuntimeError("forced disconnect")
+        self.remaining -= 1
+        return json.dumps({"channel": "heartbeats", "events": []})
+
+    async def close(self) -> None:
+        return None
+
+
+class ScriptClock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+async def _storm_then_stable_connection(tmp_path, monkeypatch):
+    """Three drops about a minute apart, then one connection that stays up and healthy."""
+
+    clock = ScriptClock(T0)
+    stop = asyncio.Event()
+    transports = [
+        ScriptedTransport(clock, 1, 30),
+        ScriptedTransport(clock, 1, 30),
+        ScriptedTransport(clock, 1, 30),
+        ScriptedTransport(clock, 2, 30, stop=stop),
+    ]
+
+    async def connect(_url: str) -> ScriptedTransport:
+        return transports.pop(0)
+
+    async def advance_sleep(delay: float) -> None:
+        clock.now += timedelta(seconds=delay)
+
+    monkeypatch.setattr("data.stream.asyncio.sleep", advance_sleep)
+    monkeypatch.setattr("app.paper_runtime.utc_now", clock)
+    ingestor = CoinbaseWebSocketIngestor(
+        ("BTC-USD",), connect=connect, healthy_connection_seconds=60, clock=clock
+    )
+    instance, cycle, sink = runtime(tmp_path, quote=None, ingestor=ingestor)
+    await ingestor.run(stop)
+    return instance, cycle, sink, clock
+
+
+def _fresh_quote(clock: ScriptClock) -> Quote:
+    return Quote(
+        symbol="BTC-USD",
+        bid=Decimal("60008"),
+        ask=Decimal("60009"),
+        as_of=clock.now,
+        source="coinbase",
+        received_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_storm_alert_clears_on_a_stable_connection_once_the_window_ages_out(
+    tmp_path, monkeypatch
+) -> None:
+    instance, _cycle, sink, clock = await _storm_then_stable_connection(tmp_path, monkeypatch)
+    instance.ingestor.last_quote["BTC-USD"] = _fresh_quote(clock)
+
+    # The ingestor reported health once, while the window still held every drop.
+    assert [alert.condition for alert in sink.alerts].count("market_data_reconnect_storm") == 1
+    assert "market_data_reconnect_storm" in instance._active_alerts
+    await instance.ingestor.on_candle(candle(8))
+    assert "market_data_reconnect_storm" in instance._active_alerts
+
+    # Later the drops age out while the same connection stays up; a closed candle proves it.
+    clock.now += instance.config.reconnect_storm_window
+    await instance.ingestor.on_candle(candle(9))
+
+    assert "market_data_reconnect_storm" not in instance._active_alerts
+    assert "market_data_disconnected" not in instance._active_alerts
+
+
+@pytest.mark.asyncio
+async def test_closed_candle_does_not_clear_the_storm_while_the_window_holds_the_threshold(
+    tmp_path, monkeypatch
+) -> None:
+    instance, _cycle, _sink, clock = await _storm_then_stable_connection(tmp_path, monkeypatch)
+    instance.ingestor.last_quote["BTC-USD"] = _fresh_quote(clock)
+
+    for index in range(8, 12):
+        await instance.ingestor.on_candle(candle(index))
+
+    assert len(instance._disconnects) >= instance.config.reconnect_storm_threshold
+    assert "market_data_reconnect_storm" in instance._active_alerts
+
+
+@pytest.mark.asyncio
+async def test_closed_candle_does_not_clear_the_storm_before_the_stream_is_healthy_again(
+    tmp_path,
+) -> None:
+    instance, _cycle, _sink = runtime(tmp_path, quote=None)
+    reason = DisconnectReason("heartbeat_timeout", "heartbeat stopped")
+    for offset in (0, 70, 140):
+        await instance.on_disconnect(T0 + timedelta(seconds=offset), reason)
+    # The window has aged out, but the new connection has not yet reported health.
+    instance._expire_disconnects(T0 + timedelta(seconds=1000))
+    instance.ingestor.quote = _fresh_quote(ScriptClock(T0))
+
+    await instance.on_candle(candle(8))
+
+    assert "market_data_reconnect_storm" in instance._active_alerts
 
 
 @pytest.mark.asyncio
