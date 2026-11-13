@@ -1109,6 +1109,11 @@ def _health(snapshot: Mapping[str, Any], now: datetime) -> list[dict[str, Any]]:
                     reconciliation.get("unavailable_runs"),
                     missing=not_scheduled,
                 ),
+                _count(
+                    "Unavailable in a row",
+                    reconciliation.get("consecutive_unavailable_runs"),
+                    missing=not_scheduled,
+                ),
                 _time("Last run", reconciliation.get("last_run_at"), now, missing="no run yet"),
                 _time(
                     "Scheduler started",

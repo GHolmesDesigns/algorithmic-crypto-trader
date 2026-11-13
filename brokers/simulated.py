@@ -93,6 +93,8 @@ class SimulatedBrokerError(RuntimeError):
         self.fault = fault
         self.order = order
         self.retry_after = retry_after
+        # An outage or a rate limit clears by itself; a rejection or a fault on an order does not.
+        self.transient = fault in (SimulatedFault.UNAVAILABLE, SimulatedFault.RATE_LIMITED)
 
 
 class OrderRejectedError(SimulatedBrokerError):

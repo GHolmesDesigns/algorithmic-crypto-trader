@@ -9,7 +9,11 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 
-from brokers.http import describe_provider_failure, provider_failure_fields
+from brokers.http import (
+    describe_provider_failure,
+    is_transient_provider_failure,
+    provider_failure_fields,
+)
 from core.models import Fill, Order, OrderStatus, utc_now
 
 from portfolio.ledger import apply_fills
@@ -39,6 +43,8 @@ class ReconciliationStatus:
     clean_runs: int = 0
     diverged_runs: int = 0
     unavailable_runs: int = 0
+    # Unavailable runs since the broker was last read; any run that compared state resets it.
+    consecutive_unavailable_runs: int = 0
     last_run_at: datetime | None = None
     last_result: str = "not_run"
     last_discrepancies: int = 0
@@ -50,10 +56,19 @@ class ReconciliationStatus:
             "clean_runs": self.clean_runs,
             "diverged_runs": self.diverged_runs,
             "unavailable_runs": self.unavailable_runs,
+            "consecutive_unavailable_runs": self.consecutive_unavailable_runs,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "last_result": self.last_result,
             "last_discrepancies": self.last_discrepancies,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _Unreadable:
+    """A run that could not read the broker; ``transient`` says retrying may fix it."""
+
+    detail: str
+    transient: bool = False
 
 
 class ScheduledReconciler:
@@ -74,6 +89,14 @@ class ScheduledReconciler:
     ``balance_increments`` is the broker's declared balance precision
     (``BrokerCapabilities.balance_increments``); without it the projection is compared at
     full precision, which is right for a venue that reports balances exactly.
+
+    ``unavailable_threshold`` is how many runs in a row may fail to read the broker, in a
+    way that may clear by itself (a timeout, a dropped connection, a maintenance window),
+    before trading halts. Each such run is still logged and alerted, and while the broker is
+    unreadable the trading cycle's own risk inputs fail closed, so no new entry is opened.
+    A failure that retrying cannot fix, such as a rejected credential or a response of an
+    unexpected shape, halts on the first run, and so does a divergence. The default, 1, halts
+    on the first unreadable run.
     """
 
     def __init__(
@@ -87,10 +110,18 @@ class ScheduledReconciler:
         on_unavailable: UnavailableHook | None = None,
         on_reconciled: ReconciledHook | None = None,
         balance_increments: Mapping[str, Decimal] | None = None,
+        unavailable_threshold: int = 1,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("reconciliation interval must be positive")
+        if unavailable_threshold < 1:
+            raise ValueError("unavailable threshold must be at least 1")
         self.reconciler = reconciler
+        self.unavailable_threshold = unavailable_threshold
+        # The scheduler counts failed runs, so it, not the reconciler, decides when a transient
+        # failure halts trading. With a threshold of 1 the reconciler halts at once, as it
+        # always has.
+        self.reconciler.trip_on_transient = unavailable_threshold <= 1
         self.interval_seconds = interval_seconds
         self.balance_increments: dict[str, Decimal] = dict(balance_increments or {})
         self.refresh_order = refresh_order or self._read_order
@@ -139,7 +170,7 @@ class ScheduledReconciler:
     async def run_once(self) -> ReconciliationResult | None:
         async with self.lock:
             outcome = await self._compare()
-        if isinstance(outcome, str):
+        if isinstance(outcome, _Unreadable):
             await self._unavailable(outcome)
             return None
         reported = await self._report(outcome)
@@ -156,8 +187,8 @@ class ScheduledReconciler:
         except Exception:
             logger.exception("post-reconciliation hook failed")
 
-    async def _compare(self) -> ReconciliationResult | str:
-        """Refresh, project, and reconcile; a string explains why the run was unavailable."""
+    async def _compare(self) -> ReconciliationResult | _Unreadable:
+        """Refresh, project, and reconcile; ``_Unreadable`` explains why the run was unavailable."""
 
         try:
             await self._refresh_tracked_orders()
@@ -167,17 +198,19 @@ class ScheduledReconciler:
                 describe_provider_failure(exc),
                 extra={"event": provider_failure_fields(exc)},
             )
-            self.reconciler.kill_switch.trip("open orders could not be refreshed")
-            return "open orders could not be refreshed"
+            transient = is_transient_provider_failure(exc)
+            if self.reconciler.trip_on_transient or not transient:
+                self.reconciler.kill_switch.trip("open orders could not be refreshed")
+            return _Unreadable("open orders could not be refreshed", transient)
         try:
             local = self.expected_state()
         except ValueError:
             self.reconciler.kill_switch.trip("expected portfolio could not be projected")
-            return "expected portfolio could not be projected"
+            return _Unreadable("expected portfolio could not be projected")
         try:
             result = await self.reconciler.reconcile(local)
         except ReconciliationUnavailable as exc:
-            return str(exc)
+            return _Unreadable(str(exc), exc.transient)
         self._adopt(result, local)
         return result
 
@@ -206,9 +239,15 @@ class ScheduledReconciler:
 
     async def _report(self, result: ReconciliationResult) -> ReconciliationResult:
         diverged = bool(result.discrepancies)
+        if self.status.consecutive_unavailable_runs:
+            logger.info(
+                "broker readable again after %s unavailable reconciliation run(s)",
+                self.status.consecutive_unavailable_runs,
+            )
         self.status = replace(
             self.status,
             runs=self.status.runs + 1,
+            consecutive_unavailable_runs=0,
             clean_runs=self.status.clean_runs + (0 if diverged else 1),
             diverged_runs=self.status.diverged_runs + (1 if diverged else 0),
             last_run_at=utc_now(),
@@ -256,15 +295,29 @@ class ScheduledReconciler:
             key: fill for key, fill in authoritative.fills.items() if str(fill.order_id) in open_ids
         }
 
-    async def _unavailable(self, detail: str) -> None:
+    async def _unavailable(self, outcome: _Unreadable) -> None:
+        in_a_row = self.status.consecutive_unavailable_runs + 1
         self.status = replace(
             self.status,
             runs=self.status.runs + 1,
             unavailable_runs=self.status.unavailable_runs + 1,
+            consecutive_unavailable_runs=in_a_row,
             last_run_at=utc_now(),
             last_result="unavailable",
             last_discrepancies=0,
         )
+        detail = outcome.detail
+        # With a threshold of 1 the failing read already halted trading (``trip_on_transient``).
+        if outcome.transient and self.unavailable_threshold > 1:
+            if in_a_row >= self.unavailable_threshold:
+                self.reconciler.kill_switch.trip(
+                    f"broker unavailable for {in_a_row} reconciliation runs in a row"
+                )
+                detail = f"{detail}; unreadable for {in_a_row} runs in a row"
+            else:
+                detail = (
+                    f"{detail}; run {in_a_row} of {self.unavailable_threshold} before trading halts"
+                )
         logger.error("scheduled reconciliation unavailable: %s", detail)
         if self.on_unavailable is not None:
             await self.on_unavailable(detail)

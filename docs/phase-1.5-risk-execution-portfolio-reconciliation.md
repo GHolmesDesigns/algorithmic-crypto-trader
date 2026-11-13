@@ -150,6 +150,21 @@ unreadable store and an unavailable broker halt as before. Provider timing of a
 real restart right after an own fill remains unverified until an owner-run
 observation.
 
+## A brief broker outage
+
+On 2026-11-13 at 17:10 UTC the Gemini Sandbox answered the scheduled balance read with HTTP 503 "Maintenance". The reconciler halted trading on that one unreadable run. The venue answered again by the next run, reconciliation was clean, and nothing had been lost, but a halt needs an operator to re-arm it (#196).
+
+A reconciliation that cannot read the broker compares nothing, so it is not evidence of a divergence. The scheduler now counts consecutive unreadable runs (`consecutive_unavailable_runs`, shown as **Unavailable in a row**):
+
+- A failure that may clear by itself is *transient*: a timeout, a dropped connection, an open circuit, HTTP 429, or HTTP 5xx. The classification lives in `brokers/http.py` (`is_transient_provider_failure`) so `portfolio/` stays venue-neutral. A failure that does not say it is transient is not assumed to be.
+- A transient run is logged, counted, and alerted (a warning that names the run and the limit) and does not halt trading. The `RECONCILE_HALT_AFTER_UNAVAILABLE`th run in a row halts it, with a critical alert. The default is 3, about fifteen minutes at the default interval.
+- Any run that reads the broker resets the count, whether it is clean or diverged.
+- A rejected credential or permission (401, 403), any other client error, and a response of an unexpected shape halt on the first run, as does a failure to persist the broker's snapshot. A divergence halts at once.
+- The same rule covers the balance and position read, each tracked order's lookup, its fill read, and the open-order refresh before the comparison. It does not cover startup recovery, the execution engine's pre-submit lookup, or `UNKNOWN` order handling, which fail closed as before.
+- A value of 1 reproduces the earlier behavior: the first unreadable run halts.
+
+The count is held in memory, so a restart starts it at zero; startup recovery still halts when it cannot read the broker. While the broker is unreadable the trading cycle's own risk inputs report it unhealthy, so no new entry is opened even though the kill switch is still `RUNNING` (covered by `test_an_unreadable_broker_opens_no_entry_even_while_the_switch_still_runs`).
+
 ## Validation boundary
 
 The automated suite uses only `SimulatedBroker`, deterministic fixtures, and temporary local state. No provider credentials, exchange writes, or live trading are used. The delayed-fill fix has adapter-level fixture coverage, but its real Sandbox timing remains owner-run verification when a natural lag event occurs. Other adapter and end-to-end evidence remains in Phase 1.6 and the Phase 1 gate.

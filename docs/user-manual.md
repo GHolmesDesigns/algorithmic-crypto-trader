@@ -666,6 +666,25 @@ sets funds aside for it. Confirm the activity was expected, wait until nothing
 is left open and a later reconciliation is clean, then follow the re-arm
 checklist. See [orders the app did not place](phase-1.5-risk-execution-portfolio-reconciliation.md#orders-the-app-did-not-place).
 
+### Reconciliation cannot read the broker
+
+The exchange can be briefly unreachable: a maintenance window, a timeout, or a
+dropped connection. Scheduled reconciliation then counts an **Unavailable run**,
+sends a warning alert, and tries again at the next interval. Trading is not
+halted yet, and no new position opens while the broker cannot be read. **Unavailable
+in a row** on the dashboard shows how close the system is to halting.
+
+1. Do nothing if the next run is **clean**. The count returns to zero.
+2. After three unavailable runs in a row (about fifteen minutes at the default
+   interval) trading halts and a critical alert is sent. Check the exchange's
+   status page, wait until reconciliation reads the broker again and is clean,
+   then follow the re-arm checklist.
+3. A rejected credential or permission (HTTP 401 or 403), or a response the app
+   cannot interpret, halts on the first run. Those do not clear on their own.
+
+`RECONCILE_HALT_AFTER_UNAVAILABLE` sets the number of runs. A difference between
+local and broker state is never tolerated this way; it halts at once.
+
 ### An order is pending or unknown
 
 1. Select **EMERGENCY STOP** if the system is not already halted.
@@ -923,6 +942,7 @@ yourself.
 | `TRADING_KILL_SWITCH` | empty | Independent external request for `paused` or `halted`. `running` never re-arms. Invalid content halts. |
 | `STRATEGY_VERSION` | `unknown` | Version displayed on the operator surface. |
 | `RECONCILE_INTERVAL_SECONDS` | `300` | Broker reconciliation interval; must be greater than 0 and no more than 3600. |
+| `RECONCILE_HALT_AFTER_UNAVAILABLE` | `3` | Scheduled reconciliations in a row that may fail to read the broker for a reason that can clear on its own (timeout, dropped connection, HTTP 5xx or 429) before trading halts; a whole number from 1 to 10. `1` halts on the first one. A rejected credential or an unreadable response always halts at once. |
 | `PAPER_RUNTIME_ENABLED` | `0` (`1` in the VPS override) | Starts the live Coinbase market-data runtime only in `paper` mode and only with a configured broker. |
 | `PAPER_SYMBOLS` | `BTC-USD` | One to ten comma-separated Coinbase `*-USD` products. |
 | `PAPER_STRATEGY_FAST_BARS` / `PAPER_STRATEGY_SLOW_BARS` | `3` / `8` | Moving-average windows; slow must exceed fast. |

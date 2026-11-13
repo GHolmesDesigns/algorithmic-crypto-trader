@@ -65,7 +65,7 @@ from portfolio.fill_cost import FillCostReader
 from portfolio.reconciliation import Discrepancy, PortfolioState, Reconciler
 from portfolio.scheduler import ScheduledReconciler
 from portfolio.store import SqlAlchemyPortfolioStore
-from risk.kill_switch import KillSwitch
+from risk.kill_switch import KillSwitch, KillSwitchState
 from risk.kill_switch_journal import SqlAlchemyKillSwitchJournal
 
 from app.heartbeat import HeartbeatScheduler
@@ -80,6 +80,10 @@ from app.watch_feed import (
 )
 
 DEFAULT_RECONCILE_INTERVAL_SECONDS = 300.0
+# Unreadable reconciliation runs in a row (a broker timeout or maintenance window) allowed
+# before trading halts.
+DEFAULT_RECONCILE_HALT_AFTER = 3
+MAX_RECONCILE_HALT_AFTER = 10
 DEFAULT_EQUITY_SAMPLE_INTERVAL_SECONDS = 3600.0
 # Today's P/L is shown only while the latest equity snapshot is at most this many sampling
 # intervals old, and never older than the cap.
@@ -381,6 +385,7 @@ def start_scheduled_reconciliation(
     if operator_state.broker is None:
         return None
     interval = interval_seconds if interval_seconds is not None else _reconcile_interval()
+    halt_after = _reconcile_halt_after()
     equity_interval = _equity_sample_interval()
     settings: StartupSettings = application.state.startup_settings
     engine = create_database_engine(settings.database_url, settings.trading_mode)
@@ -412,13 +417,17 @@ def start_scheduled_reconciliation(
             )
         )
 
-    async def on_unavailable(_detail: str) -> None:
+    async def on_unavailable(detail: str) -> None:
+        # The scheduler has already halted trading when it was going to, so the kill switch says
+        # which of the two cases this is.
+        if application.state.kill_switch.state is KillSwitchState.HALTED:
+            severity = "critical"
+            message = "broker state could not be reconciled; trading halted"
+        else:
+            severity = "warning"
+            message = f"broker state could not be reconciled ({detail}); new entries are blocked"
         await operator_state.emit_alert(
-            Alert(
-                condition="reconciliation_unavailable",
-                severity="critical",
-                message="broker state could not be reconciled; trading halted",
-            )
+            Alert(condition="reconciliation_unavailable", severity=severity, message=message)
         )
 
     equity_store = SqlAlchemyEquityStore(session_factory)
@@ -460,6 +469,7 @@ def start_scheduled_reconciliation(
         on_unavailable=on_unavailable,
         on_reconciled=sampler.sample,
         balance_increments=operator_state.broker.capabilities.balance_increments,
+        unavailable_threshold=halt_after,
     )
     execution.on_recorded = scheduler.observe
     application.state.execution = execution
@@ -511,6 +521,21 @@ def _reconcile_interval() -> float:
     if not 0 < interval <= 3600:
         raise StartupGuardError("RECONCILE_INTERVAL_SECONDS must be between 0 and 3600")
     return interval
+
+
+def _reconcile_halt_after() -> int:
+    raw = os.environ.get("RECONCILE_HALT_AFTER_UNAVAILABLE", "").strip()
+    if not raw:
+        return DEFAULT_RECONCILE_HALT_AFTER
+    try:
+        runs = int(raw)
+    except ValueError as exc:
+        raise StartupGuardError("RECONCILE_HALT_AFTER_UNAVAILABLE must be a whole number") from exc
+    if not 1 <= runs <= MAX_RECONCILE_HALT_AFTER:
+        raise StartupGuardError(
+            f"RECONCILE_HALT_AFTER_UNAVAILABLE must be between 1 and {MAX_RECONCILE_HALT_AFTER}"
+        )
+    return runs
 
 
 async def run_startup_recovery(application: FastAPI, *, broker=None) -> StartupRecoveryResult:

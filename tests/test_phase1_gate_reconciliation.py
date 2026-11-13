@@ -213,6 +213,26 @@ async def test_unattended_loop_keeps_running_through_broker_outages(tmp_path) ->
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_broker_opens_no_entry_even_while_the_switch_still_runs(
+    tmp_path,
+) -> None:
+    # #196: a brief outage no longer halts trading, so the cycle's own risk inputs must still
+    # refuse to open a position on a broker it cannot read.
+    harness = TradingHarness(tmp_path)
+    await harness.start()
+    harness.broker._faults["get_balances"].extend([SimulatedFault.UNAVAILABLE] * 200)
+
+    outcomes = await harness.trade(range(0, len(CANDLES) - 1))
+
+    assert harness.kill_switch.state is KillSwitchState.RUNNING
+    assert not any(item.status is CycleStatus.SUBMITTED for item in outcomes)
+    refused = [item for item in outcomes if item.decision is not None]
+    assert refused and {item.decision.failed_gate for item in refused} == {"broker_health"}
+    assert await harness.broker.get_positions() == ()
+    harness.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_process_restart_recovers_orders_fills_and_portfolio(tmp_path) -> None:
     harness = TradingHarness(tmp_path)
     await harness.start()

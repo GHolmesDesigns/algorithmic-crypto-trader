@@ -113,6 +113,33 @@ def log_provider_failure(
 class ProviderTimeoutError(ProviderError):
     """The provider did not acknowledge a request within the transport timeout."""
 
+    transient = True
+
+
+class ProviderTransportError(ProviderError):
+    """The connection to the provider failed before any answer arrived."""
+
+    transient = True
+
+
+# Statuses that say the venue could not answer right now, as opposed to refusing the request.
+_TRANSIENT_STATUS_CODES = frozenset({408, 429})
+
+
+def is_transient_provider_failure(exc: BaseException) -> bool:
+    """Whether a failed read may succeed on its own a little later.
+
+    True for a timeout, a dropped connection, an open circuit, a rate limit, and a server-side
+    failure (HTTP 5xx, which includes a venue's maintenance window). False for everything else:
+    a rejected credential or permission (401, 403), any other client error, and any exception
+    that does not say it is transient, such as a response of an unexpected shape. An unknown
+    failure is never assumed to heal itself.
+    """
+
+    if isinstance(exc, ProviderHTTPError):
+        return exc.status_code >= 500 or exc.status_code in _TRANSIENT_STATUS_CODES
+    return getattr(exc, "transient", False) is True
+
 
 class AmbiguousSubmissionError(ProviderTimeoutError):
     """A submission may have reached the venue and must be queried before retrying."""
@@ -267,7 +294,7 @@ class ProviderHTTPClient:
                 raise ProviderTimeoutError("provider request timed out") from exc
             except httpx.HTTPError as exc:
                 self.circuit_breaker.record_failure()
-                raise ProviderError("provider transport failed") from exc
+                raise ProviderTransportError("provider transport failed") from exc
 
             if response.status_code == 429:
                 if attempt >= self.max_429_retries:
