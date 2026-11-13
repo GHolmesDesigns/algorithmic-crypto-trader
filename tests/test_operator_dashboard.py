@@ -352,6 +352,7 @@ async def test_clean_reconciliation_totals(monkeypatch):
     health = section(html, "health")
     assert '<dt>Clean runs</dt><dd><span class="count">12</span></dd>' in health
     assert '<dt>Diverged runs</dt><dd><span class="count">0</span></dd>' in health
+    assert '<dt>Unavailable in a row</dt><dd><span class="count">0</span></dd>' in health
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from brokers.http import log_provider_failure
+from brokers.http import is_transient_provider_failure, log_provider_failure
 from brokers.interface import BrokerInterface
 from core.models import Balance, Fill, Order, Position
 from risk.kill_switch import KillSwitch
@@ -40,7 +40,15 @@ class ReconciliationResult:
 
 
 class ReconciliationUnavailable(RuntimeError):
-    pass
+    """The broker's state could not be read, so nothing was compared.
+
+    ``transient`` says the read failed in a way that may clear on its own (a timeout, a dropped
+    connection, a maintenance window). It never says the comparison was clean.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 class Reconciler:
@@ -60,6 +68,19 @@ class Reconciler:
         # Whether a divergence's local and broker values may be logged. Off unless the caller,
         # which knows the trading mode, turns it on for a sandbox: a live balance never is.
         self.log_values = log_values
+        # A read that failed in a transient way halts trading at once unless the caller, which
+        # counts failures across runs, takes that decision over (``ScheduledReconciler``).
+        # A failure that retrying cannot fix always halts.
+        self.trip_on_transient = True
+
+    def _unreadable(
+        self, exc: Exception, operation: str, reason: str, message: str
+    ) -> ReconciliationUnavailable:
+        log_provider_failure(logger, operation, exc, level=logging.ERROR)
+        transient = is_transient_provider_failure(exc)
+        if self.trip_on_transient or not transient:
+            self.kill_switch.trip(reason)
+        return ReconciliationUnavailable(message, transient=transient)
 
     async def reconcile(self, local: PortfolioState) -> ReconciliationResult:
         try:
@@ -67,9 +88,12 @@ class Reconciler:
             balances = await self.broker.get_balances()
             positions = await self.broker.get_positions()
         except Exception as exc:
-            log_provider_failure(logger, "reconciliation balance read", exc, level=logging.ERROR)
-            self.kill_switch.trip("broker unavailable during reconciliation")
-            raise ReconciliationUnavailable("broker state could not be read") from exc
+            raise self._unreadable(
+                exc,
+                "reconciliation balance read",
+                "broker unavailable during reconciliation",
+                "broker state could not be read",
+            ) from exc
 
         broker_orders: dict[str, Order] = {}
         broker_fills: dict[str, Fill] = {}
@@ -78,11 +102,12 @@ class Reconciler:
             try:
                 broker_order = await self.broker.get_order(client_order_id)
             except Exception as exc:
-                log_provider_failure(
-                    logger, "reconciliation order lookup", exc, level=logging.ERROR
-                )
-                self.kill_switch.trip("broker unavailable during order reconciliation")
-                raise ReconciliationUnavailable("broker order state could not be read") from exc
+                raise self._unreadable(
+                    exc,
+                    "reconciliation order lookup",
+                    "broker unavailable during order reconciliation",
+                    "broker order state could not be read",
+                ) from exc
             if broker_order is None:
                 discrepancies.append(
                     Discrepancy("order", client_order_id, local_order.status.value, None)
@@ -104,9 +129,12 @@ class Reconciler:
             try:
                 remote_fills = await self.broker.get_fills(client_order_id)
             except Exception as exc:
-                log_provider_failure(logger, "reconciliation fill read", exc, level=logging.ERROR)
-                self.kill_switch.trip("broker unavailable during fill reconciliation")
-                raise ReconciliationUnavailable("broker fill state could not be read") from exc
+                raise self._unreadable(
+                    exc,
+                    "reconciliation fill read",
+                    "broker unavailable during fill reconciliation",
+                    "broker fill state could not be read",
+                ) from exc
             for fill in remote_fills:
                 broker_fills[fill.fill_id] = fill
 

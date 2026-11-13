@@ -16,6 +16,8 @@ class RateLimitExceeded(RuntimeError):
 class CircuitOpen(RuntimeError):
     """Raised when the provider circuit is open after repeated failures."""
 
+    transient = True
+
 
 @dataclass
 class TokenBucketRateLimiter:
