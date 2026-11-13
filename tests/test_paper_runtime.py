@@ -455,6 +455,56 @@ async def test_closed_candle_does_not_clear_the_storm_before_the_stream_is_healt
     assert "market_data_reconnect_storm" in instance._active_alerts
 
 
+class AlwaysFailingEvents(FakeSystemEvents):
+    """Every journal write fails, as when the database is unreachable."""
+
+    def record(self, event_type: str, payload, *, now=None) -> None:
+        raise RuntimeError("event journal is down: secret-looking-value")
+
+
+@pytest.mark.asyncio
+async def test_failing_journal_still_counts_disconnects_and_raises_one_storm_alert(
+    tmp_path, caplog
+) -> None:
+    instance, _cycle, sink = runtime(tmp_path, quote=None, system_events=AlwaysFailingEvents())
+    reason = DisconnectReason("heartbeat_timeout", "heartbeat stopped")
+
+    with caplog.at_level("WARNING", logger="app.paper_runtime"):
+        for offset in (0, 20, 40):
+            await instance.on_disconnect(T0 + timedelta(seconds=offset), reason)
+
+    assert len(instance._disconnects) == 3
+    assert [alert.condition for alert in sink.alerts] == ["market_data_reconnect_storm"]
+    assert "market_data_reconnect_storm" in instance._active_alerts
+    # The failure is logged by error class only, never with the exception text.
+    assert "RuntimeError" in caplog.text
+    assert "secret-looking-value" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_failing_journal_disconnect_marks_the_stream_unhealthy_until_it_reports_health(
+    tmp_path,
+) -> None:
+    instance, _cycle, _sink = runtime(tmp_path, quote=None, system_events=AlwaysFailingEvents())
+    reason = DisconnectReason("heartbeat_timeout", "heartbeat stopped")
+    await instance.on_stream_healthy(T0)
+    assert instance._stream_healthy is True
+
+    for offset in (10, 80, 150):
+        await instance.on_disconnect(T0 + timedelta(seconds=offset), reason)
+    assert instance._stream_healthy is False
+    assert "market_data_reconnect_storm" in instance._active_alerts
+
+    # The window has aged out, but the new connection has not yet reported health.
+    instance._expire_disconnects(T0 + timedelta(seconds=1000))
+    instance.ingestor.quote = _fresh_quote(ScriptClock(T0))
+    await instance.on_candle(candle(8))
+    assert "market_data_reconnect_storm" in instance._active_alerts
+
+    await instance.on_stream_healthy(T0 + timedelta(seconds=1000))
+    assert "market_data_reconnect_storm" not in instance._active_alerts
+
+
 @pytest.mark.asyncio
 async def test_reconnect_storm_alert_delivery_failure_does_not_escape(tmp_path) -> None:
     instance, _cycle, _sink = runtime(tmp_path, quote=None)

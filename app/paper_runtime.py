@@ -262,16 +262,24 @@ class PaperRuntime:
                 self.operator.set_runtime("stopped", "paper runtime stopped")
 
     async def on_disconnect(self, at: datetime, reason: DisconnectReason) -> None:
-        if self.system_events is not None:
-            # A DisconnectReason redacts and bounds itself, so the stored note is safe.
-            self.system_events.record(
-                DISCONNECT_EVENT,
-                {"at": at.isoformat(), "reason_kind": reason.kind, "reason_note": reason.note},
-                now=at,
-            )
+        # Count the drop before the journal write so a journal failure can neither hide it from the
+        # storm window nor leave the stream looking healthy.
         self._stream_healthy = False
         self._expire_disconnects(at)
         self._disconnects.append(at)
+        if self.system_events is not None:
+            try:
+                # A DisconnectReason redacts and bounds itself, so the stored note is safe.
+                self.system_events.record(
+                    DISCONNECT_EVENT,
+                    {"at": at.isoformat(), "reason_kind": reason.kind, "reason_note": reason.note},
+                    now=at,
+                )
+            except Exception as exc:
+                # Log the error class only: a database error message can echo the stored values.
+                logger.warning(
+                    "disconnect event could not be journaled error=%s", type(exc).__name__
+                )
         if len(self._disconnects) >= self.config.reconnect_storm_threshold:
             await self._alert_once(
                 "market_data_reconnect_storm",
